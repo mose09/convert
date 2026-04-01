@@ -10,8 +10,12 @@ import pyarrow.parquet as pq
 logger = logging.getLogger(__name__)
 
 
+EMBEDDING_FREE_FORMATS = {"txt", "markdown"}
+
+
 def save(table_name: str, columns: list[str], rows: list[tuple],
-         embeddings: list[list[float]], storage_config: dict, connection=None):
+         embeddings: list[list[float]], storage_config: dict,
+         connection=None, processing_config: dict = None):
     """Save embeddings to file and optionally to Oracle."""
     file_format = storage_config.get("file_format", "parquet")
     output_dir = storage_config.get("output_dir", "./output")
@@ -22,6 +26,10 @@ def save(table_name: str, columns: list[str], rows: list[tuple],
         save_to_parquet(table_name, columns, rows, embeddings, output_dir)
     elif file_format == "jsonl":
         save_to_jsonl(table_name, columns, rows, embeddings, output_dir)
+    elif file_format == "txt":
+        save_to_txt(table_name, columns, rows, output_dir, processing_config or {})
+    elif file_format == "markdown":
+        save_to_markdown(table_name, columns, rows, output_dir, processing_config or {})
     else:
         raise ValueError(f"Unsupported file format: {file_format}")
 
@@ -109,6 +117,58 @@ def save_to_oracle(table_name: str, columns: list[str], rows: list[tuple],
             })
     connection.commit()
     logger.info("Saved %d embeddings to Oracle table %s", len(embeddings), target_table)
+
+
+def save_to_txt(table_name: str, columns: list[str], rows: list[tuple],
+                output_dir: str, processing_config: dict):
+    """Save results as a plain text file for Msty Knowledge Base."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(output_dir, f"{table_name}_{timestamp}.txt")
+
+    template = processing_config.get("text_template", "{column_name}: {value}")
+    separator = processing_config.get("row_separator", " | ")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        for idx, row in enumerate(rows):
+            parts = []
+            for col_name, value in zip(columns, row):
+                if value is not None:
+                    str_value = _format_value(value)
+                    parts.append(template.format(column_name=col_name, value=str_value))
+            text = separator.join(parts)
+            f.write(text + "\n\n")
+
+    logger.info("Saved TXT: %s (%d rows)", filepath, len(rows))
+
+
+def save_to_markdown(table_name: str, columns: list[str], rows: list[tuple],
+                     output_dir: str, processing_config: dict):
+    """Save results as a Markdown file for Msty Knowledge Base."""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(output_dir, f"{table_name}_{timestamp}.md")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(f"# {table_name}\n\n")
+        f.write(f"Source: Oracle Table `{table_name}` | Columns: {', '.join(columns)}\n\n")
+        f.write("---\n\n")
+
+        for idx, row in enumerate(rows):
+            f.write(f"## Record {idx + 1}\n\n")
+            for col_name, value in zip(columns, row):
+                str_value = _format_value(value) if value is not None else "NULL"
+                f.write(f"- **{col_name}**: {str_value}\n")
+            f.write("\n")
+
+    logger.info("Saved Markdown: %s (%d rows)", filepath, len(rows))
+
+
+def _format_value(value) -> str:
+    """Format a value to string for text output."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, bytes):
+        return value.hex()
+    return str(value)
 
 
 def _serialize_value(value):

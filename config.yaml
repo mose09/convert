@@ -14,7 +14,7 @@ embedding:
   dimensions: 1536
 
 storage:
-  file_format: "parquet"  # parquet | jsonl
+  file_format: "parquet"  # parquet | jsonl | txt | markdown (txt/markdown: Msty KB용, 임베딩 생략)
   output_dir: "./output"
   write_to_oracle: false
   oracle_target_table: "EMBEDDINGS_STORE"

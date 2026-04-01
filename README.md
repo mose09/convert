@@ -8,6 +8,7 @@ Oracle 테이블의 컬럼 데이터를 LLM 임베딩 벡터로 변환하는 Pyt
 - 행 데이터를 커스터마이징 가능한 텍스트 템플릿으로 변환
 - OpenAI 호환 API를 통한 배치 임베딩 생성 (OpenAI, Azure, vLLM, Ollama 등)
 - Parquet / JSONL 파일 저장 또는 Oracle 테이블에 직접 저장
+- Msty Knowledge Base용 TXT/Markdown 내보내기 (임베딩 자동 스킵, 폐쇄망 지원)
 
 ## 프로젝트 구조
 
@@ -70,7 +71,7 @@ embedding:
   dimensions: 1536
 
 storage:
-  file_format: "parquet"       # parquet | jsonl
+  file_format: "parquet"       # parquet | jsonl | txt | markdown
   output_dir: "./output"
   write_to_oracle: false
   oracle_target_table: "EMBEDDINGS_STORE"
@@ -100,6 +101,9 @@ python main.py --table CUSTOMERS
 
 # 드라이런 (임베딩 생성 없이 텍스트 변환 결과만 확인)
 python main.py --dry-run
+
+# 임베딩 생성 스킵 (txt/markdown 포맷은 자동 스킵)
+python main.py --skip-embedding
 ```
 
 ### 출력 예시
@@ -121,12 +125,58 @@ python main.py --dry-run
 {"row_index": 0, "source_table": "CUSTOMERS", "data": {"NAME": "John Smith", "EMAIL": "john@example.com"}, "embedding": [0.012, -0.034, ...]}
 ```
 
+### Msty Knowledge Base용 (폐쇄망 RAG)
+
+`file_format`을 `txt` 또는 `markdown`으로 설정하면 임베딩 생성을 건너뛰고 텍스트 파일만 생성합니다.
+생성된 파일을 Msty의 Knowledge Base에 임포트하면 Msty가 자체적으로 임베딩을 처리합니다.
+
+```yaml
+# config.yaml
+storage:
+  file_format: "markdown"  # 또는 "txt"
+  output_dir: "./output"
+```
+
+```bash
+python main.py  # OPENAI_API_KEY 불필요
+```
+
+**TXT 출력:** `output/CUSTOMERS_20260401_120000.txt`
+```
+NAME: John Smith | EMAIL: john@example.com | ADDRESS: 123 Main St
+
+NAME: Jane Doe | EMAIL: jane@example.com | ADDRESS: 456 Oak Ave
+```
+
+**Markdown 출력:** `output/CUSTOMERS_20260401_120000.md`
+```markdown
+# CUSTOMERS
+
+Source: Oracle Table `CUSTOMERS` | Columns: NAME, EMAIL, ADDRESS
+
+---
+
+## Record 1
+
+- **NAME**: John Smith
+- **EMAIL**: john@example.com
+- **ADDRESS**: 123 Main St
+```
+
+**Msty 연동 순서:**
+1. `file_format: "markdown"` 설정 후 실행
+2. `output/` 폴더의 .md 파일을 Msty Knowledge Base에 드래그 앤 드롭
+3. Msty 채팅에서 해당 Knowledge Base 선택 후 RAG 질의
+
 ## 처리 파이프라인
 
 ```
 Oracle DB → 컬럼 추출 → 텍스트 변환 → 임베딩 생성 → 저장
               │              │              │            │
         extractor.py    textifier.py   embedder.py   storage.py
+
+# Msty KB용 (txt/markdown 포맷)
+Oracle DB → 컬럼 추출 → 텍스트 변환 → 파일 저장 (임베딩 스킵)
 ```
 
 1. **추출**: `all_tab_columns`에서 메타데이터를 조회하고 데이터를 SELECT
