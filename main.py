@@ -10,7 +10,6 @@ from dotenv import load_dotenv
 from oracle_embeddings.db import get_connection
 from oracle_embeddings.extractor import extract_rows
 from oracle_embeddings.textifier import rows_to_texts
-from oracle_embeddings.embedder import generate_embeddings
 from oracle_embeddings.storage import save, EMBEDDING_FREE_FORMATS
 
 logging.basicConfig(
@@ -52,6 +51,7 @@ def process_table(config: dict, connection, table_cfg: dict, skip_embedding: boo
     texts = rows_to_texts(columns, rows, config["processing"])
 
     if need_embedding:
+        from oracle_embeddings.embedder import generate_embeddings
         embeddings = generate_embeddings(texts, config["embedding"])
     else:
         embeddings = None

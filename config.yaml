@@ -7,14 +7,15 @@ tables:
   - name: "CUSTOMERS"
     # columns: ["NAME", "EMAIL", "ADDRESS"]  # omit to use all columns
 
-embedding:
-  api_base: "https://api.openai.com/v1"
-  model: "text-embedding-3-small"
-  batch_size: 100
-  dimensions: 1536
+# 임베딩 설정 (txt/markdown 포맷 사용 시 불필요)
+# embedding:
+#   api_base: "https://api.openai.com/v1"
+#   model: "text-embedding-3-small"
+#   batch_size: 100
+#   dimensions: 1536
 
 storage:
-  file_format: "parquet"  # parquet | jsonl | txt | markdown (txt/markdown: Msty KB용, 임베딩 생략)
+  file_format: "markdown"  # parquet | jsonl | txt | markdown (txt/markdown: Msty KB용, 임베딩 불필요)
   output_dir: "./output"
   write_to_oracle: false
   oracle_target_table: "EMBEDDINGS_STORE"

@@ -1,6 +1,8 @@
 oracledb>=2.0.0
-openai>=1.0.0
 python-dotenv>=1.0.0
 pyyaml>=6.0
-pyarrow>=14.0.0
-numpy>=1.24.0
+
+# 임베딩 생성 시에만 필요 (Msty KB용 txt/markdown은 불필요)
+# openai>=1.0.0
+# pyarrow>=14.0.0
+# numpy>=1.24.0
