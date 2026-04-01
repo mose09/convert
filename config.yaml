@@ -1,0 +1,25 @@
+oracle:
+  dsn: "localhost:1521/FREEPDB1"
+  user: "${ORACLE_USER}"
+  thick_mode: false
+
+tables:
+  - name: "CUSTOMERS"
+    # columns: ["NAME", "EMAIL", "ADDRESS"]  # omit to use all columns
+
+embedding:
+  api_base: "https://api.openai.com/v1"
+  model: "text-embedding-3-small"
+  batch_size: 100
+  dimensions: 1536
+
+storage:
+  file_format: "parquet"  # parquet | jsonl
+  output_dir: "./output"
+  write_to_oracle: false
+  oracle_target_table: "EMBEDDINGS_STORE"
+
+processing:
+  row_limit: null
+  text_template: "{column_name}: {value}"
+  row_separator: " | "
