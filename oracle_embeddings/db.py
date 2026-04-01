@@ -10,8 +10,13 @@ def get_connection(config: dict) -> oracledb.Connection:
     """Create an Oracle database connection."""
     oracle_cfg = config["oracle"]
 
-    if oracle_cfg.get("thick_mode"):
-        oracledb.init_oracle_client()
+    lib_dir = oracle_cfg.get("instant_client_dir")
+    try:
+        oracledb.init_oracle_client(lib_dir=lib_dir)
+        logger.info("Thick mode initialized (Oracle Instant Client)")
+    except oracledb.ProgrammingError:
+        # Already initialized
+        pass
 
     user = os.environ.get("ORACLE_USER", oracle_cfg.get("user", ""))
     password = os.environ["ORACLE_PASSWORD"]
@@ -19,7 +24,7 @@ def get_connection(config: dict) -> oracledb.Connection:
 
     logger.info("Connecting to Oracle: %s@%s", user, dsn)
     connection = oracledb.connect(user=user, password=password, dsn=dsn)
-    logger.info("Connected successfully")
+    logger.info("Connected successfully (DB version: %s)", connection.version)
     return connection
 
 

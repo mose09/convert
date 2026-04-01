@@ -1,7 +1,7 @@
 oracle:
-  dsn: "localhost:1521/FREEPDB1"
+  dsn: "localhost:1521/ORCL"
   user: "${ORACLE_USER}"
-  thick_mode: false
+  instant_client_dir: null  # Oracle Instant Client 경로 (예: "C:/oracle/instantclient_19_25")
 
 tables:
   - name: "CUSTOMERS"

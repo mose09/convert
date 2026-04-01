@@ -50,9 +50,11 @@ def extract_rows(connection, table_cfg: dict, row_limit: int = None) -> tuple[li
 
 
 def build_select_sql(table_name: str, columns: list[str], row_limit: int = None) -> str:
-    """Build a SELECT statement for the given table and columns."""
+    """Build a SELECT statement for the given table and columns.
+    Uses ROWNUM for Oracle 11g compatibility (FETCH FIRST is 12c+).
+    """
     col_list = ", ".join(f'"{c}"' for c in columns)
     sql = f'SELECT {col_list} FROM "{table_name}"'
     if row_limit:
-        sql += f" FETCH FIRST {int(row_limit)} ROWS ONLY"
+        sql += f" WHERE ROWNUM <= {int(row_limit)}"
     return sql
