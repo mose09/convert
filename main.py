@@ -6,10 +6,6 @@ import re
 import yaml
 from dotenv import load_dotenv
 
-from oracle_embeddings.db import get_connection
-from oracle_embeddings.extractor import extract_schema
-from oracle_embeddings.storage import save_schema_markdown, save_schema_txt
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
@@ -30,16 +26,11 @@ def load_config(config_path: str) -> dict:
     return yaml.safe_load(content)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Extract Oracle table/column schema to Markdown for Msty Knowledge Base"
-    )
-    parser.add_argument("--config", default="config.yaml", help="Path to config file")
-    parser.add_argument("--format", choices=["markdown", "txt"], default=None,
-                        help="Output format (overrides config)")
-    parser.add_argument("--owner", help="Schema owner (overrides config)")
-    parser.add_argument("--table", help="Extract specific table only")
-    args = parser.parse_args()
+def cmd_schema(args):
+    """Extract Oracle schema metadata to Markdown."""
+    from oracle_embeddings.db import get_connection
+    from oracle_embeddings.extractor import extract_schema
+    from oracle_embeddings.storage import save_schema_markdown, save_schema_txt
 
     load_dotenv()
     config = load_config(args.config)
@@ -65,7 +56,74 @@ def main():
         print(f"Columns: {total_cols}, Foreign Keys: {total_fks}")
     finally:
         connection.close()
-        logger.info("Connection closed")
+
+
+def cmd_query(args):
+    """Analyze MyBatis mapper XML files and extract relationships."""
+    from oracle_embeddings.mybatis_parser import parse_all_mappers
+    from oracle_embeddings.storage import save_query_markdown
+
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    mybatis_dir = args.mybatis_dir
+    if not os.path.isdir(mybatis_dir):
+        print(f"Error: Directory not found: {mybatis_dir}")
+        return
+
+    analysis = parse_all_mappers(mybatis_dir)
+    filepath = save_query_markdown(analysis, output_dir)
+
+    print(f"Query analysis exported: {filepath}")
+    print(f"Mappers: {analysis['mapper_count']}")
+    print(f"SQL statements: {analysis['statement_count']}")
+    print(f"Inferred relationships: {len(analysis['joins'])}")
+
+
+def cmd_all(args):
+    """Run both schema extraction and query analysis."""
+    print("=== Step 1: Schema Extraction ===")
+    cmd_schema(args)
+    print()
+    print("=== Step 2: Query Analysis ===")
+    cmd_query(args)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Oracle Schema & Query Analyzer for Msty Knowledge Base"
+    )
+    parser.add_argument("--config", default="config.yaml", help="Path to config file")
+
+    subparsers = parser.add_subparsers(dest="command", help="Available commands")
+
+    # schema command
+    schema_parser = subparsers.add_parser("schema", help="Extract Oracle schema metadata")
+    schema_parser.add_argument("--format", choices=["markdown", "txt"], default=None)
+    schema_parser.add_argument("--owner", help="Schema owner (overrides config)")
+    schema_parser.add_argument("--table", help="Extract specific table only")
+
+    # query command
+    query_parser = subparsers.add_parser("query", help="Analyze MyBatis mapper XML files")
+    query_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
+
+    # all command
+    all_parser = subparsers.add_parser("all", help="Run both schema and query analysis")
+    all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
+    all_parser.add_argument("--format", choices=["markdown", "txt"], default=None)
+    all_parser.add_argument("--owner", help="Schema owner (overrides config)")
+    all_parser.add_argument("--table", help="Extract specific table only")
+
+    args = parser.parse_args()
+
+    if args.command == "schema":
+        cmd_schema(args)
+    elif args.command == "query":
+        cmd_query(args)
+    elif args.command == "all":
+        cmd_all(args)
+    else:
+        parser.print_help()
 
 
 if __name__ == "__main__":
