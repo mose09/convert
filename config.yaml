@@ -1,26 +1,15 @@
 oracle:
   dsn: "localhost:1521/ORCL"
   user: "${ORACLE_USER}"
-  instant_client_dir: null  # Oracle Instant Client 경로 (예: "C:/oracle/instantclient_19_25")
+  schema_owner: "${ORACLE_USER}"  # 스키마 소유자 (다를 경우 별도 지정)
+  instant_client_dir: null        # Oracle Instant Client 경로 (예: "C:/oracle/instantclient_19_25")
 
-tables:
-  - name: "CUSTOMERS"
-    # columns: ["NAME", "EMAIL", "ADDRESS"]  # omit to use all columns
-
-# 임베딩 설정 (txt/markdown 포맷 사용 시 불필요)
-# embedding:
-#   api_base: "https://api.openai.com/v1"
-#   model: "text-embedding-3-small"
-#   batch_size: 100
-#   dimensions: 1536
+# 특정 테이블만 추출 (생략 시 해당 owner의 전체 테이블)
+# tables:
+#   - "CUSTOMERS"
+#   - "ORDERS"
+#   - "PRODUCTS"
 
 storage:
-  file_format: "markdown"  # parquet | jsonl | txt | markdown (txt/markdown: Msty KB용, 임베딩 불필요)
+  file_format: "markdown"  # markdown | txt
   output_dir: "./output"
-  write_to_oracle: false
-  oracle_target_table: "EMBEDDINGS_STORE"
-
-processing:
-  row_limit: null
-  text_template: "{column_name}: {value}"
-  row_separator: " | "

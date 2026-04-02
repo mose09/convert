@@ -1,14 +1,15 @@
-# Oracle Table Columns to LLM Embeddings Converter
+# Oracle Schema to Msty Knowledge Base Converter
 
-Oracle 테이블의 컬럼 데이터를 LLM 임베딩 벡터로 변환하는 Python 도구입니다.
+Oracle DB의 테이블/컬럼 스키마 메타데이터를 Markdown 파일로 추출하여, Msty Knowledge Base에 임포트하고 RAG로 활용하는 도구입니다.
 
-## 주요 기능
+## 추출 정보
 
-- Oracle DB 테이블에서 컬럼 데이터 자동 추출 (LOB/BLOB 타입 자동 제외)
-- 행 데이터를 커스터마이징 가능한 텍스트 템플릿으로 변환
-- OpenAI 호환 API를 통한 배치 임베딩 생성 (OpenAI, Azure, vLLM, Ollama 등)
-- Parquet / JSONL 파일 저장 또는 Oracle 테이블에 직접 저장
-- Msty Knowledge Base용 TXT/Markdown 내보내기 (임베딩 자동 스킵, 폐쇄망 지원)
+- 테이블 목록 및 테이블 코멘트
+- 컬럼 정보 (이름, 데이터타입, Nullable, 기본값, 코멘트)
+- Primary Key
+- Foreign Key 관계 (테이블 간 참조)
+- 인덱스 정보
+- 전체 FK 관계 요약 (Relationship Summary)
 
 ## 프로젝트 구조
 
@@ -18,12 +19,10 @@ convert/
 ├── config.yaml                # 설정 파일
 ├── .env.example               # 환경변수 템플릿
 ├── requirements.txt           # Python 의존성
-└── oracle_embeddings/         # 핵심 패키지
-    ├── db.py                  # Oracle DB 연결
-    ├── extractor.py           # 컬럼 메타데이터 및 데이터 추출
-    ├── textifier.py           # 행 데이터 → 텍스트 변환
-    ├── embedder.py            # LLM API 임베딩 생성
-    └── storage.py             # 결과 저장 (파일/Oracle)
+└── oracle_embeddings/
+    ├── db.py                  # Oracle DB 연결 (thick mode)
+    ├── extractor.py           # 스키마 메타데이터 추출
+    └── storage.py             # Markdown/TXT 파일 생성
 ```
 
 ## 설치
@@ -32,13 +31,9 @@ convert/
 pip install -r requirements.txt
 ```
 
-> `oracledb`는 thin mode(순수 Python)를 기본으로 사용하므로 Oracle Instant Client 설치가 필요 없습니다.
-
 ## 설정
 
 ### 1. 환경변수
-
-`.env.example`을 복사하여 `.env` 파일을 생성합니다.
 
 ```bash
 cp .env.example .env
@@ -47,142 +42,98 @@ cp .env.example .env
 ```env
 ORACLE_USER=myuser
 ORACLE_PASSWORD=changeme
-OPENAI_API_KEY=sk-...
 ```
 
 ### 2. config.yaml
 
 ```yaml
 oracle:
-  dsn: "localhost:1521/FREEPDB1"
+  dsn: "your_host:1521/your_service"
   user: "${ORACLE_USER}"
-  thick_mode: false
+  schema_owner: "${ORACLE_USER}"
+  instant_client_dir: "C:/oracle/instantclient_19_25"  # Oracle 11g는 필수
 
-tables:
-  - name: "CUSTOMERS"
-    columns: ["NAME", "EMAIL", "ADDRESS"]  # 생략 시 전체 컬럼 자동 탐색
-  - name: "PRODUCTS"
-    # columns 생략 = LOB/BLOB 제외 전체 컬럼
-
-embedding:
-  api_base: "https://api.openai.com/v1"
-  model: "text-embedding-3-small"
-  batch_size: 100
-  dimensions: 1536
+# 특정 테이블만 추출 (생략 시 전체 테이블)
+# tables:
+#   - "CUSTOMERS"
+#   - "ORDERS"
 
 storage:
-  file_format: "parquet"       # parquet | jsonl | txt | markdown
+  file_format: "markdown"  # markdown | txt
   output_dir: "./output"
-  write_to_oracle: false
-  oracle_target_table: "EMBEDDINGS_STORE"
-
-processing:
-  row_limit: null              # null = 전체 행
-  text_template: "{column_name}: {value}"
-  row_separator: " | "
 ```
 
 ## 사용법
 
-### 기본 실행
-
 ```bash
+# 전체 테이블 스키마 추출
 python main.py
-```
 
-### 옵션
-
-```bash
-# 특정 설정 파일 사용
-python main.py --config my_config.yaml
-
-# 특정 테이블만 처리
+# 특정 테이블만 추출
 python main.py --table CUSTOMERS
 
-# 드라이런 (임베딩 생성 없이 텍스트 변환 결과만 확인)
-python main.py --dry-run
+# 특정 스키마 소유자 지정
+python main.py --owner HR
 
-# 임베딩 생성 스킵 (txt/markdown 포맷은 자동 스킵)
-python main.py --skip-embedding
+# TXT 포맷으로 출력
+python main.py --format txt
 ```
 
-### 출력 예시
+## 출력 예시
 
-**텍스트 변환 (dry-run):**
-```
-[0] NAME: John Smith | EMAIL: john@example.com | ADDRESS: 123 Main St
-[1] NAME: Jane Doe | EMAIL: jane@example.com | ADDRESS: 456 Oak Ave
-```
+### Markdown (`output/HR_schema_20260402_120000.md`)
 
-**Parquet 출력:** `output/CUSTOMERS_20260401_120000.parquet`
-
-| row_index | NAME       | EMAIL            | embedding          |
-|-----------|------------|------------------|--------------------|
-| 0         | John Smith | john@example.com | [0.012, -0.034, …] |
-
-**JSONL 출력:** `output/CUSTOMERS_20260401_120000.jsonl`
-```json
-{"row_index": 0, "source_table": "CUSTOMERS", "data": {"NAME": "John Smith", "EMAIL": "john@example.com"}, "embedding": [0.012, -0.034, ...]}
-```
-
-### Msty Knowledge Base용 (폐쇄망 RAG)
-
-`file_format`을 `txt` 또는 `markdown`으로 설정하면 임베딩 생성을 건너뛰고 텍스트 파일만 생성합니다.
-생성된 파일을 Msty의 Knowledge Base에 임포트하면 Msty가 자체적으로 임베딩을 처리합니다.
-
-```yaml
-# config.yaml
-storage:
-  file_format: "markdown"  # 또는 "txt"
-  output_dir: "./output"
-```
-
-```bash
-python main.py  # OPENAI_API_KEY 불필요
-```
-
-**TXT 출력:** `output/CUSTOMERS_20260401_120000.txt`
-```
-NAME: John Smith | EMAIL: john@example.com | ADDRESS: 123 Main St
-
-NAME: Jane Doe | EMAIL: jane@example.com | ADDRESS: 456 Oak Ave
-```
-
-**Markdown 출력:** `output/CUSTOMERS_20260401_120000.md`
 ```markdown
-# CUSTOMERS
+# HR Database Schema
 
-Source: Oracle Table `CUSTOMERS` | Columns: NAME, EMAIL, ADDRESS
+Total tables: 3
 
 ---
 
-## Record 1
+## CUSTOMERS
 
-- **NAME**: John Smith
-- **EMAIL**: john@example.com
-- **ADDRESS**: 123 Main St
+> 고객 정보 관리 테이블
+
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| CUSTOMER_ID (PK) | NUMBER(10) | N | | 고객 고유 ID |
+| NAME | VARCHAR2(100) | N | | 고객명 |
+| EMAIL | VARCHAR2(200) | Y | | 이메일 주소 |
+
+**Primary Key**: CUSTOMER_ID
+
+---
+
+## ORDERS
+
+| Column | Type | Nullable | Default | Description |
+|--------|------|----------|---------|-------------|
+| ORDER_ID (PK) | NUMBER(10) | N | | 주문 ID |
+| CUSTOMER_ID | NUMBER(10) | N | | 고객 ID |
+
+**Foreign Keys**:
+- `CUSTOMER_ID` -> `CUSTOMERS.CUSTOMER_ID`
+
+---
+
+## Relationship Summary
+
+| Source Table | Column | -> | Target Table | Column |
+|-------------|--------|-----|-------------|--------|
+| ORDERS | CUSTOMER_ID | -> | CUSTOMERS | CUSTOMER_ID |
 ```
 
-**Msty 연동 순서:**
-1. `file_format: "markdown"` 설정 후 실행
-2. `output/` 폴더의 .md 파일을 Msty Knowledge Base에 드래그 앤 드롭
-3. Msty 채팅에서 해당 Knowledge Base 선택 후 RAG 질의
+## Msty 연동
 
-## 처리 파이프라인
+1. `python main.py` 실행
+2. `output/` 폴더의 `.md` 파일을 Msty Knowledge Base에 드래그 앤 드롭
+3. 채팅에서 Knowledge Base 선택 후 질의
 
-```
-Oracle DB → 컬럼 추출 → 텍스트 변환 → 임베딩 생성 → 저장
-              │              │              │            │
-        extractor.py    textifier.py   embedder.py   storage.py
-
-# Msty KB용 (txt/markdown 포맷)
-Oracle DB → 컬럼 추출 → 텍스트 변환 → 파일 저장 (임베딩 스킵)
-```
-
-1. **추출**: `all_tab_columns`에서 메타데이터를 조회하고 데이터를 SELECT
-2. **텍스트 변환**: 각 행을 템플릿 기반으로 문자열로 변환 (NULL 값 자동 제외)
-3. **임베딩 생성**: 배치 단위로 API 호출 (실패 시 최대 3회 재시도)
-4. **저장**: Parquet/JSONL 파일 또는 Oracle 테이블에 저장
+**질의 예시:**
+- "CUSTOMERS 테이블에 어떤 컬럼이 있어?"
+- "ORDERS 테이블과 연관된 테이블은?"
+- "고객 ID를 참조하는 테이블 목록 알려줘"
+- "VARCHAR2 타입인 컬럼 목록 보여줘"
 
 ## 라이선스
 

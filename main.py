@@ -2,15 +2,13 @@ import argparse
 import logging
 import os
 import re
-import sys
 
 import yaml
 from dotenv import load_dotenv
 
 from oracle_embeddings.db import get_connection
-from oracle_embeddings.extractor import extract_rows
-from oracle_embeddings.textifier import rows_to_texts
-from oracle_embeddings.storage import save, EMBEDDING_FREE_FORMATS
+from oracle_embeddings.extractor import extract_schema
+from oracle_embeddings.storage import save_schema_markdown, save_schema_txt
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,7 +22,6 @@ def load_config(config_path: str) -> dict:
     with open(config_path, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Resolve ${ENV_VAR} references
     def replace_env(match):
         var_name = match.group(1)
         return os.environ.get(var_name, match.group(0))
@@ -33,64 +30,39 @@ def load_config(config_path: str) -> dict:
     return yaml.safe_load(content)
 
 
-def process_table(config: dict, connection, table_cfg: dict, skip_embedding: bool = False):
-    """Process a single table: extract -> textify -> embed -> store."""
-    table_name = table_cfg["name"]
-    logger.info("Processing table: %s", table_name)
-
-    row_limit = config["processing"].get("row_limit")
-    columns, rows = extract_rows(connection, table_cfg, row_limit)
-
-    if not rows:
-        logger.warning("No rows found in %s, skipping", table_name)
-        return
-
-    file_format = config["storage"].get("file_format", "parquet")
-    need_embedding = not skip_embedding and file_format not in EMBEDDING_FREE_FORMATS
-
-    texts = rows_to_texts(columns, rows, config["processing"])
-
-    if need_embedding:
-        from oracle_embeddings.embedder import generate_embeddings
-        embeddings = generate_embeddings(texts, config["embedding"])
-    else:
-        embeddings = None
-        logger.info("Skipping embedding generation (format: %s)", file_format)
-
-    save(table_name, columns, rows, embeddings, config["storage"],
-         connection, config["processing"])
-
-    logger.info("Completed %s: %d rows processed", table_name, len(rows))
-
-
 def main():
-    parser = argparse.ArgumentParser(description="Convert Oracle table columns to LLM embeddings")
+    parser = argparse.ArgumentParser(
+        description="Extract Oracle table/column schema to Markdown for Msty Knowledge Base"
+    )
     parser.add_argument("--config", default="config.yaml", help="Path to config file")
-    parser.add_argument("--table", help="Process only this table (overrides config)")
-    parser.add_argument("--dry-run", action="store_true", help="Extract and textify only, skip embedding")
-    parser.add_argument("--skip-embedding", action="store_true", help="Skip embedding generation (auto-enabled for txt/markdown formats)")
+    parser.add_argument("--format", choices=["markdown", "txt"], default=None,
+                        help="Output format (overrides config)")
+    parser.add_argument("--owner", help="Schema owner (overrides config)")
+    parser.add_argument("--table", help="Extract specific table only")
     args = parser.parse_args()
 
     load_dotenv()
     config = load_config(args.config)
 
+    owner = args.owner or config.get("oracle", {}).get("schema_owner", os.environ.get("ORACLE_USER", ""))
+    table_names = [args.table] if args.table else config.get("tables")
+    file_format = args.format or config.get("storage", {}).get("file_format", "markdown")
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
     connection = get_connection(config)
     try:
-        tables = config["tables"]
-        if args.table:
-            tables = [{"name": args.table}]
+        schema = extract_schema(connection, owner, table_names)
 
-        for table_cfg in tables:
-            if args.dry_run:
-                row_limit = config["processing"].get("row_limit")
-                columns, rows = extract_rows(connection, table_cfg, row_limit)
-                texts = rows_to_texts(columns, rows, config["processing"])
-                for i, text in enumerate(texts[:5]):
-                    print(f"[{i}] {text}")
-                if len(texts) > 5:
-                    print(f"... and {len(texts) - 5} more rows")
-            else:
-                process_table(config, connection, table_cfg, args.skip_embedding)
+        if file_format == "markdown":
+            filepath = save_schema_markdown(schema, output_dir)
+        else:
+            filepath = save_schema_txt(schema, output_dir)
+
+        print(f"Schema exported: {filepath}")
+        print(f"Tables: {len(schema['tables'])}")
+        total_cols = sum(len(t['columns']) for t in schema['tables'])
+        total_fks = sum(len(t['foreign_keys']) for t in schema['tables'])
+        print(f"Columns: {total_cols}, Foreign Keys: {total_fks}")
     finally:
         connection.close()
         logger.info("Connection closed")
