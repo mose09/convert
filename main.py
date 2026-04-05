@@ -80,13 +80,81 @@ def cmd_query(args):
     print(f"Inferred relationships: {len(analysis['joins'])}")
 
 
-def cmd_all(args):
-    """Run both schema extraction and query analysis."""
+def cmd_erd(args):
+    """Generate Mermaid ERD from schema + query analysis."""
+    from oracle_embeddings.db import get_connection
+    from oracle_embeddings.extractor import extract_schema
+    from oracle_embeddings.mybatis_parser import parse_all_mappers
+    from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
+
+    load_dotenv()
+    config = load_config(args.config)
+
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    owner = args.owner or config.get("oracle", {}).get("schema_owner", os.environ.get("ORACLE_USER", ""))
+    table_names = [args.table] if args.table else config.get("tables")
+
+    # 1. Schema extraction
     print("=== Step 1: Schema Extraction ===")
+    connection = get_connection(config)
+    try:
+        schema = extract_schema(connection, owner, table_names)
+        print(f"Tables: {len(schema['tables'])}")
+    finally:
+        connection.close()
+
+    # 2. Query analysis
+    joins = []
+    if args.mybatis_dir:
+        if not os.path.isdir(args.mybatis_dir):
+            print(f"Error: Directory not found: {args.mybatis_dir}")
+            return
+        print("\n=== Step 2: Query Analysis ===")
+        analysis = parse_all_mappers(args.mybatis_dir)
+        joins = analysis["joins"]
+        print(f"Inferred relationships: {len(joins)}")
+    else:
+        print("\n=== Step 2: Query Analysis (skipped, no --mybatis-dir) ===")
+
+    # 3. LLM assist (optional)
+    llm_result = None
+    if args.llm_assist:
+        print("\n=== Step 3: LLM Assist ===")
+        from oracle_embeddings.llm_assist import assist_erd
+        llm_result = assist_erd(schema, joins, config)
+        extra = len(llm_result.get("inferred_relations", []))
+        groups = len(llm_result.get("domain_groups", {}))
+        print(f"LLM inferred relations: {extra}, Domain groups: {groups}")
+    else:
+        print("\n=== Step 3: LLM Assist (skipped, use --llm-assist to enable) ===")
+
+    # 4. Generate ERD
+    print("\n=== Step 4: Generate ERD ===")
+    mermaid_code = generate_mermaid_erd(schema, joins, llm_result)
+    erd_md = build_erd_markdown(mermaid_code, schema, joins, llm_result)
+
+    os.makedirs(output_dir, exist_ok=True)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = os.path.join(output_dir, f"erd_{owner}_{timestamp}.md")
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(erd_md)
+
+    print(f"ERD exported: {filepath}")
+    total_rels = len(joins) + (len(llm_result.get("inferred_relations", [])) if llm_result else 0)
+    print(f"Total relationships: {total_rels}")
+
+
+def cmd_all(args):
+    """Run schema, query, and erd generation."""
+    print("=== Schema Extraction ===")
     cmd_schema(args)
     print()
-    print("=== Step 2: Query Analysis ===")
+    print("=== Query Analysis ===")
     cmd_query(args)
+    print()
+    print("=== ERD Generation ===")
+    cmd_erd(args)
 
 
 def main():
@@ -107,12 +175,22 @@ def main():
     query_parser = subparsers.add_parser("query", help="Analyze MyBatis mapper XML files")
     query_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
 
+    # erd command
+    erd_parser = subparsers.add_parser("erd", help="Generate Mermaid ERD diagram")
+    erd_parser.add_argument("--mybatis-dir", help="Path to MyBatis mapper XML directory")
+    erd_parser.add_argument("--owner", help="Schema owner (overrides config)")
+    erd_parser.add_argument("--table", help="Extract specific table only")
+    erd_parser.add_argument("--llm-assist", action="store_true",
+                            help="Use local LLM for column descriptions, missing relations, domain grouping")
+
     # all command
-    all_parser = subparsers.add_parser("all", help="Run both schema and query analysis")
+    all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
     all_parser.add_argument("--format", choices=["markdown", "txt"], default=None)
     all_parser.add_argument("--owner", help="Schema owner (overrides config)")
     all_parser.add_argument("--table", help="Extract specific table only")
+    all_parser.add_argument("--llm-assist", action="store_true",
+                            help="Use local LLM for ERD enrichment")
 
     args = parser.parse_args()
 
@@ -120,6 +198,8 @@ def main():
         cmd_schema(args)
     elif args.command == "query":
         cmd_query(args)
+    elif args.command == "erd":
+        cmd_erd(args)
     elif args.command == "all":
         cmd_all(args)
     else:

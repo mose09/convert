@@ -13,3 +13,10 @@ oracle:
 storage:
   file_format: "markdown"  # markdown | txt
   output_dir: "./output"
+
+# LLM 설정 (erd --llm-assist 옵션 사용 시)
+# Ollama, vLLM, LocalAI 등 OpenAI 호환 API
+llm:
+  api_base: "http://localhost:11434/v1"  # Ollama 기본 주소
+  api_key: "ollama"                      # Ollama는 아무 값이나 가능
+  model: "llama3"                        # 사용할 모델명
