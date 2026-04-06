@@ -145,6 +145,52 @@ def cmd_erd(args):
     print(f"Total relationships: {total_rels}")
 
 
+def cmd_embed(args):
+    """Embed .md files into ChromaDB vector store."""
+    from oracle_embeddings.vector_store import embed_schema_md, embed_query_md
+
+    load_dotenv()
+    config = load_config(args.config)
+    db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
+
+    if args.schema_md:
+        print(f"=== Embedding Schema: {args.schema_md} ===")
+        count = embed_schema_md(args.schema_md, config, db_path)
+        print(f"Schema chunks embedded: {count}")
+
+    if args.query_md:
+        print(f"=== Embedding Query Analysis: {args.query_md} ===")
+        count = embed_query_md(args.query_md, config, db_path)
+        print(f"Query chunks embedded: {count}")
+
+    if not args.schema_md and not args.query_md:
+        print("Error: --schema-md 또는 --query-md 중 하나 이상 지정하세요.")
+        return
+
+    print(f"\nVector DB saved: {db_path}")
+
+
+def cmd_erd_rag(args):
+    """Generate Mermaid ERD using RAG (vector search + LLM)."""
+    from oracle_embeddings.rag_erd import generate_erd_with_rag
+
+    load_dotenv()
+    config = load_config(args.config)
+    db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    target_tables = None
+    if args.tables:
+        target_tables = [t.strip().upper() for t in args.tables.split(",")]
+
+    print("=== RAG-based ERD Generation ===")
+    if target_tables:
+        print(f"Target tables: {', '.join(target_tables)}")
+
+    filepath = generate_erd_with_rag(config, db_path, output_dir, target_tables)
+    print(f"ERD exported: {filepath}")
+
+
 def cmd_all(args):
     """Run schema, query, and erd generation."""
     print("=== Schema Extraction ===")
@@ -175,13 +221,22 @@ def main():
     query_parser = subparsers.add_parser("query", help="Analyze MyBatis mapper XML files")
     query_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
 
-    # erd command
-    erd_parser = subparsers.add_parser("erd", help="Generate Mermaid ERD diagram")
+    # erd command (direct, requires Oracle connection)
+    erd_parser = subparsers.add_parser("erd", help="Generate Mermaid ERD (direct DB access)")
     erd_parser.add_argument("--mybatis-dir", help="Path to MyBatis mapper XML directory")
     erd_parser.add_argument("--owner", help="Schema owner (overrides config)")
     erd_parser.add_argument("--table", help="Extract specific table only")
     erd_parser.add_argument("--llm-assist", action="store_true",
                             help="Use local LLM for column descriptions, missing relations, domain grouping")
+
+    # embed command
+    embed_parser = subparsers.add_parser("embed", help="Embed .md files into vector DB")
+    embed_parser.add_argument("--schema-md", help="Path to schema .md file")
+    embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
+
+    # erd-rag command
+    erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
+    erd_rag_parser.add_argument("--tables", help="Comma-separated table names to focus on")
 
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
@@ -200,6 +255,10 @@ def main():
         cmd_query(args)
     elif args.command == "erd":
         cmd_erd(args)
+    elif args.command == "embed":
+        cmd_embed(args)
+    elif args.command == "erd-rag":
+        cmd_erd_rag(args)
     elif args.command == "all":
         cmd_all(args)
     else:

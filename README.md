@@ -1,35 +1,54 @@
-# Oracle Schema & Query Analyzer for Msty Knowledge Base
+# Oracle Schema & Query Analyzer
 
-Oracle DB 스키마 메타데이터 + MyBatis 쿼리 분석 결과를 Markdown으로 추출하여, Msty Knowledge Base에서 RAG로 활용하는 도구입니다.
+Oracle DB 스키마 + MyBatis 쿼리를 분석하여 Markdown 추출, 벡터 DB 임베딩, RAG 기반 ERD 자동 생성까지 지원하는 도구입니다.
 
-FK가 없고 description이 없는 레거시 DB 환경에서도:
-- **쿼리의 JOIN 조건 분석**으로 테이블 간 관계를 추론
-- **로컬 LLM 보조**로 컬럼 의미 해석, 누락 관계 발견, 도메인 그룹핑
-- **Mermaid ERD 자동 생성**
+FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬 LLM**으로 테이블 관계를 추론합니다.
+
+## 전체 파이프라인
+
+```
+┌─────────────────────────────────────────────────────────┐
+│ Step 1. 데이터 추출                                      │
+│   python main.py schema       → 스키마 .md 생성          │
+│   python main.py query ./xml  → 쿼리분석 .md 생성        │
+├─────────────────────────────────────────────────────────┤
+│ Step 2. 벡터 DB 생성 (로컬 임베딩 모델)                    │
+│   python main.py embed --schema-md --query-md            │
+│   → ChromaDB에 임베딩 저장                                │
+├─────────────────────────────────────────────────────────┤
+│ Step 3. RAG 기반 ERD 생성 (로컬 LLM)                     │
+│   python main.py erd-rag                                 │
+│   → 벡터 검색 → LLM이 Mermaid ERD 코드 생성              │
+└─────────────────────────────────────────────────────────┘
+```
 
 ## 기능 요약
 
-| Command | 설명 | Oracle 접속 | LLM |
-|---------|------|:-----------:|:---:|
-| `schema` | 테이블/컬럼 스키마 추출 | O | X |
-| `query` | MyBatis XML 쿼리 분석 | X | X |
-| `erd` | Mermaid ERD 생성 | O | 선택 |
-| `all` | 위 3개 전부 실행 | O | 선택 |
+| Command | 설명 | Oracle 접속 | 임베딩 모델 | LLM |
+|---------|------|:-----------:|:----------:|:---:|
+| `schema` | 테이블/컬럼 스키마 .md 추출 | O | X | X |
+| `query` | MyBatis XML 쿼리 분석 .md | X | X | X |
+| `embed` | .md를 벡터 DB에 임베딩 | X | O | X |
+| `erd-rag` | RAG로 Mermaid ERD 생성 | X | O | O |
+| `erd` | 직접 DB 접속 ERD 생성 | O | X | 선택 |
+| `all` | schema + query + erd | O | X | 선택 |
 
 ## 프로젝트 구조
 
 ```
 convert/
-├── main.py                    # CLI 진입점 (schema / query / erd / all)
+├── main.py                    # CLI (schema/query/embed/erd-rag/erd/all)
 ├── config.yaml                # 설정 파일
 ├── .env.example               # 환경변수 템플릿
-├── requirements.txt           # Python 의존성
+├── requirements.txt
 └── oracle_embeddings/
     ├── db.py                  # Oracle DB 연결 (thick mode, 11g 호환)
     ├── extractor.py           # 스키마 메타데이터 추출
     ├── mybatis_parser.py      # MyBatis XML 파싱 & JOIN 분석
-    ├── erd_generator.py       # Mermaid ERD 코드 생성
-    ├── llm_assist.py          # 로컬 LLM 보조 (컬럼 해석, 관계 추론, 도메인 분류)
+    ├── vector_store.py        # ChromaDB 벡터 저장소 & 임베딩
+    ├── rag_erd.py             # RAG 기반 ERD 생성 (벡터 검색 + LLM)
+    ├── erd_generator.py       # 구조화 데이터 기반 ERD 생성
+    ├── llm_assist.py          # LLM 보조 (컬럼 해석, 관계 추론)
     └── storage.py             # Markdown 파일 생성
 ```
 
@@ -37,9 +56,6 @@ convert/
 
 ```bash
 pip install -r requirements.txt
-
-# ERD + LLM 보조 사용 시 추가 설치
-pip install openai
 ```
 
 ## 설정
@@ -51,109 +67,105 @@ cp .env.example .env
 ```env
 ORACLE_USER=myuser
 ORACLE_PASSWORD=changeme
+# LLM_API_KEY=your-key  # Ollama는 불필요
 ```
 
-`config.yaml`:
+### config.yaml
 
 ```yaml
 oracle:
   dsn: "your_host:1521/your_service"
   user: "${ORACLE_USER}"
   schema_owner: "${ORACLE_USER}"
-  instant_client_dir: "C:/oracle/instantclient_19_25"  # 11g 필수
+  instant_client_dir: "C:/oracle/instantclient_19_25"
 
 storage:
   file_format: "markdown"
   output_dir: "./output"
 
-# LLM 설정 (erd --llm-assist 옵션 사용 시)
-llm:
-  api_base: "http://localhost:11434/v1"  # Ollama
+vectordb:
+  db_path: "./vectordb"
+
+# 로컬 임베딩 모델
+embedding:
+  api_base: "http://localhost:11434/v1"
   api_key: "ollama"
-  model: "llama3"
+  model: "nomic-embed-text"    # 또는 bge-m3, mxbai-embed-large
+
+# 로컬 생성 모델
+llm:
+  api_base: "http://localhost:11434/v1"
+  api_key: "ollama"
+  model: "llama3"              # 또는 qwen2.5, mistral
 ```
 
 ## 사용법
 
-### 1. 스키마 추출
+### Step 1. 데이터 추출
 
 ```bash
+# 스키마 추출 (Oracle 접속 필요)
 python main.py schema
-python main.py schema --table CUSTOMERS
-python main.py schema --owner HR
-```
 
-### 2. 쿼리 분석 (Oracle 접속 불필요)
-
-```bash
+# 쿼리 분석 (Oracle 접속 불필요)
 python main.py query /path/to/mybatis/mapper
 ```
 
-### 3. ERD 생성
+### Step 2. 벡터 DB에 임베딩
 
 ```bash
-# 스키마만으로 ERD (JOIN 관계 없이)
-python main.py erd
+# 스키마 + 쿼리 둘 다 임베딩
+python main.py embed \
+  --schema-md ./output/HR_schema_20260402.md \
+  --query-md ./output/query_analysis_20260402.md
 
-# 스키마 + MyBatis JOIN 분석
-python main.py erd --mybatis-dir /path/to/mapper
+# 스키마만
+python main.py embed --schema-md ./output/HR_schema_20260402.md
 
-# 스키마 + JOIN + LLM 보조 (컬럼 해석, 누락 관계, 도메인 그룹핑)
-python main.py erd --mybatis-dir /path/to/mapper --llm-assist
+# 쿼리만
+python main.py embed --query-md ./output/query_analysis_20260402.md
 ```
 
-### 4. 전체 실행
+### Step 3. RAG 기반 ERD 생성
 
 ```bash
-python main.py all /path/to/mapper
-python main.py all /path/to/mapper --llm-assist
+# 전체 테이블 ERD
+python main.py erd-rag
+
+# 특정 테이블만 (관련 테이블 자동 포함)
+python main.py erd-rag --tables "ORDERS,CUSTOMERS,ORDER_ITEMS"
 ```
 
-## ERD 생성 파이프라인
+### 한번에 실행 예시
 
+```bash
+# 1) 스키마 추출
+python main.py schema
+
+# 2) 쿼리 분석
+python main.py query ./src/main/resources/mapper
+
+# 3) 임베딩
+python main.py embed \
+  --schema-md ./output/HR_schema_20260406.md \
+  --query-md ./output/query_analysis_20260406.md
+
+# 4) ERD 생성
+python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 ```
-                                  ┌─────────────────────┐
-Oracle DB ──> 스키마 추출          │  --llm-assist 옵션  │
-                │                 │                     │
-MyBatis XML ──> JOIN 관계 추출  ──>│ 1. 컬럼명 한국어 해석  │──> Mermaid ERD (.md)
-                                  │ 2. 누락 관계 추론    │
-                                  │ 3. 도메인 그룹핑     │
-                                  └─────────────────────┘
-```
-
-### LLM이 보조하는 영역
-
-| 영역 | 구조화 데이터 한계 | LLM 보완 |
-|------|-------------------|----------|
-| 컬럼명 해석 | `CUST_NO`, `ORD_DT` → 의미 불명 | "고객번호", "주문일자" 추론 |
-| 관계 카디널리티 | JOIN 존재 여부만 파악 | 1:1, 1:N, N:M 추론 |
-| 누락 관계 | 쿼리에 없는 관계 못 찾음 | 컬럼명 유사도로 관계 제안 |
-| 도메인 그룹핑 | 나열만 됨 | "고객", "주문", "정산" 등 분류 |
 
 ## 출력 예시
 
-### ERD (`output/erd_HR_20260402_120000.md`)
+### `output/erd_rag_ORDERS_CUSTOMERS_20260406_120000.md`
 
-```markdown
-# Entity Relationship Diagram
+````markdown
+# ERD (RAG-Generated)
 
-- Owner: HR
-- Tables: 5
-- Relationships (from JOIN): 4
-- Relationships (LLM inferred): 2
+로컬 임베딩 모델 + 벡터 DB(ChromaDB) + 로컬 LLM을 활용한 RAG 기반 ERD입니다.
 
-## Domain Groups
+## Mermaid ERD
 
-### 고객관리
-- CUSTOMERS - 고객 기본정보 테이블
-- CUSTOMER_ADDR - 고객 주소 정보
-
-### 주문관리
-- ORDERS - 주문 헤더
-- ORDER_ITEMS - 주문 상세 항목
-
-## ERD Diagram
-
+```mermaid
 erDiagram
     CUSTOMERS {
         NUMBER CUSTOMER_ID PK "고객 고유 ID"
@@ -163,26 +175,30 @@ erDiagram
     ORDERS {
         NUMBER ORDER_ID PK "주문 ID"
         NUMBER CUSTOMER_ID FK "고객 ID"
+        DATE ORD_DT "주문일자"
+    }
+    ORDER_ITEMS {
+        NUMBER ITEM_ID PK "항목 ID"
+        NUMBER ORDER_ID FK "주문 ID"
+        NUMBER PRODUCT_ID FK "상품 ID"
     }
     ORDERS }o--|| CUSTOMERS : "CUSTOMER_ID = CUSTOMER_ID"
+    ORDER_ITEMS }o--|| ORDERS : "ORDER_ID = ORDER_ID"
 ```
+````
 
 ### 렌더링 방법
 
-생성된 Mermaid 코드를 아래 방법으로 시각화할 수 있습니다:
-
-- **VS Code**: Mermaid 확장 설치 → `.md` 파일 미리보기
-- **Msty**: ERD .md 파일 내용을 채팅에 붙여넣기
+- **VS Code**: Mermaid Preview 확장 설치 → `.md` 파일 미리보기
 - **mermaid-cli**: `npm install -g @mermaid-js/mermaid-cli` → `mmdc -i erd.md -o erd.png`
 
 ## Msty RAG 활용
 
-생성된 `.md` 파일들을 Msty Knowledge Base에 임포트 후 질의:
+Step 1에서 생성한 `.md` 파일들을 Msty Knowledge Base에도 임포트하면 자연어 질의가 가능합니다:
 
 - "ORDERS 테이블과 연관된 테이블은?"
-- "CUSTOMER_ID 컬럼을 사용하는 테이블 관계 보여줘"
-- "가장 많이 조회되는 테이블은?"
-- "주문 도메인의 ERD를 Mermaid로 그려줘"
+- "CUSTOMER_ID를 사용하는 모든 테이블 보여줘"
+- "주문 도메인 ERD를 Mermaid로 그려줘"
 
 ## 라이선스
 

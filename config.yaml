@@ -14,9 +14,19 @@ storage:
   file_format: "markdown"  # markdown | txt
   output_dir: "./output"
 
-# LLM 설정 (erd --llm-assist 옵션 사용 시)
+# 벡터 DB 설정 (embed / erd-rag 커맨드)
+vectordb:
+  db_path: "./vectordb"
+
+# 임베딩 모델 설정 (폐쇄망 로컬 모델)
+embedding:
+  api_base: "http://localhost:11434/v1"  # Ollama 기본 주소
+  api_key: "ollama"
+  model: "nomic-embed-text"              # 임베딩 모델 (bge-m3, mxbai-embed-large 등)
+
+# LLM 설정 (erd --llm-assist, erd-rag 커맨드)
 # Ollama, vLLM, LocalAI 등 OpenAI 호환 API
 llm:
-  api_base: "http://localhost:11434/v1"  # Ollama 기본 주소
-  api_key: "ollama"                      # Ollama는 아무 값이나 가능
-  model: "llama3"                        # 사용할 모델명
+  api_base: "http://localhost:11434/v1"
+  api_key: "ollama"
+  model: "llama3"                        # 생성 모델 (qwen2.5, mistral 등)
