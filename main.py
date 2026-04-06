@@ -179,16 +179,28 @@ def cmd_erd_rag(args):
     db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
+    # Validate vector DB exists
+    if not os.path.isdir(db_path):
+        print(f"Error: Vector DB not found at '{os.path.abspath(db_path)}'")
+        print("먼저 'python main.py embed' 를 실행하세요.")
+        return
+
     target_tables = None
     if args.tables:
         target_tables = [t.strip().upper() for t in args.tables.split(",")]
 
     print("=== RAG-based ERD Generation ===")
+    print(f"Vector DB: {os.path.abspath(db_path)}")
+    print(f"Output dir: {os.path.abspath(output_dir)}")
     if target_tables:
         print(f"Target tables: {', '.join(target_tables)}")
 
-    filepath = generate_erd_with_rag(config, db_path, output_dir, target_tables)
-    print(f"ERD exported: {filepath}")
+    try:
+        filepath = generate_erd_with_rag(config, db_path, output_dir, target_tables)
+        print(f"\nERD exported: {os.path.abspath(filepath)}")
+    except Exception as e:
+        logger.error("ERD generation failed: %s", e, exc_info=True)
+        print(f"\nError: {e}")
 
 
 def cmd_all(args):
