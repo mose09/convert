@@ -17,6 +17,7 @@ storage:
 # 벡터 DB 설정 (embed / erd-rag 커맨드)
 vectordb:
   db_path: "./vectordb"
+  columns_per_chunk: 30  # 청크당 컬럼 수 (임베딩 모델 토큰 한도에 맞게 조절)
 
 # 임베딩 모델 설정 (폐쇄망 로컬 모델)
 embedding:

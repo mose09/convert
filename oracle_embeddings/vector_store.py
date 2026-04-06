@@ -29,6 +29,9 @@ def init_vectordb(db_path: str = "./vectordb"):
 
 def embed_schema_md(md_path: str, config: dict, db_path: str = "./vectordb"):
     """Read schema .md file, chunk it, embed, and store in ChromaDB."""
+    global COLUMNS_PER_CHUNK
+    COLUMNS_PER_CHUNK = config.get("vectordb", {}).get("columns_per_chunk", 30)
+
     client = init_vectordb(db_path)
     embedding_client = get_embedding_client(config)
     model = config.get("embedding", {}).get("model", "nomic-embed-text")
@@ -109,7 +112,7 @@ def search(query: str, config: dict, db_path: str = "./vectordb",
     return results
 
 
-COLUMNS_PER_CHUNK = 12  # 컬럼 그룹 분할 단위
+COLUMNS_PER_CHUNK = 30  # 컬럼 그룹 분할 단위 (config에서 변경 가능)
 
 
 def _chunk_schema_md(content: str) -> list[dict]:
