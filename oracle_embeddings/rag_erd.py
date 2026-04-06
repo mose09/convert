@@ -48,57 +48,73 @@ def generate_erd_with_rag(config: dict, db_path: str = "./vectordb",
 
 def _gather_context(config: dict, db_path: str,
                     target_tables: list[str] = None) -> str:
-    """Search vector DB to gather relevant schema and query context."""
+    """Search vector DB to gather relevant schema and query context.
+
+    Multi-pass retrieval:
+    1. JOIN 관계 정보 (모든 관계 또는 대상 테이블 관련)
+    2. 테이블 스키마 (overview + 컬럼 그룹 전부)
+    3. 제약조건 (PK/FK/Index)
+    4. 쿼리 상세 (JOIN이 있는 쿼리)
+    """
     context_parts = []
+    seen_texts = set()
 
-    # Query 1: Get all relationship info
-    rel_results = search(
+    def _add(label: str, results: list[dict]):
+        for r in results:
+            text_key = r["text"][:200]  # dedup by first 200 chars
+            if text_key not in seen_texts:
+                seen_texts.add(text_key)
+                context_parts.append(f"[{label}]\n{r['text']}")
+
+    # 1. JOIN 관계 정보
+    _add("JOIN RELATIONSHIPS", search(
         "테이블 간 JOIN 관계 relationship foreign key",
-        config, db_path, n_results=5,
-        collections=["queries"],
-    )
-    for r in rel_results:
-        context_parts.append(f"[QUERY RELATIONSHIP]\n{r['text']}")
+        config, db_path, n_results=10, collections=["queries"],
+    ))
 
-    # Query 2: Get table usage info
-    usage_results = search(
-        "테이블 사용 통계 SELECT INSERT UPDATE DELETE",
-        config, db_path, n_results=3,
-        collections=["queries"],
-    )
-    for r in usage_results:
-        if r["text"] not in [p.split("\n", 1)[-1] for p in context_parts]:
-            context_parts.append(f"[TABLE USAGE]\n{r['text']}")
-
-    # Query 3: Get specific table schemas
+    # 2. 테이블 스키마 - 대상 테이블별로 모든 청크(overview + columns + constraints) 수집
     if target_tables:
         for table in target_tables:
-            table_results = search(
-                f"{table} 테이블 컬럼 스키마 PRIMARY KEY",
-                config, db_path, n_results=2,
-                collections=["schema"],
-            )
-            for r in table_results:
-                context_parts.append(f"[SCHEMA: {table}]\n{r['text']}")
+            # 테이블 개요
+            _add(f"SCHEMA: {table}", search(
+                f"{table} table schema columns PRIMARY KEY",
+                config, db_path, n_results=5, collections=["schema"],
+            ))
+            # 컬럼 상세 (컬럼이 많은 테이블은 여러 청크)
+            _add(f"COLUMNS: {table}", search(
+                f"{table} column type nullable default",
+                config, db_path, n_results=5, collections=["schema"],
+            ))
     else:
-        # Get all schema info
-        schema_results = search(
+        # 전체 스키마 개요
+        _add("SCHEMA", search(
             "테이블 컬럼 데이터타입 PRIMARY KEY NOT NULL",
-            config, db_path, n_results=15,
-            collections=["schema"],
-        )
-        for r in schema_results:
-            context_parts.append(f"[SCHEMA]\n{r['text']}")
+            config, db_path, n_results=20, collections=["schema"],
+        ))
+        # 제약조건
+        _add("CONSTRAINTS", search(
+            "Primary Key Foreign Key Index constraint",
+            config, db_path, n_results=10, collections=["schema"],
+        ))
 
-    # Query 4: Get query details for JOIN context
-    query_results = search(
-        "SELECT JOIN FROM WHERE",
-        config, db_path, n_results=5,
-        collections=["queries"],
-    )
-    for r in query_results:
-        if r["text"] not in [p.split("\n", 1)[-1] for p in context_parts]:
-            context_parts.append(f"[QUERY DETAIL]\n{r['text']}")
+    # 3. 테이블 사용 통계
+    _add("TABLE USAGE", search(
+        "테이블 사용 통계 SELECT INSERT UPDATE DELETE",
+        config, db_path, n_results=3, collections=["queries"],
+    ))
+
+    # 4. 쿼리 상세 (JOIN 컨텍스트)
+    if target_tables:
+        for table in target_tables:
+            _add(f"QUERY: {table}", search(
+                f"{table} SELECT JOIN FROM",
+                config, db_path, n_results=3, collections=["queries"],
+            ))
+    else:
+        _add("QUERY DETAIL", search(
+            "SELECT JOIN FROM WHERE",
+            config, db_path, n_results=5, collections=["queries"],
+        ))
 
     return "\n\n---\n\n".join(context_parts)
 
