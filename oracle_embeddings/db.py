@@ -8,19 +8,19 @@ logger = logging.getLogger(__name__)
 
 def get_connection(config: dict) -> oracledb.Connection:
     """Create an Oracle database connection."""
-    oracle_cfg = config["oracle"]
+    oracle_cfg = config.get("oracle", {})
 
-    lib_dir = oracle_cfg.get("instant_client_dir")
-    try:
-        oracledb.init_oracle_client(lib_dir=lib_dir)
-        logger.info("Thick mode initialized (Oracle Instant Client)")
-    except oracledb.ProgrammingError:
-        # Already initialized
-        pass
+    lib_dir = os.environ.get("ORACLE_INSTANT_CLIENT_DIR") or oracle_cfg.get("instant_client_dir")
+    if lib_dir:
+        try:
+            oracledb.init_oracle_client(lib_dir=lib_dir)
+            logger.info("Thick mode initialized (Oracle Instant Client)")
+        except oracledb.ProgrammingError:
+            pass
 
-    user = os.environ.get("ORACLE_USER", oracle_cfg.get("user", ""))
+    user = os.environ.get("ORACLE_USER") or oracle_cfg.get("user", "")
     password = os.environ["ORACLE_PASSWORD"]
-    dsn = oracle_cfg["dsn"]
+    dsn = os.environ.get("ORACLE_DSN") or oracle_cfg.get("dsn", "")
 
     logger.info("Connecting to Oracle: %s@%s", user, dsn)
     connection = oracledb.connect(user=user, password=password, dsn=dsn)

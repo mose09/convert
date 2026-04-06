@@ -13,10 +13,8 @@ def get_llm_client(config: dict):
 
     llm_config = config.get("llm", {})
     api_key = os.environ.get("LLM_API_KEY") or llm_config.get("api_key", "ollama")
-    return OpenAI(
-        api_key=api_key,
-        base_url=llm_config.get("api_base", "http://localhost:11434/v1"),
-    )
+    api_base = os.environ.get("LLM_API_BASE") or llm_config.get("api_base", "http://localhost:11434/v1")
+    return OpenAI(api_key=api_key, base_url=api_base)
 
 
 def assist_erd(schema: dict, joins: list[dict], config: dict) -> dict:

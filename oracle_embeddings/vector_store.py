@@ -10,11 +10,9 @@ def get_embedding_client(config: dict):
     from openai import OpenAI
 
     embedding_cfg = config.get("embedding", {})
-    api_key = os.environ.get("LLM_API_KEY") or embedding_cfg.get("api_key", "ollama")
-    return OpenAI(
-        api_key=api_key,
-        base_url=embedding_cfg.get("api_base", "http://localhost:11434/v1"),
-    )
+    api_key = os.environ.get("EMBEDDING_API_KEY") or os.environ.get("LLM_API_KEY") or embedding_cfg.get("api_key", "ollama")
+    api_base = os.environ.get("EMBEDDING_API_BASE") or embedding_cfg.get("api_base", "http://localhost:11434/v1")
+    return OpenAI(api_key=api_key, base_url=api_base)
 
 
 def init_vectordb(db_path: str = "./vectordb"):

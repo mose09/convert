@@ -14,11 +14,10 @@ def generate_erd_with_rag(config: dict, db_path: str = "./vectordb",
     from openai import OpenAI
 
     llm_config = config.get("llm", {})
-    llm_client = OpenAI(
-        api_key=os.environ.get("LLM_API_KEY") or llm_config.get("api_key", "ollama"),
-        base_url=llm_config.get("api_base", "http://localhost:11434/v1"),
-    )
-    model = llm_config.get("model", "llama3")
+    api_key = os.environ.get("LLM_API_KEY") or llm_config.get("api_key", "ollama")
+    api_base = os.environ.get("LLM_API_BASE") or llm_config.get("api_base", "http://localhost:11434/v1")
+    llm_client = OpenAI(api_key=api_key, base_url=api_base)
+    model = os.environ.get("LLM_MODEL") or llm_config.get("model", "llama3")
 
     # Step 1: Gather context via RAG
     logger.info("Gathering context from vector DB...")

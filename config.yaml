@@ -1,8 +1,8 @@
 oracle:
-  dsn: "localhost:1521/ORCL"
+  dsn: "${ORACLE_DSN}"
   user: "${ORACLE_USER}"
-  schema_owner: "${ORACLE_USER}"  # 스키마 소유자 (다를 경우 별도 지정)
-  instant_client_dir: null        # Oracle Instant Client 경로 (예: "C:/oracle/instantclient_19_25")
+  schema_owner: "${ORACLE_SCHEMA_OWNER}"
+  instant_client_dir: "${ORACLE_INSTANT_CLIENT_DIR}"
 
 # 특정 테이블만 추출 (생략 시 해당 owner의 전체 테이블)
 # tables:
@@ -14,20 +14,16 @@ storage:
   file_format: "markdown"  # markdown | txt
   output_dir: "./output"
 
-# 벡터 DB 설정 (embed / erd-rag 커맨드)
 vectordb:
   db_path: "./vectordb"
-  columns_per_chunk: 30  # 청크당 컬럼 수 (임베딩 모델 토큰 한도에 맞게 조절)
+  columns_per_chunk: 30
 
-# 로컬 임베딩 모델 (폐쇄망)
 embedding:
-  api_base: "http://localhost:11434/v1"  # Ollama 기본 주소
-  api_key: "ollama"
-  model: "Qwen3-Embedding-8B"           # 8,192 토큰, 고성능 한국어 지원
+  api_base: "${EMBEDDING_API_BASE}"
+  api_key: "${EMBEDDING_API_KEY}"
+  model: "${EMBEDDING_MODEL}"
 
-# LLM 설정 (erd --llm-assist, erd-rag 커맨드)
-# Ollama, vLLM, LocalAI 등 OpenAI 호환 API
 llm:
-  api_base: "http://localhost:11434/v1"
-  api_key: "ollama"
-  model: "llama3"                        # 생성 모델 (qwen2.5, mistral 등)
+  api_base: "${LLM_API_BASE}"
+  api_key: "${LLM_API_KEY}"
+  model: "${LLM_MODEL}"
