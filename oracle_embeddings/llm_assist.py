@@ -12,8 +12,9 @@ def get_llm_client(config: dict):
     from openai import OpenAI
 
     llm_config = config.get("llm", {})
+    api_key = os.environ.get("LLM_API_KEY") or llm_config.get("api_key", "ollama")
     return OpenAI(
-        api_key=llm_config.get("api_key", "ollama"),
+        api_key=api_key,
         base_url=llm_config.get("api_base", "http://localhost:11434/v1"),
     )
 
