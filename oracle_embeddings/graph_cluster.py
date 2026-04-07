@@ -45,8 +45,12 @@ def find_groups(schema: dict, joins: list[dict],
             sub_groups = _split_large_group(comp, adj, max_group_size)
             final_groups.extend(sub_groups)
 
-    # Isolated tables (no relationships)
-    isolated = all_tables - tables_in_joins
+    # Isolated tables: XML에서 사용됐지만 JOIN이 없는 테이블만 포함
+    # XML에서 사용되지 않은 테이블은 그룹에서 제외
+    if query_tables:
+        isolated = (query_tables & all_tables) - tables_in_joins
+    else:
+        isolated = all_tables - tables_in_joins
     if isolated:
         # Split isolated into chunks
         isolated_list = sorted(isolated)
