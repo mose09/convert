@@ -43,6 +43,9 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
     for table_name in sorted(tables_in_erd):
         table_info = schema_table_map.get(table_name)
         if table_info:
+            table_comment = table_info.get("comment", "")
+            if table_comment:
+                lines.append(f"    %% {table_name}: {table_comment}")
             lines.append(f"    {table_name} {{")
             pk_cols = set(table_info.get("primary_keys", []))
             for col in table_info["columns"]:
@@ -58,9 +61,9 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
                     if not constraint:
                         constraint = " FK"
 
-                # LLM description as comment
+                # Description: schema comment 우선, 없으면 LLM description
                 desc_key = f"{table_name}.{col_name}"
-                desc = descriptions.get(desc_key, "")
+                desc = col.get("comment") or descriptions.get(desc_key, "")
                 comment = f' "{desc}"' if desc else ""
 
                 lines.append(f"        {data_type} {col_name}{constraint}{comment}")
