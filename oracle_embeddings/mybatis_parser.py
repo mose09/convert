@@ -148,25 +148,55 @@ def extract_joins(statements: list[dict]) -> list[dict]:
     return joins
 
 
+SQL_KEYWORDS = {
+    "ON", "WHERE", "SET", "AND", "OR", "LEFT", "RIGHT", "INNER", "OUTER",
+    "CROSS", "FULL", "JOIN", "SELECT", "INTO", "VALUES", "FROM", "AS",
+    "NOT", "NULL", "IN", "EXISTS", "BETWEEN", "LIKE", "CASE", "WHEN",
+    "THEN", "ELSE", "END", "GROUP", "ORDER", "BY", "HAVING", "UNION",
+    "ALL", "DISTINCT", "INSERT", "UPDATE", "DELETE", "CREATE", "ALTER",
+    "DROP", "TABLE", "INDEX", "VIEW", "IS", "ASC", "DESC", "LIMIT",
+    "OFFSET", "FETCH", "FIRST", "NEXT", "ROWS", "ONLY", "WITH",
+    "RECURSIVE", "MERGE", "USING", "MATCHED", "DUAL", "ROWNUM",
+    "SYSDATE", "SYSTIMESTAMP", "NVL", "NVL2", "DECODE", "SUBSTR",
+    "TRIM", "UPPER", "LOWER", "COUNT", "SUM", "AVG", "MAX", "MIN",
+    "OVER", "PARTITION", "ROW_NUMBER", "RANK", "DENSE_RANK",
+}
+
+
+def _is_valid_table_name(name: str) -> bool:
+    """Check if a name looks like a real table name, not an alias or keyword."""
+    name = name.upper()
+    # SQL keywords
+    if name in SQL_KEYWORDS:
+        return False
+    # Too short (likely alias: a, b, t1, dd, ee, ff)
+    if len(name) <= 2:
+        return False
+    # Pure numbers
+    if name.isdigit():
+        return False
+    # Single letter + number (t1, a1, etc.)
+    if len(name) == 2 and name[0].isalpha() and name[1].isdigit():
+        return False
+    return True
+
+
 def _parse_joins_from_sql(sql: str) -> list[dict]:
     """Parse JOIN conditions from SQL to extract table relationships."""
     results = []
 
     # Build alias map: "ORDERS O" -> O=ORDERS, "CUSTOMERS C" -> C=CUSTOMERS
     alias_map = {}
-    # FROM/JOIN table alias patterns
     table_pattern = r'(?:FROM|JOIN)\s+(\w+)\s+(\w+)'
     for match in re.finditer(table_pattern, sql):
         table, alias = match.groups()
-        if alias.upper() not in ("ON", "WHERE", "SET", "AND", "OR", "LEFT",
-                                  "RIGHT", "INNER", "OUTER", "CROSS", "FULL",
-                                  "JOIN", "SELECT", "INTO", "VALUES"):
+        if alias.upper() not in SQL_KEYWORDS and _is_valid_table_name(table):
             alias_map[alias.upper()] = table.upper()
 
     # Also map table to itself (no alias case)
     for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)(?:\s|,|$)', sql):
         table = match.group(1).upper()
-        if table not in alias_map.values():
+        if _is_valid_table_name(table) and table not in alias_map.values():
             alias_map[table] = table
 
     # Parse ON conditions: a.col = b.col
@@ -176,7 +206,7 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
         table1 = alias_map.get(alias1.upper(), alias1.upper())
         table2 = alias_map.get(alias2.upper(), alias2.upper())
 
-        if table1 != table2:
+        if table1 != table2 and _is_valid_table_name(table1) and _is_valid_table_name(table2):
             results.append({
                 "table1": table1,
                 "column1": col1.upper(),
@@ -215,8 +245,7 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         tables = set()
         for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)', sql):
             table = match.group(1)
-            if table not in ("SELECT", "WHERE", "AND", "OR", "ON", "SET",
-                             "INTO", "VALUES", "DUAL"):
+            if _is_valid_table_name(table):
                 tables.add(table)
 
         # INSERT INTO table
