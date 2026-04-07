@@ -209,6 +209,77 @@ def cmd_erd_rag(args):
         print(f"\nError: {e}")
 
 
+def cmd_erd_group(args):
+    """Generate ERD files grouped by relationship clusters."""
+    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md
+    from oracle_embeddings.graph_cluster import find_groups, build_summary_markdown
+    from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
+
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    max_size = args.max_size or 30
+
+    if not args.schema_md:
+        print("Error: --schema-md 는 필수입니다.")
+        return
+
+    # 1. Parse
+    print(f"=== Step 1: Parsing ===")
+    schema = parse_schema_md(args.schema_md)
+    print(f"  Tables: {len(schema['tables'])}")
+
+    joins = []
+    if args.query_md:
+        joins = parse_query_md(args.query_md)
+        print(f"  JOIN relationships: {len(joins)}")
+
+    # 2. Find groups
+    print(f"\n=== Step 2: Clustering (max {max_size} tables/group) ===")
+    groups = find_groups(schema, joins, max_size)
+    rel_groups = [g for g in groups if not g["is_isolated"]]
+    iso_groups = [g for g in groups if g["is_isolated"]]
+    print(f"  Groups with relationships: {len(rel_groups)}")
+    print(f"  Isolated table groups: {len(iso_groups)}")
+
+    # 3. Generate ERD per group
+    print(f"\n=== Step 3: Generating ERD files ===")
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    erd_dir = os.path.join(output_dir, f"erd_groups_{timestamp}")
+    os.makedirs(erd_dir, exist_ok=True)
+
+    for g in groups:
+        if g["is_isolated"]:
+            continue
+
+        group_schema = {
+            "owner": schema.get("owner", "UNKNOWN"),
+            "tables": g["schema_tables"],
+        }
+
+        mermaid_code = generate_mermaid_erd(group_schema, g["joins"])
+        erd_md = build_erd_markdown(mermaid_code, group_schema, g["joins"])
+
+        top_names = "_".join(g["top_tables"][:3])
+        filename = f"erd_group_{g['index']:02d}_{top_names}.md"
+        filepath = os.path.join(erd_dir, filename)
+
+        with open(filepath, "w", encoding="utf-8") as f:
+            f.write(erd_md)
+
+        print(f"  [{g['index']:02d}] {filename} ({g['table_count']} tables, {g['join_count']} rels)")
+
+    # 4. Summary file
+    summary = build_summary_markdown(groups)
+    summary_path = os.path.join(erd_dir, "00_summary.md")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(summary)
+
+    print(f"\n  Summary: {summary_path}")
+    print(f"\nERD files exported to: {os.path.abspath(erd_dir)}")
+    print(f"Total: {len([g for g in groups if not g['is_isolated']])} ERD files + 1 summary")
+
+
 def cmd_erd_md(args):
     """Generate Mermaid ERD from existing .md files (no DB, no LLM)."""
     from oracle_embeddings.md_parser import parse_schema_md, parse_query_md
@@ -332,6 +403,13 @@ def main():
     erd_md_parser.add_argument("--related-only", action="store_true",
                                help="Only include tables that have relationships")
 
+    # erd-group command (grouped by relationship clusters)
+    erd_group_parser = subparsers.add_parser("erd-group", help="Generate ERD files grouped by relationship clusters")
+    erd_group_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
+    erd_group_parser.add_argument("--query-md", help="Path to query analysis .md file")
+    erd_group_parser.add_argument("--max-size", type=int, default=30,
+                                  help="Max tables per group (default: 30)")
+
     # erd-rag command
     erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
     erd_rag_parser.add_argument("--tables", help="Comma-separated table names to focus on")
@@ -357,6 +435,8 @@ def main():
         cmd_embed(args)
     elif args.command == "erd-md":
         cmd_erd_md(args)
+    elif args.command == "erd-group":
+        cmd_erd_group(args)
     elif args.command == "erd-rag":
         cmd_erd_rag(args)
     elif args.command == "all":
