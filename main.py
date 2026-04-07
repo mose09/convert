@@ -211,7 +211,7 @@ def cmd_erd_rag(args):
 
 def cmd_erd_group(args):
     """Generate ERD files grouped by relationship clusters."""
-    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md
+    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md, parse_query_tables
     from oracle_embeddings.graph_cluster import find_groups, build_summary_markdown
     from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
 
@@ -229,17 +229,24 @@ def cmd_erd_group(args):
     print(f"  Tables: {len(schema['tables'])}")
 
     joins = []
+    query_tables = set()
     if args.query_md:
         joins = parse_query_md(args.query_md)
+        query_tables = parse_query_tables(args.query_md)
         print(f"  JOIN relationships: {len(joins)}")
+        print(f"  Tables in XML: {len(query_tables)}")
 
     # 2. Find groups
     print(f"\n=== Step 2: Clustering (max {max_size} tables/group) ===")
-    groups = find_groups(schema, joins, max_size)
+    groups, classification = find_groups(schema, joins, max_size, query_tables)
     rel_groups = [g for g in groups if not g["is_isolated"]]
     iso_groups = [g for g in groups if g["is_isolated"]]
     print(f"  Groups with relationships: {len(rel_groups)}")
     print(f"  Isolated table groups: {len(iso_groups)}")
+    print(f"  JOIN 관계 테이블: {len(classification['tables_with_joins'])}")
+    print(f"  XML에 있지만 JOIN 없음: {len(classification['tables_in_xml_no_join'])}")
+    print(f"  XML에 없는 테이블: {len(classification['tables_not_in_xml'])}")
+    print(f"  XML에만 있고 스키마에 없음: {len(classification['tables_in_xml_not_in_schema'])}")
 
     # 3. Generate ERD per group
     print(f"\n=== Step 3: Generating ERD files ===")
@@ -270,7 +277,7 @@ def cmd_erd_group(args):
         print(f"  [{g['index']:02d}] {filename} ({g['table_count']} tables, {g['join_count']} rels)")
 
     # 4. Summary file
-    summary = build_summary_markdown(groups)
+    summary = build_summary_markdown(groups, classification)
     summary_path = os.path.join(erd_dir, "00_summary.md")
     with open(summary_path, "w", encoding="utf-8") as f:
         f.write(summary)

@@ -138,3 +138,41 @@ def parse_query_md(md_path: str) -> list[dict]:
 
     logger.info("Parsed query analysis: %d joins from %s", len(joins), md_path)
     return joins
+
+
+def parse_query_tables(md_path: str) -> set:
+    """Extract all table names referenced in query analysis .md (from Table Usage Summary)."""
+    with open(md_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    tables = set()
+
+    # From Table Usage Summary: | TABLE_NAME | SELECT | INSERT | ...
+    for match in re.finditer(
+        r'^\|\s*(\w+)\s*\|\s*\d+\s*\|',
+        content, re.MULTILINE
+    ):
+        table = match.group(1)
+        if table not in ("Table", "--------", "-----"):
+            tables.add(table)
+
+    # Also from Inferred Relationships
+    for match in re.finditer(
+        r'^\|\s*(\w+)\s*\|\s*\w+\s*\|\s*<->',
+        content, re.MULTILINE
+    ):
+        table = match.group(1)
+        if table not in ("Table", "--------", "-----"):
+            tables.add(table)
+
+    # Right side of relationships
+    for match in re.finditer(
+        r'<->\s*\|\s*(\w+)\s*\|',
+        content, re.MULTILINE
+    ):
+        table = match.group(1)
+        if table not in ("Table", "--------", "-----"):
+            tables.add(table)
+
+    logger.info("Parsed query tables: %d tables from %s", len(tables), md_path)
+    return tables

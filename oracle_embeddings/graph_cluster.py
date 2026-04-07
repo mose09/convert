@@ -7,8 +7,12 @@ MAX_GROUP_SIZE = 30  # 그룹당 최대 테이블 수
 
 
 def find_groups(schema: dict, joins: list[dict],
-                max_group_size: int = MAX_GROUP_SIZE) -> list[dict]:
-    """Find table groups based on JOIN relationships using connected components."""
+                max_group_size: int = MAX_GROUP_SIZE,
+                query_tables: set = None) -> list[dict]:
+    """Find table groups based on JOIN relationships using connected components.
+
+    query_tables: XML 쿼리에서 사용된 전체 테이블 목록 (JOIN 여부 무관)
+    """
 
     # Build adjacency list
     adj = defaultdict(set)
@@ -90,12 +94,28 @@ def find_groups(schema: dict, joins: list[dict],
             "is_isolated": is_isolated,
         })
 
+    # Classify tables
+    if query_tables is None:
+        query_tables = set()
+
+    classification = {
+        "tables_with_joins": sorted(tables_in_joins & all_tables),
+        "tables_in_xml_no_join": sorted((query_tables - tables_in_joins) & all_tables),
+        "tables_not_in_xml": sorted(all_tables - query_tables - tables_in_joins),
+        "tables_in_xml_not_in_schema": sorted(query_tables - all_tables),
+    }
+
     logger.info("Found %d groups (%d with relationships, %d isolated)",
                 len(groups),
                 sum(1 for g in groups if not g["is_isolated"]),
                 sum(1 for g in groups if g["is_isolated"]))
+    logger.info("Classification: %d with JOINs, %d in XML no JOIN, %d not in XML, %d in XML not in schema",
+                len(classification["tables_with_joins"]),
+                len(classification["tables_in_xml_no_join"]),
+                len(classification["tables_not_in_xml"]),
+                len(classification["tables_in_xml_not_in_schema"]))
 
-    return groups
+    return groups, classification
 
 
 def _bfs(start: str, adj: dict, visited: set) -> set:
@@ -145,8 +165,8 @@ def _split_large_group(tables: set, adj: dict, max_size: int) -> list[set]:
     return sub_groups
 
 
-def build_summary_markdown(groups: list[dict]) -> str:
-    """Build a summary markdown showing all groups."""
+def build_summary_markdown(groups: list[dict], classification: dict = None) -> str:
+    """Build a summary markdown showing all groups and table classification."""
     lines = []
     lines.append("# ERD Groups Summary\n")
 
@@ -162,9 +182,21 @@ def build_summary_markdown(groups: list[dict]) -> str:
     lines.append(f"- Total relationships: {total_joins}")
     lines.append("")
 
+    # Table classification
+    if classification:
+        lines.append("## Table Classification\n")
+        c = classification
+        lines.append(f"| Category | Count |")
+        lines.append(f"|----------|-------|")
+        lines.append(f"| JOIN 관계가 있는 테이블 (ERD에 포함) | {len(c['tables_with_joins'])} |")
+        lines.append(f"| XML에 존재하지만 JOIN 없음 | {len(c['tables_in_xml_no_join'])} |")
+        lines.append(f"| XML에 존재하지 않는 테이블 | {len(c['tables_not_in_xml'])} |")
+        lines.append(f"| XML에 있지만 스키마에 없는 테이블 | {len(c['tables_in_xml_not_in_schema'])} |")
+        lines.append("")
+
     # Groups with relationships
     if rel_groups:
-        lines.append("## Groups with Relationships\n")
+        lines.append("## ERD Groups (with Relationships)\n")
         lines.append("| Group | Tables | Relationships | Key Tables |")
         lines.append("|-------|--------|---------------|------------|")
         for g in rel_groups:
@@ -172,13 +204,31 @@ def build_summary_markdown(groups: list[dict]) -> str:
             lines.append(f"| {g['index']:02d} | {g['table_count']} | {g['join_count']} | {top} |")
         lines.append("")
 
-    # Isolated tables
-    if iso_groups:
-        lines.append("## Isolated Tables (no relationships)\n")
-        for g in iso_groups:
-            lines.append(f"### Group {g['index']:02d} ({g['table_count']} tables)\n")
-            for t in g["tables"]:
-                lines.append(f"- {t}")
-            lines.append("")
+    # Tables in XML but no JOIN
+    if classification and classification["tables_in_xml_no_join"]:
+        tables = classification["tables_in_xml_no_join"]
+        lines.append(f"## XML에 존재하지만 JOIN 없는 테이블 ({len(tables)}개)\n")
+        lines.append("쿼리에서 단독 SELECT/INSERT/UPDATE/DELETE로 사용되지만 다른 테이블과 JOIN이 없는 테이블입니다.\n")
+        for t in tables:
+            lines.append(f"- {t}")
+        lines.append("")
+
+    # Tables not in XML
+    if classification and classification["tables_not_in_xml"]:
+        tables = classification["tables_not_in_xml"]
+        lines.append(f"## XML에 존재하지 않는 테이블 ({len(tables)}개)\n")
+        lines.append("스키마에는 있지만 MyBatis XML 쿼리에서 사용되지 않는 테이블입니다.\n")
+        for t in tables:
+            lines.append(f"- {t}")
+        lines.append("")
+
+    # Tables in XML but not in schema
+    if classification and classification["tables_in_xml_not_in_schema"]:
+        tables = classification["tables_in_xml_not_in_schema"]
+        lines.append(f"## XML에 있지만 스키마에 없는 테이블 ({len(tables)}개)\n")
+        lines.append("쿼리에서 참조하지만 스키마 .md에 정의가 없는 테이블입니다. (다른 스키마 소유이거나 뷰일 수 있음)\n")
+        for t in tables:
+            lines.append(f"- {t}")
+        lines.append("")
 
     return "\n".join(lines)
