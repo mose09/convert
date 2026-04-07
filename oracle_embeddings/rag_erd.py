@@ -134,10 +134,10 @@ def _generate_erd_llm(client, model: str, context: str,
 이 정보를 기반으로 Mermaid erDiagram 코드를 생성해주세요.{table_scope}
 
 ## 요구사항
-1. 모든 테이블을 포함하고, 각 테이블의 주요 컬럼(PK, FK, 중요 컬럼)을 포함
+1. 모든 테이블을 포함하고, 참고 데이터에 있는 모든 컬럼을 빠짐없이 포함할 것 (PK, FK뿐 아니라 일반 컬럼도 전부 포함)
 2. JOIN 분석에서 발견된 관계를 모두 반영
 3. 컬럼명이 같은 테이블 간의 누락된 관계도 추론해서 포함
-4. PK 컬럼은 PK로, FK 역할 컬럼은 FK로 표시
+4. PK 컬럼은 PK로, FK 역할 컬럼은 FK로, 일반 컬럼은 표시 없이 작성
 5. 관계 카디널리티(1:1, 1:N, N:M)를 PK/FK 기반으로 추론
 6. 한국어 코멘트를 컬럼 설명으로 추가 (약어 해석: CUST_NO→고객번호, ORD_DT→주문일자 등)
 
@@ -152,6 +152,7 @@ erDiagram
     TABLE_NAME {{
         TYPE COLUMN_NAME PK "설명"
         TYPE COLUMN_NAME FK "설명"
+        TYPE COLUMN_NAME "설명"
     }}
     TABLE_A ||--o{{ TABLE_B : "COLUMN = COLUMN"
 """
