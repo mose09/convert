@@ -102,6 +102,7 @@ def _enrich_batch(client, model: str, tables: list[dict], max_retries: int = 2) 
 2. 이미 코멘트가 있는 컬럼은 기존 코멘트를 유지하세요
 3. 코멘트는 간결하게 (2~10자) 작성하세요 (예: "고객번호", "주문일자", "배송상태코드")
 4. 테이블 코멘트가 없으면 테이블의 역할을 추론해서 작성하세요
+5. 약어를 확신할 수 없는 경우에는 빈 문자열 ""로 두세요. 억지로 추측하지 마세요.
 
 ## 테이블 정보
 
@@ -109,13 +110,14 @@ def _enrich_batch(client, model: str, tables: list[dict], max_retries: int = 2) 
 
 ## 응답 형식
 반드시 아래 JSON 형식으로만 응답하세요. 설명 없이 JSON만 출력하세요.
+확신할 수 없는 컬럼은 빈 문자열 ""로 두세요.
 
 {{
   "TABLE_NAME": {{
-    "table_comment": "테이블 설명",
+    "table_comment": "테이블 설명 또는 빈문자열",
     "columns": {{
       "COL1": "컬럼 설명",
-      "COL2": "컬럼 설명"
+      "COL2": ""
     }}
   }}
 }}"""
