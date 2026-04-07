@@ -168,20 +168,28 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
     results = []
 
     # Step 1: Build alias map from SQL syntax
-    # "FROM ORDERS o" -> alias o = ORDERS
-    # "JOIN CUSTOMERS AS c" -> alias c = CUSTOMERS
     alias_map = {}
     known_aliases = set()  # alias로 확인된 이름들
 
-    # Pattern: FROM/JOIN table_name alias (optional AS)
+    # Step 1a: Find subquery aliases: (...) alias or (...) AS alias
+    # These are NOT tables - mark them as known aliases to skip
+    subquery_alias_pattern = r'\)\s*(?:AS\s+)?(\w+)'
+    for match in re.finditer(subquery_alias_pattern, sql):
+        alias = match.group(1).upper()
+        if alias not in SQL_KEYWORDS:
+            known_aliases.add(alias)
+
+    # Step 1b: FROM/JOIN table_name alias (optional AS)
     table_alias_pattern = r'(?:FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?(\w+)'
     for match in re.finditer(table_alias_pattern, sql):
         table, alias = match.groups()
         if alias.upper() not in SQL_KEYWORDS:
-            alias_map[alias.upper()] = table.upper()
             known_aliases.add(alias.upper())
+            # Only map if the table part is not a keyword and not already an alias
+            if table.upper() not in SQL_KEYWORDS and table.upper() not in known_aliases:
+                alias_map[alias.upper()] = table.upper()
 
-    # Pattern: FROM/JOIN table_name (no alias, followed by WHERE/ON/newline/comma/end)
+    # Step 1c: FROM/JOIN table_name (no alias)
     no_alias_pattern = r'(?:FROM|JOIN)\s+(\w+)(?:\s*(?:WHERE|ON|,|\)|$))'
     for match in re.finditer(no_alias_pattern, sql):
         table = match.group(1).upper()
@@ -192,11 +200,11 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
     on_pattern = r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)'
     for match in re.finditer(on_pattern, sql):
         alias1, col1, alias2, col2 = match.groups()
-        table1 = alias_map.get(alias1.upper(), alias1.upper())
-        table2 = alias_map.get(alias2.upper(), alias2.upper())
+        table1 = alias_map.get(alias1.upper())
+        table2 = alias_map.get(alias2.upper())
 
-        # Skip if alias couldn't be resolved (still an alias, not a table)
-        if table1 != table2 and table1 not in SQL_KEYWORDS and table2 not in SQL_KEYWORDS:
+        # Only include if BOTH aliases resolved to real table names
+        if table1 and table2 and table1 != table2:
             results.append({
                 "table1": table1,
                 "column1": col1.upper(),
@@ -235,15 +243,21 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         tables = set()
         aliases_in_stmt = set()
 
-        # First pass: identify aliases
+        # Subquery aliases: (...) d1
+        for match in re.finditer(r'\)\s*(?:AS\s+)?(\w+)', sql):
+            alias = match.group(1)
+            if alias not in SQL_KEYWORDS:
+                aliases_in_stmt.add(alias)
+
+        # Table aliases: FROM TABLE t1
         for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?(\w+)', sql):
             table, alias = match.groups()
             if alias not in SQL_KEYWORDS:
                 aliases_in_stmt.add(alias)
-                if table not in SQL_KEYWORDS:
+                if table not in SQL_KEYWORDS and table not in aliases_in_stmt:
                     tables.add(table)
 
-        # Second pass: tables without alias
+        # Tables without alias
         for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)(?:\s*(?:WHERE|ON|,|\)|$))', sql):
             table = match.group(1)
             if table not in SQL_KEYWORDS and table not in aliases_in_stmt:
