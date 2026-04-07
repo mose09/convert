@@ -38,7 +38,7 @@ def embed_schema_md(md_path: str, config: dict, db_path: str = "./vectordb"):
         content = f.read()
 
     chunks = _chunk_schema_md(content)
-    logger.info("Schema: %d chunks from %s", len(chunks), md_path)
+    print(f"  Schema chunked: {len(chunks)} chunks from {md_path}")
 
     collection = client.get_or_create_collection(
         name="schema",
@@ -46,7 +46,6 @@ def embed_schema_md(md_path: str, config: dict, db_path: str = "./vectordb"):
     )
 
     _embed_and_store(collection, chunks, embedding_client, model, source=os.path.basename(md_path))
-    logger.info("Schema embedded: %d chunks stored", len(chunks))
     return len(chunks)
 
 
@@ -354,12 +353,24 @@ def _extract_table_names_from_sql(text: str) -> list[str]:
 def _embed_and_store(collection, chunks: list[dict], embedding_client,
                      model: str, source: str):
     """Embed chunks and store in ChromaDB collection with rich metadata."""
-    batch_size = 50
-    for i in range(0, len(chunks), batch_size):
+    batch_size = 10  # 안정성을 위해 작은 배치
+    total = len(chunks)
+    total_batches = (total + batch_size - 1) // batch_size
+    stored = 0
+    failed = 0
+
+    for i in range(0, total, batch_size):
         batch = chunks[i:i + batch_size]
+        batch_num = i // batch_size + 1
         texts = [c["text"] for c in batch]
 
-        embeddings = _get_embeddings_batch(embedding_client, model, texts)
+        try:
+            embeddings = _get_embeddings_batch(embedding_client, model, texts)
+        except Exception as e:
+            failed += len(batch)
+            logger.error("Embedding batch %d/%d failed: %s", batch_num, total_batches, e)
+            print(f"  [!] Batch {batch_num}/{total_batches} FAILED: {e}")
+            continue
 
         ids = [f"{source}_{i + j}" for j in range(len(batch))]
         metadatas = []
@@ -370,22 +381,33 @@ def _embed_and_store(collection, chunks: list[dict], embedding_client,
                 "table": c.get("table", ""),
                 "chunk_length": len(c["text"]),
             }
-            # 연관 테이블 목록 (검색 필터링에 활용)
             tables_mentioned = c.get("tables_mentioned", [])
             if tables_mentioned:
                 meta["tables_mentioned"] = ",".join(tables_mentioned)
-            # 컬럼명 목록 (스키마 청크에서 추출)
             columns = _extract_column_names(c["text"])
             if columns:
-                meta["columns"] = ",".join(columns[:30])  # ChromaDB 메타 크기 제한
+                meta["columns"] = ",".join(columns[:30])
             metadatas.append(meta)
 
-        collection.upsert(
-            ids=ids,
-            documents=texts,
-            embeddings=embeddings,
-            metadatas=metadatas,
-        )
+        try:
+            collection.upsert(
+                ids=ids,
+                documents=texts,
+                embeddings=embeddings,
+                metadatas=metadatas,
+            )
+            stored += len(batch)
+        except Exception as e:
+            failed += len(batch)
+            logger.error("ChromaDB upsert batch %d/%d failed: %s", batch_num, total_batches, e)
+            print(f"  [!] Batch {batch_num}/{total_batches} store FAILED: {e}")
+            continue
+
+        # 진행률 출력
+        if batch_num % 10 == 0 or batch_num == total_batches:
+            print(f"  [{batch_num}/{total_batches}] {stored}/{total} chunks embedded")
+
+    print(f"  Embedding complete: {stored} stored, {failed} failed (total {total})")
 
 
 def _extract_column_names(text: str) -> list[str]:
