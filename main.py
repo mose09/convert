@@ -197,7 +197,13 @@ def cmd_erd_rag(args):
 
     try:
         filepath = generate_erd_with_rag(config, db_path, output_dir, target_tables)
-        print(f"\nERD exported: {os.path.abspath(filepath)}")
+        if filepath is None:
+            print("\nERD generation aborted (no context).")
+        elif os.path.exists(filepath):
+            size = os.path.getsize(filepath)
+            print(f"\nERD exported: {os.path.abspath(filepath)} ({size} bytes)")
+        else:
+            print(f"\nError: File was not created at {os.path.abspath(filepath)}")
     except Exception as e:
         logger.error("ERD generation failed: %s", e, exc_info=True)
         print(f"\nError: {e}")

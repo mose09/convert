@@ -20,28 +20,37 @@ def generate_erd_with_rag(config: dict, db_path: str = "./vectordb",
     model = os.environ.get("LLM_MODEL") or llm_config.get("model", "llama3")
 
     # Step 1: Gather context via RAG
-    logger.info("Gathering context from vector DB...")
+    print(f"  LLM model: {model}")
+    print(f"  LLM API: {api_base}")
+    print("  Step 1: Gathering context from vector DB...")
     context = _gather_context(config, db_path, target_tables)
-    logger.info("Context gathered: %d characters", len(context))
+    print(f"  Context gathered: {len(context)} characters")
+
+    if not context.strip():
+        print("  WARNING: No context retrieved from vector DB!")
+        print("  'embed' 명령으로 .md 파일을 임베딩했는지 확인하세요.")
+        return None
 
     # Step 2: Generate ERD via LLM
-    logger.info("Generating Mermaid ERD via LLM...")
+    print(f"  Step 2: Generating Mermaid ERD via LLM ({model})...")
     mermaid_code = _generate_erd_llm(llm_client, model, context, target_tables)
+    print(f"  Mermaid code: {len(mermaid_code)} characters")
 
     # Step 3: Build output markdown
     erd_md = _build_output(mermaid_code, target_tables)
 
     # Step 4: Save
+    output_dir = os.path.abspath(output_dir)
     os.makedirs(output_dir, exist_ok=True)
     from datetime import datetime
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     scope = "_".join(target_tables[:3]) if target_tables else "full"
     filepath = os.path.join(output_dir, f"erd_rag_{scope}_{timestamp}.md")
 
+    print(f"  Step 3: Saving to {filepath}")
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(erd_md)
 
-    logger.info("RAG ERD exported: %s", filepath)
     return filepath
 
 
@@ -49,60 +58,52 @@ def _gather_context(config: dict, db_path: str,
                     target_tables: list[str] = None) -> str:
     """Search vector DB to gather relevant schema and query context.
 
-    Multi-pass retrieval:
-    1. JOIN 관계 정보 (모든 관계 또는 대상 테이블 관련)
-    2. 테이블 스키마 (overview + 컬럼 그룹 전부)
-    3. 제약조건 (PK/FK/Index)
-    4. 쿼리 상세 (JOIN이 있는 쿼리)
+    queries 컬렉션이 없어도 schema만으로 동작합니다.
     """
     context_parts = []
     seen_texts = set()
 
     def _add(label: str, results: list[dict]):
         for r in results:
-            text_key = r["text"][:200]  # dedup by first 200 chars
+            text_key = r["text"][:200]
             if text_key not in seen_texts:
                 seen_texts.add(text_key)
                 context_parts.append(f"[{label}]\n{r['text']}")
 
-    # 1. JOIN 관계 정보
+    # 1. JOIN 관계 정보 (queries 컬렉션 없으면 스킵)
     _add("JOIN RELATIONSHIPS", search(
         "테이블 간 JOIN 관계 relationship foreign key",
         config, db_path, n_results=10, collections=["queries"],
     ))
 
-    # 2. 테이블 스키마 - 대상 테이블별로 모든 청크(overview + columns + constraints) 수집
+    # 2. 테이블 스키마
     if target_tables:
         for table in target_tables:
-            # 테이블 개요
             _add(f"SCHEMA: {table}", search(
                 f"{table} table schema columns PRIMARY KEY",
                 config, db_path, n_results=5, collections=["schema"],
             ))
-            # 컬럼 상세 (컬럼이 많은 테이블은 여러 청크)
             _add(f"COLUMNS: {table}", search(
                 f"{table} column type nullable default",
                 config, db_path, n_results=5, collections=["schema"],
             ))
     else:
-        # 전체 스키마 개요
         _add("SCHEMA", search(
             "테이블 컬럼 데이터타입 PRIMARY KEY NOT NULL",
             config, db_path, n_results=20, collections=["schema"],
         ))
-        # 제약조건
         _add("CONSTRAINTS", search(
             "Primary Key Foreign Key Index constraint",
             config, db_path, n_results=10, collections=["schema"],
         ))
 
-    # 3. 테이블 사용 통계
+    # 3. 테이블 사용 통계 (queries 없으면 스킵)
     _add("TABLE USAGE", search(
         "테이블 사용 통계 SELECT INSERT UPDATE DELETE",
         config, db_path, n_results=3, collections=["queries"],
     ))
 
-    # 4. 쿼리 상세 (JOIN 컨텍스트)
+    # 4. 쿼리 상세
     if target_tables:
         for table in target_tables:
             _add(f"QUERY: {table}", search(
@@ -115,6 +116,10 @@ def _gather_context(config: dict, db_path: str,
             config, db_path, n_results=5, collections=["queries"],
         ))
 
+    if not context_parts:
+        logger.warning("No context found from vector DB!")
+
+    logger.info("Total context chunks: %d", len(context_parts))
     return "\n\n---\n\n".join(context_parts)
 
 
