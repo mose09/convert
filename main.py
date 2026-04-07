@@ -209,6 +209,78 @@ def cmd_erd_rag(args):
         print(f"\nError: {e}")
 
 
+def cmd_erd_md(args):
+    """Generate Mermaid ERD from existing .md files (no DB, no LLM)."""
+    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md
+    from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
+
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.schema_md:
+        print("Error: --schema-md 는 필수입니다.")
+        return
+
+    # 1. Parse schema .md
+    print(f"=== Step 1: Parsing Schema: {args.schema_md} ===")
+    schema = parse_schema_md(args.schema_md)
+    print(f"  Tables: {len(schema['tables'])}")
+    total_cols = sum(len(t['columns']) for t in schema['tables'])
+    print(f"  Columns: {total_cols}")
+
+    # 2. Parse query .md (optional)
+    joins = []
+    if args.query_md:
+        print(f"\n=== Step 2: Parsing Query Analysis: {args.query_md} ===")
+        joins = parse_query_md(args.query_md)
+        print(f"  JOIN relationships: {len(joins)}")
+    else:
+        print("\n=== Step 2: Query Analysis (skipped, no --query-md) ===")
+
+    # 3. Filter tables if specified
+    if args.tables:
+        target_tables = {t.strip().upper() for t in args.tables.split(",")}
+        # Include related tables from joins
+        related = set()
+        for j in joins:
+            if j["table1"] in target_tables or j["table2"] in target_tables:
+                related.add(j["table1"])
+                related.add(j["table2"])
+        target_tables.update(related)
+
+        schema["tables"] = [t for t in schema["tables"] if t["name"] in target_tables]
+        joins = [j for j in joins if j["table1"] in target_tables or j["table2"] in target_tables]
+        print(f"\n  Filtered to {len(schema['tables'])} tables (+ related)")
+
+    # 4. Filter: only tables with relationships (optional)
+    if args.related_only and not args.tables:
+        tables_with_rels = set()
+        for j in joins:
+            tables_with_rels.add(j["table1"])
+            tables_with_rels.add(j["table2"])
+        schema["tables"] = [t for t in schema["tables"] if t["name"] in tables_with_rels]
+        print(f"\n  Filtered to {len(schema['tables'])} tables (with relationships only)")
+
+    # 5. Generate ERD
+    print(f"\n=== Step 3: Generating Mermaid ERD ===")
+    mermaid_code = generate_mermaid_erd(schema, joins)
+    erd_md = build_erd_markdown(mermaid_code, schema, joins)
+
+    os.makedirs(output_dir, exist_ok=True)
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    owner = schema.get("owner", "UNKNOWN")
+    filepath = os.path.join(output_dir, f"erd_{owner}_{timestamp}.md")
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write(erd_md)
+
+    print(f"\nERD exported: {os.path.abspath(filepath)}")
+    print(f"Tables: {len(schema['tables'])}, Relationships: {len(joins)}")
+    lines = mermaid_code.count("\n") + 1
+    print(f"Mermaid code: {lines} lines")
+
+
 def cmd_all(args):
     """Run schema, query, and erd generation."""
     print("=== Schema Extraction ===")
@@ -252,6 +324,14 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # erd-md command (from .md files, no DB, no LLM)
+    erd_md_parser = subparsers.add_parser("erd-md", help="Generate ERD from .md files (no DB, no LLM)")
+    erd_md_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
+    erd_md_parser.add_argument("--query-md", help="Path to query analysis .md file")
+    erd_md_parser.add_argument("--tables", help="Comma-separated table names to focus on (+ related tables)")
+    erd_md_parser.add_argument("--related-only", action="store_true",
+                               help="Only include tables that have relationships")
+
     # erd-rag command
     erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
     erd_rag_parser.add_argument("--tables", help="Comma-separated table names to focus on")
@@ -275,6 +355,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "erd-md":
+        cmd_erd_md(args)
     elif args.command == "erd-rag":
         cmd_erd_rag(args)
     elif args.command == "all":
