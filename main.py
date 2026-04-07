@@ -209,6 +209,54 @@ def cmd_erd_rag(args):
         print(f"\nError: {e}")
 
 
+def cmd_enrich_schema(args):
+    """Enrich schema .md with LLM-generated comments for empty descriptions."""
+    from oracle_embeddings.md_parser import parse_schema_md
+    from oracle_embeddings.schema_enricher import enrich_schema, save_enriched_schema_md
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.schema_md:
+        print("Error: --schema-md 는 필수입니다.")
+        return
+
+    # 1. Parse existing schema
+    print(f"=== Step 1: Parsing Schema ===")
+    schema = parse_schema_md(args.schema_md)
+    total_tables = len(schema["tables"])
+    total_cols = sum(len(t["columns"]) for t in schema["tables"])
+    empty_table_comments = sum(1 for t in schema["tables"] if not t.get("comment"))
+    empty_col_comments = sum(
+        1 for t in schema["tables"] for c in t["columns"] if not c.get("comment")
+    )
+    print(f"  Tables: {total_tables}, Columns: {total_cols}")
+    print(f"  Empty table comments: {empty_table_comments}")
+    print(f"  Empty column comments: {empty_col_comments}")
+
+    if empty_table_comments == 0 and empty_col_comments == 0:
+        print("\nAll comments are already filled. Nothing to enrich.")
+        return
+
+    # 2. Enrich with LLM
+    print(f"\n=== Step 2: LLM Enrichment ===")
+    enriched_schema = enrich_schema(schema, config)
+
+    # 3. Save enriched schema
+    print(f"\n=== Step 3: Saving Enriched Schema ===")
+    filepath = save_enriched_schema_md(enriched_schema, output_dir)
+    print(f"  Enriched schema saved: {os.path.abspath(filepath)}")
+
+    # Stats
+    new_empty_table = sum(1 for t in enriched_schema["tables"] if not t.get("comment"))
+    new_empty_col = sum(
+        1 for t in enriched_schema["tables"] for c in t["columns"] if not c.get("comment")
+    )
+    print(f"\n  Table comments: {empty_table_comments} empty → {new_empty_table} empty")
+    print(f"  Column comments: {empty_col_comments} empty → {new_empty_col} empty")
+
+
 def cmd_erd_group(args):
     """Generate ERD files grouped by relationship clusters."""
     from oracle_embeddings.md_parser import parse_schema_md, parse_query_md, parse_query_tables
@@ -402,6 +450,10 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # enrich-schema command
+    enrich_parser = subparsers.add_parser("enrich-schema", help="Enrich schema with LLM-generated comments")
+    enrich_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
+
     # erd-md command (from .md files, no DB, no LLM)
     erd_md_parser = subparsers.add_parser("erd-md", help="Generate ERD from .md files (no DB, no LLM)")
     erd_md_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
@@ -440,6 +492,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "enrich-schema":
+        cmd_enrich_schema(args)
     elif args.command == "erd-md":
         cmd_erd_md(args)
     elif args.command == "erd-group":
