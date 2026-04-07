@@ -171,8 +171,14 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
     alias_map = {}
     known_aliases = set()  # alias로 확인된 이름들
 
-    # Step 1a: Find subquery aliases: (...) alias or (...) AS alias
-    # These are NOT tables - mark them as known aliases to skip
+    # Step 1a: Find CTE names: WITH name AS (...), name2 AS (...)
+    cte_pattern = r'(?:WITH|,)\s+(\w+)\s+AS\s*\('
+    for match in re.finditer(cte_pattern, sql):
+        cte_name = match.group(1).upper()
+        if cte_name not in SQL_KEYWORDS:
+            known_aliases.add(cte_name)
+
+    # Step 1b: Find subquery aliases: (...) alias or (...) AS alias
     subquery_alias_pattern = r'\)\s*(?:AS\s+)?(\w+)'
     for match in re.finditer(subquery_alias_pattern, sql):
         alias = match.group(1).upper()
@@ -242,6 +248,12 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         # Extract real table names (not aliases) from FROM/JOIN clauses
         tables = set()
         aliases_in_stmt = set()
+
+        # CTE names: WITH name AS (...)
+        for match in re.finditer(r'(?:WITH|,)\s+(\w+)\s+AS\s*\(', sql):
+            cte_name = match.group(1)
+            if cte_name not in SQL_KEYWORDS:
+                aliases_in_stmt.add(cte_name)
 
         # Subquery aliases: (...) d1
         for match in re.finditer(r'\)\s*(?:AS\s+)?(\w+)', sql):
