@@ -23,7 +23,7 @@ def _is_mybatis_mapper(filepath: str) -> bool:
     """Check if an XML file is a MyBatis mapper."""
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(1000)
+            head = f.read(5000)
         return "mapper" in head.lower() and ("<select" in head.lower() or
                "<insert" in head.lower() or "<update" in head.lower() or
                "<delete" in head.lower() or "namespace" in head.lower())
@@ -92,22 +92,16 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
 
 
 def _extract_sql_text(elem) -> str:
-    """Extract full SQL text from an XML element, including nested elements."""
+    """Extract full SQL text from an XML element, recursing all nested levels."""
     parts = []
     if elem.text:
         parts.append(elem.text)
     for child in elem:
-        # Handle <if>, <where>, <foreach>, <choose>, <trim>, <set>, <include> etc.
-        if child.text:
-            parts.append(child.text)
+        # Recursively extract from all nested dynamic SQL elements
+        # (<if>, <where>, <foreach>, <choose>, <when>, <otherwise>, <trim>, <set>, <include>, etc.)
+        parts.append(_extract_sql_text(child))
         if child.tail:
             parts.append(child.tail)
-        # Recurse into nested dynamic SQL elements
-        for sub in child:
-            if sub.text:
-                parts.append(sub.text)
-            if sub.tail:
-                parts.append(sub.tail)
     return _clean_sql(" ".join(parts))
 
 
@@ -315,13 +309,28 @@ def parse_all_mappers(base_dir: str) -> dict:
     xml_files = scan_mybatis_dir(base_dir)
 
     all_statements = []
+    xml_parse_count = 0
+    fallback_count = 0
+
     for filepath in xml_files:
         stmts = parse_mapper_file(filepath)
         all_statements.extend(stmts)
+        if stmts:
+            xml_parse_count += 1
         logger.info("Parsed %s: %d statements", os.path.basename(filepath), len(stmts))
+
+    # Count statements with JOIN keyword
+    join_stmts = [s for s in all_statements if "JOIN" in s["sql"].upper()]
 
     joins = extract_joins(all_statements)
     table_usage = extract_table_usage(all_statements)
+
+    print(f"  Mapper files found: {len(xml_files)}")
+    print(f"  Mappers with statements: {xml_parse_count}")
+    print(f"  Total SQL statements: {len(all_statements)}")
+    print(f"  Statements with JOIN: {len(join_stmts)}")
+    print(f"  Unique JOIN relationships: {len(joins)}")
+    print(f"  Tables referenced: {len(table_usage)}")
 
     return {
         "base_dir": base_dir,
