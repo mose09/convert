@@ -209,6 +209,82 @@ def cmd_erd_rag(args):
         print(f"\nError: {e}")
 
 
+def cmd_standardize(args):
+    """Generate standardization analysis report."""
+    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md
+    from oracle_embeddings.std_analyzer import analyze_all
+    from oracle_embeddings.std_report import generate_report
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.schema_md:
+        print("Error: --schema-md 는 필수입니다.")
+        return
+
+    # 1. Parse
+    print("=== Step 1: Parsing ===")
+    schema = parse_schema_md(args.schema_md)
+    print(f"  Tables: {len(schema['tables'])}")
+
+    joins = []
+    if args.query_md:
+        joins = parse_query_md(args.query_md)
+        print(f"  JOIN relationships: {len(joins)}")
+
+    # 2. Structure analysis
+    print("\n=== Step 2: Structure Analysis ===")
+    analysis = analyze_all(schema, joins)
+    print(f"  JOIN column mismatches: {len(analysis['join_column_mismatch'])}")
+    print(f"  Type inconsistencies: {len(analysis['type_inconsistency'])}")
+    print(f"  Naming violations: {len(analysis['naming_pattern'].get('violations', []))}")
+    print(f"  Code columns: {len(analysis['code_columns'])}")
+    print(f"  Y/N columns: {len(analysis['yn_columns'])}")
+
+    # 3. Data validation (optional, requires Oracle)
+    data_validation = {}
+    if args.validate_data:
+        print("\n=== Step 3: Data Validation (Oracle) ===")
+        from oracle_embeddings.db import get_connection
+        from oracle_embeddings.std_data_validator import (
+            validate_code_columns, validate_yn_columns, validate_column_usage
+        )
+
+        connection = get_connection(config)
+        try:
+            print("  Validating code columns...")
+            data_validation["code_validation"] = validate_code_columns(
+                connection, analysis["code_columns"]
+            )
+
+            print("  Validating Y/N columns...")
+            data_validation["yn_validation"] = validate_yn_columns(
+                connection, analysis["yn_columns"]
+            )
+
+            if not args.skip_usage:
+                print("  Validating column usage (may take time)...")
+                # Only validate tables that are in XML queries
+                query_tables = None
+                if args.query_md:
+                    from oracle_embeddings.md_parser import parse_query_tables
+                    query_tables = list(parse_query_tables(args.query_md))
+                data_validation["column_usage"] = validate_column_usage(
+                    connection, schema, query_tables
+                )
+        finally:
+            connection.close()
+    else:
+        print("\n=== Step 3: Data Validation (skipped, use --validate-data) ===")
+
+    # 4. Generate report
+    print("\n=== Step 4: Generating Report ===")
+    report_dir = generate_report(analysis, data_validation, config, output_dir)
+
+    print(f"\nReport generated: {os.path.abspath(report_dir)}")
+
+
 def cmd_enrich_schema(args):
     """Enrich schema .md with LLM-generated comments for empty descriptions."""
     from oracle_embeddings.md_parser import parse_schema_md
@@ -450,6 +526,15 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # standardize command
+    std_parser = subparsers.add_parser("standardize", help="Generate standardization analysis report")
+    std_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
+    std_parser.add_argument("--query-md", help="Path to query analysis .md file")
+    std_parser.add_argument("--validate-data", action="store_true",
+                            help="Validate actual data via Oracle (code columns, Y/N, usage)")
+    std_parser.add_argument("--skip-usage", action="store_true",
+                            help="Skip column usage validation (slow for large schemas)")
+
     # enrich-schema command
     enrich_parser = subparsers.add_parser("enrich-schema", help="Enrich schema with LLM-generated comments")
     enrich_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
@@ -492,6 +577,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "standardize":
+        cmd_standardize(args)
     elif args.command == "enrich-schema":
         cmd_enrich_schema(args)
     elif args.command == "erd-md":
