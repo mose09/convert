@@ -59,7 +59,7 @@ def cmd_schema(args):
 
 
 def cmd_query(args):
-    """Analyze MyBatis mapper XML files and extract relationships."""
+    """Analyze MyBatis/iBatis mapper XML files and extract relationships."""
     from oracle_embeddings.mybatis_parser import parse_all_mappers
     from oracle_embeddings.storage import save_query_markdown
 
@@ -71,7 +71,31 @@ def cmd_query(args):
         print(f"Error: Directory not found: {mybatis_dir}")
         return
 
+    # Load schema table names for filtering (optional)
+    valid_tables = None
+    if args.schema_md:
+        from oracle_embeddings.md_parser import parse_schema_md
+        schema = parse_schema_md(args.schema_md)
+        valid_tables = {t["name"] for t in schema["tables"]}
+        print(f"Schema filter: {len(valid_tables)} tables loaded")
+
     analysis = parse_all_mappers(mybatis_dir)
+
+    # Filter joins/usage to only include tables in schema
+    if valid_tables:
+        before_joins = len(analysis["joins"])
+        analysis["joins"] = [
+            j for j in analysis["joins"]
+            if j["table1"] in valid_tables and j["table2"] in valid_tables
+        ]
+        before_usage = len(analysis["table_usage"])
+        analysis["table_usage"] = {
+            k: v for k, v in analysis["table_usage"].items()
+            if k in valid_tables
+        }
+        print(f"  Filtered joins: {before_joins} → {len(analysis['joins'])}")
+        print(f"  Filtered tables: {before_usage} → {len(analysis['table_usage'])}")
+
     filepath = save_query_markdown(analysis, output_dir)
 
     print(f"Query analysis exported: {filepath}")
@@ -511,7 +535,8 @@ def main():
 
     # query command
     query_parser = subparsers.add_parser("query", help="Analyze MyBatis mapper XML files")
-    query_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
+    query_parser.add_argument("mybatis_dir", help="Path to MyBatis/iBatis mapper XML directory")
+    query_parser.add_argument("--schema-md", help="Path to schema .md file (filters out non-existent tables)")
 
     # erd command (direct, requires Oracle connection)
     erd_parser = subparsers.add_parser("erd", help="Generate Mermaid ERD (direct DB access)")
