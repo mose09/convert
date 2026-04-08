@@ -403,6 +403,7 @@ def cmd_erd_group(args):
     erd_dir = os.path.join(output_dir, f"erd_groups_{timestamp}")
     os.makedirs(erd_dir, exist_ok=True)
 
+    generated = 0
     for g in groups:
         if g["is_isolated"]:
             continue
@@ -412,7 +413,16 @@ def cmd_erd_group(args):
             "tables": g["schema_tables"],
         }
 
+        # Skip groups where no tables exist in schema
+        if not group_schema["tables"]:
+            continue
+
         mermaid_code = generate_mermaid_erd(group_schema, g["joins"])
+
+        # Skip if mermaid code is essentially empty (only header, no tables)
+        if mermaid_code.strip() == "erDiagram" or mermaid_code.count("{") == 0:
+            continue
+
         erd_md = build_erd_markdown(mermaid_code, group_schema, g["joins"])
 
         top_names = "_".join(g["top_tables"][:3])
@@ -427,6 +437,7 @@ def cmd_erd_group(args):
         html_filepath = os.path.join(erd_dir, html_filename)
         generate_html_erd(group_schema, g["joins"], html_filepath)
 
+        generated += 1
         print(f"  [{g['index']:02d}] {md_filename} + .html ({g['table_count']} tables, {g['join_count']} rels)")
 
     # 4. Summary file
@@ -437,7 +448,7 @@ def cmd_erd_group(args):
 
     print(f"\n  Summary: {summary_path}")
     print(f"\nERD files exported to: {os.path.abspath(erd_dir)}")
-    print(f"Total: {len([g for g in groups if not g['is_isolated']])} ERD files + 1 summary")
+    print(f"Total: {generated} ERD files + 1 summary")
 
 
 def cmd_erd_md(args):
