@@ -85,8 +85,14 @@ python main.py schema --table CUSTOMERS
 
 ### 2. 쿼리 분석 (Oracle 접속 불필요)
 
+MyBatis, iBatis XML 모두 지원합니다.
+
 ```bash
+# 기본 실행
 python main.py query /path/to/mybatis/mapper
+
+# 스키마 .md 기반 필터링 (스키마에 없는 테이블 제외, 권장)
+python main.py query /path/to/mybatis/mapper --schema-md ./output/스키마.md
 ```
 
 ### 3. 스키마 코멘트 보강 (LLM)
@@ -156,17 +162,19 @@ python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 ## 추천 워크플로우
 
 ```bash
-# 1. 데이터 추출
+# 1. 스키마 추출
 python main.py schema
-python main.py query /path/to/mapper
 
-# 2. 스키마 보강 (LLM 코멘트 추천)
+# 2. 쿼리 분석 (스키마 필터링 권장)
+python main.py query /path/to/mapper --schema-md ./output/스키마.md
+
+# 3. 스키마 보강 (LLM 코멘트 추천, 추천된 코멘트에 'LLM추천' 표기)
 python main.py enrich-schema --schema-md ./output/스키마.md
 
-# 3. 주제영역별 ERD 생성
+# 4. 주제영역별 ERD 생성
 python main.py erd-group --schema-md ./output/스키마_enriched.md --query-md ./output/query.md
 
-# 4. 표준화 리포트
+# 5. 표준화 리포트
 python main.py standardize --schema-md ./output/스키마_enriched.md --query-md ./output/query.md --validate-data
 ```
 
