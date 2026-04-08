@@ -53,14 +53,14 @@ def enrich_schema(schema: dict, config: dict) -> dict:
 
                 # Enrich table comment
                 if not table.get("comment") and table_result.get("table_comment"):
-                    table["comment"] = table_result["table_comment"]
+                    table["comment"] = table_result["table_comment"] + " (LLM추천)"
                     table_enriched += 1
 
                 # Enrich column comments
                 col_comments = table_result.get("columns", {})
                 for col in table["columns"]:
                     if not col.get("comment") and col["column_name"] in col_comments:
-                        col["comment"] = col_comments[col["column_name"]]
+                        col["comment"] = col_comments[col["column_name"]] + " (LLM추천)"
                         col_enriched += 1
 
             enriched_count += len(batch)
