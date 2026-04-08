@@ -7,44 +7,56 @@ logger = logging.getLogger(__name__)
 
 
 def scan_mybatis_dir(base_dir: str) -> list[str]:
-    """Find all MyBatis mapper XML files recursively."""
+    """Find all MyBatis/iBatis mapper XML files recursively."""
     xml_files = []
     for root, dirs, files in os.walk(base_dir):
         for f in files:
             if f.endswith(".xml"):
                 filepath = os.path.join(root, f)
-                if _is_mybatis_mapper(filepath):
+                if _is_sql_mapper(filepath):
                     xml_files.append(filepath)
-    logger.info("Found %d MyBatis mapper files in %s", len(xml_files), base_dir)
+    logger.info("Found %d mapper files (MyBatis + iBatis) in %s", len(xml_files), base_dir)
     return xml_files
 
 
-def _is_mybatis_mapper(filepath: str) -> bool:
-    """Check if an XML file is a MyBatis mapper."""
+def _is_sql_mapper(filepath: str) -> bool:
+    """Check if an XML file is a MyBatis or iBatis mapper."""
     try:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             head = f.read(5000)
-        return "mapper" in head.lower() and ("<select" in head.lower() or
-               "<insert" in head.lower() or "<update" in head.lower() or
-               "<delete" in head.lower() or "namespace" in head.lower())
+        head_lower = head.lower()
+
+        has_sql_tags = ("<select" in head_lower or "<insert" in head_lower or
+                        "<update" in head_lower or "<delete" in head_lower)
+
+        # MyBatis: <mapper namespace="...">
+        # iBatis: <sqlMap namespace="..."> or <sqlMap>
+        has_mapper_root = ("mapper" in head_lower or "sqlmap" in head_lower or
+                           "sql-map" in head_lower)
+
+        return has_sql_tags or (has_mapper_root and "namespace" in head_lower)
     except Exception:
         return False
 
 
 def parse_mapper_file(filepath: str) -> list[dict]:
-    """Parse a single MyBatis mapper XML and extract SQL statements."""
+    """Parse a MyBatis or iBatis mapper XML and extract SQL statements."""
     statements = []
     try:
-        tree = ET.parse(filepath)
-        root = tree.getroot()
+        # Read and strip DOCTYPE to avoid DTD resolution errors (common in iBatis)
+        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
+            xml_content = f.read()
+        xml_content = re.sub(r'<!DOCTYPE[^>]*>', '', xml_content)
+        root = ET.fromstring(xml_content)
     except ET.ParseError:
-        # MyBatis XML may have unresolved entities or includes
         return _parse_mapper_fallback(filepath)
 
     namespace = root.attrib.get("namespace", "")
     mapper_name = os.path.basename(filepath)
 
-    for tag in ("select", "insert", "update", "delete"):
+    # MyBatis: select/insert/update/delete
+    # iBatis: also uses same tags, but may have additional ones like statement, procedure
+    for tag in ("select", "insert", "update", "delete", "statement", "procedure"):
         for elem in root.iter(tag):
             stmt_id = elem.attrib.get("id", "unknown")
             sql_text = _extract_sql_text(elem)
@@ -75,7 +87,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
     namespace_match = re.search(r'namespace\s*=\s*["\']([^"\']+)', content)
     namespace = namespace_match.group(1) if namespace_match else ""
 
-    pattern = r'<(select|insert|update|delete)\s+[^>]*id\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</\1>'
+    pattern = r'<(select|insert|update|delete|statement|procedure)\s+[^>]*id\s*=\s*["\']([^"\']+)["\'][^>]*>(.*?)</\1>'
     for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
         tag, stmt_id, sql_body = match.groups()
         sql_text = _clean_sql(sql_body)
