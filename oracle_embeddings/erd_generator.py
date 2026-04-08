@@ -54,12 +54,16 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
                 constraint = ""
                 if col_name in pk_cols:
                     constraint = " PK"
-                # FK check
+                # Actual FK from schema constraints
                 fk_cols = {fk["column"] for fk in table_info.get("foreign_keys", [])}
-                join_fk_cols = _get_fk_columns_from_joins(table_name, joins + extra_relations)
-                if col_name in fk_cols or col_name in join_fk_cols:
+                if col_name in fk_cols:
                     if not constraint:
                         constraint = " FK"
+                # JOIN reference (not actual FK)
+                join_fk_cols = _get_fk_columns_from_joins(table_name, joins + extra_relations)
+                if col_name in join_fk_cols and col_name not in fk_cols:
+                    if not constraint:
+                        constraint = " \"REF\""
 
                 # Description: schema comment 우선, 없으면 LLM description
                 desc_key = f"{table_name}.{col_name}"

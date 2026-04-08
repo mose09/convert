@@ -14,20 +14,23 @@ def generate_html_erd(schema: dict, joins: list[dict], output_path: str) -> str:
     nodes = []
     for table in schema.get("tables", []):
         pk_cols = set(table.get("primary_keys", []))
-        fk_cols_from_joins = set()
+        real_fk_cols = {fk["column"] for fk in table.get("foreign_keys", [])}
+        join_ref_cols = set()
         for j in joins:
             if j["table1"] == table["name"]:
-                fk_cols_from_joins.add(j["column1"])
+                join_ref_cols.add(j["column1"])
             elif j["table2"] == table["name"]:
-                fk_cols_from_joins.add(j["column2"])
+                join_ref_cols.add(j["column2"])
 
         columns = []
         for col in table["columns"]:
             role = ""
             if col["column_name"] in pk_cols:
                 role = "PK"
-            elif col["column_name"] in fk_cols_from_joins:
+            elif col["column_name"] in real_fk_cols:
                 role = "FK"
+            elif col["column_name"] in join_ref_cols:
+                role = "REF"
             columns.append({
                 "name": col["column_name"],
                 "type": col["data_type"],
@@ -114,6 +117,7 @@ body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background: #1a1a2e; color:
 #detail-panel td {{ padding: 4px 6px; border-bottom: 1px solid #1a1a2e; }}
 #detail-panel .pk {{ color: #f0c040; font-weight: bold; }}
 #detail-panel .fk {{ color: #4ecdc4; font-weight: bold; }}
+#detail-panel .ref {{ color: #a78bfa; font-weight: bold; }}
 #detail-panel .close-btn {{
     position: absolute; top: 12px; right: 12px; cursor: pointer;
     color: #888; font-size: 20px;
@@ -322,7 +326,7 @@ function showDetail(d) {{
 
     const tbody = document.querySelector('#detail-columns tbody');
     tbody.innerHTML = d.columns.map(c => {{
-        const roleClass = c.role === 'PK' ? 'pk' : c.role === 'FK' ? 'fk' : '';
+        const roleClass = c.role === 'PK' ? 'pk' : c.role === 'FK' ? 'fk' : c.role === 'REF' ? 'ref' : '';
         const roleText = c.role ? `<span class="${{roleClass}}">${{c.role}}</span>` : '';
         return `<tr><td>${{c.name}}</td><td>${{c.type}}</td><td>${{roleText}}</td><td>${{c.comment}}</td></tr>`;
     }}).join('');
