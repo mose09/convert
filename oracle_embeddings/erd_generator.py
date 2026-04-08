@@ -59,15 +59,17 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
                 if col_name in fk_cols:
                     if not constraint:
                         constraint = " FK"
-                # JOIN reference (not actual FK)
+                # JOIN reference (not actual FK) - mark in comment instead
+                is_ref = False
                 join_fk_cols = _get_fk_columns_from_joins(table_name, joins + extra_relations)
-                if col_name in join_fk_cols and col_name not in fk_cols:
-                    if not constraint:
-                        constraint = " \"REF\""
+                if col_name in join_fk_cols and col_name not in fk_cols and not constraint:
+                    is_ref = True
 
                 # Description: schema comment 우선, 없으면 LLM description
                 desc_key = f"{table_name}.{col_name}"
                 desc = col.get("comment") or descriptions.get(desc_key, "")
+                if is_ref:
+                    desc = f"[REF] {desc}" if desc else "[REF]"
                 comment = f' "{desc}"' if desc else ""
 
                 lines.append(f"        {data_type} {col_name}{constraint}{comment}")
