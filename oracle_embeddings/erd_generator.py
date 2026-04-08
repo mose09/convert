@@ -68,18 +68,17 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
 
                 lines.append(f"        {data_type} {col_name}{constraint}{comment}")
             lines.append("    }")
-        else:
-            # Table not in schema (only in queries)
-            lines.append(f"    {table_name} {{")
-            lines.append(f'        VARCHAR2 UNKNOWN_SCHEMA "스키마 정보 없음"')
-            lines.append("    }")
+        # Skip tables not in schema (don't include UNKNOWN_SCHEMA)
 
     lines.append("")
 
-    # Write relationships from JOINs
+    # Write relationships from JOINs (only if both tables are in schema)
     seen_rels = set()
     all_joins = joins + extra_relations
     for j in all_joins:
+        t1, t2 = j["table1"], j["table2"]
+        if t1 not in schema_table_map or t2 not in schema_table_map:
+            continue
         t1, t2 = j["table1"], j["table2"]
         key = tuple(sorted([t1, t2]))
         if key in seen_rels:
