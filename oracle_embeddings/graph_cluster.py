@@ -236,3 +236,133 @@ def build_summary_markdown(groups: list[dict], classification: dict = None) -> s
         lines.append("")
 
     return "\n".join(lines)
+
+
+def build_summary_excel(groups: list[dict], classification: dict,
+                        schema: dict, output_path: str) -> str:
+    """Build an Excel summary with multiple sheets."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    wb = Workbook()
+
+    # Styles
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="0F3460", end_color="0F3460", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    # Build table comment lookup
+    table_comments = {}
+    for t in schema.get("tables", []):
+        table_comments[t["name"]] = t.get("comment") or ""
+
+    def _write_header(ws, headers):
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+
+    def _write_row(ws, row_num, values):
+        for col, v in enumerate(values, 1):
+            cell = ws.cell(row=row_num, column=col, value=v)
+            cell.border = thin_border
+
+    def _auto_width(ws):
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+
+    # === Sheet 1: Summary ===
+    ws_summary = wb.active
+    ws_summary.title = "Summary"
+    _write_header(ws_summary, ["Category", "Count"])
+
+    rel_groups = [g for g in groups if not g["is_isolated"]]
+    summary_data = [
+        ("ERD 그룹 수", len(rel_groups)),
+        ("JOIN 관계 테이블", len(classification.get("tables_with_joins", []))),
+        ("XML에 있지만 JOIN 없음 (단독)", len(classification.get("tables_in_xml_no_join", []))),
+        ("XML에 없는 테이블 (미사용)", len(classification.get("tables_not_in_xml", []))),
+        ("XML에만 있고 스키마에 없음", len(classification.get("tables_in_xml_not_in_schema", []))),
+    ]
+    for i, (cat, cnt) in enumerate(summary_data, 2):
+        _write_row(ws_summary, i, [cat, cnt])
+
+    # Group detail table
+    ws_summary.cell(row=len(summary_data) + 3, column=1, value="ERD Groups").font = Font(bold=True, size=12)
+    group_start = len(summary_data) + 4
+    _write_header_at = lambda ws, row, headers: [
+        setattr(ws.cell(row=row, column=c, value=h), 'font', header_font) or
+        setattr(ws.cell(row=row, column=c, value=h), 'fill', header_fill) or
+        setattr(ws.cell(row=row, column=c, value=h), 'border', thin_border)
+        for c, h in enumerate(headers, 1)
+    ]
+    headers = ["Group", "Tables", "Relationships", "Key Tables"]
+    for c, h in enumerate(headers, 1):
+        cell = ws_summary.cell(row=group_start, column=c, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+
+    for i, g in enumerate(rel_groups, group_start + 1):
+        _write_row(ws_summary, i, [
+            f"Group {g['index']:02d}",
+            g["table_count"],
+            g["join_count"],
+            ", ".join(g["top_tables"][:3]),
+        ])
+
+    _auto_width(ws_summary)
+
+    # === Sheet 2: JOIN 관계 테이블 ===
+    ws_join = wb.create_sheet("JOIN관계테이블")
+    _write_header(ws_join, ["No", "테이블 물리명", "테이블명(Comment)", "ERD Group", "관계 수"])
+
+    join_tables = classification.get("tables_with_joins", [])
+    for i, t in enumerate(join_tables, 2):
+        # Find which group this table belongs to
+        group_num = ""
+        rel_count = 0
+        for g in rel_groups:
+            if t in g["tables"]:
+                group_num = f"Group {g['index']:02d}"
+                rel_count = sum(1 for j in g["joins"] if j["table1"] == t or j["table2"] == t)
+                break
+        _write_row(ws_join, i, [i - 1, t, table_comments.get(t, ""), group_num, rel_count])
+
+    _auto_width(ws_join)
+
+    # === Sheet 3: 단독 테이블 ===
+    ws_solo = wb.create_sheet("단독테이블")
+    _write_header(ws_solo, ["No", "테이블 물리명", "테이블명(Comment)"])
+
+    solo_tables = classification.get("tables_in_xml_no_join", [])
+    for i, t in enumerate(solo_tables, 2):
+        _write_row(ws_solo, i, [i - 1, t, table_comments.get(t, "")])
+
+    _auto_width(ws_solo)
+
+    # === Sheet 4: XML에 없는 테이블 (미사용) ===
+    ws_unused = wb.create_sheet("미사용테이블")
+    _write_header(ws_unused, ["No", "테이블 물리명", "테이블명(Comment)"])
+
+    unused_tables = classification.get("tables_not_in_xml", [])
+    for i, t in enumerate(unused_tables, 2):
+        _write_row(ws_unused, i, [i - 1, t, table_comments.get(t, "")])
+
+    _auto_width(ws_unused)
+
+    # Save
+    wb.save(output_path)
+    logger.info("Summary Excel saved: %s", output_path)
+    return output_path

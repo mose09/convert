@@ -360,7 +360,7 @@ def cmd_enrich_schema(args):
 def cmd_erd_group(args):
     """Generate ERD files grouped by relationship clusters."""
     from oracle_embeddings.md_parser import parse_schema_md, parse_query_md, parse_query_tables
-    from oracle_embeddings.graph_cluster import find_groups, build_summary_markdown
+    from oracle_embeddings.graph_cluster import find_groups, build_summary_markdown, build_summary_excel
     from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
@@ -440,15 +440,19 @@ def cmd_erd_group(args):
         generated += 1
         print(f"  [{g['index']:02d}] {md_filename} + .html ({g['table_count']} tables, {g['join_count']} rels)")
 
-    # 4. Summary file
+    # 4. Summary files (markdown + excel)
     summary = build_summary_markdown(groups, classification)
-    summary_path = os.path.join(erd_dir, "00_summary.md")
-    with open(summary_path, "w", encoding="utf-8") as f:
+    summary_md_path = os.path.join(erd_dir, "00_summary.md")
+    with open(summary_md_path, "w", encoding="utf-8") as f:
         f.write(summary)
 
-    print(f"\n  Summary: {summary_path}")
+    excel_path = os.path.join(erd_dir, "00_summary.xlsx")
+    build_summary_excel(groups, classification, schema, excel_path)
+
+    print(f"\n  Summary: {summary_md_path}")
+    print(f"  Excel:   {excel_path}")
     print(f"\nERD files exported to: {os.path.abspath(erd_dir)}")
-    print(f"Total: {generated} ERD files + 1 summary")
+    print(f"Total: {generated} ERD files + summary (.md + .xlsx)")
 
 
 def cmd_erd_md(args):
