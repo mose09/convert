@@ -416,13 +416,18 @@ def cmd_erd_group(args):
         erd_md = build_erd_markdown(mermaid_code, group_schema, g["joins"])
 
         top_names = "_".join(g["top_tables"][:3])
-        filename = f"erd_group_{g['index']:02d}_{top_names}.md"
-        filepath = os.path.join(erd_dir, filename)
-
-        with open(filepath, "w", encoding="utf-8") as f:
+        md_filename = f"erd_group_{g['index']:02d}_{top_names}.md"
+        md_filepath = os.path.join(erd_dir, md_filename)
+        with open(md_filepath, "w", encoding="utf-8") as f:
             f.write(erd_md)
 
-        print(f"  [{g['index']:02d}] {filename} ({g['table_count']} tables, {g['join_count']} rels)")
+        # HTML ERD
+        from oracle_embeddings.erd_html import generate_html_erd
+        html_filename = f"erd_group_{g['index']:02d}_{top_names}.html"
+        html_filepath = os.path.join(erd_dir, html_filename)
+        generate_html_erd(group_schema, g["joins"], html_filepath)
+
+        print(f"  [{g['index']:02d}] {md_filename} + .html ({g['table_count']} tables, {g['join_count']} rels)")
 
     # 4. Summary file
     summary = build_summary_markdown(groups, classification)
@@ -501,10 +506,15 @@ def cmd_erd_md(args):
     with open(filepath, "w", encoding="utf-8") as f:
         f.write(erd_md)
 
-    print(f"\nERD exported: {os.path.abspath(filepath)}")
+    # HTML ERD
+    from oracle_embeddings.erd_html import generate_html_erd
+    html_path = os.path.join(output_dir, f"erd_{owner}_{timestamp}.html")
+    generate_html_erd(schema, joins, html_path)
+
+    print(f"\nERD exported:")
+    print(f"  Mermaid: {os.path.abspath(filepath)}")
+    print(f"  HTML:    {os.path.abspath(html_path)}")
     print(f"Tables: {len(schema['tables'])}, Relationships: {len(joins)}")
-    lines = mermaid_code.count("\n") + 1
-    print(f"Mermaid code: {lines} lines")
 
 
 def cmd_all(args):
