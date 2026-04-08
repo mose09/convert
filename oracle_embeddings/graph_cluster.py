@@ -87,8 +87,12 @@ def find_groups(schema: dict, joins: list[dict],
 
         is_isolated = len(group_joins) == 0
 
+        # Skip groups where no tables exist in schema
+        if not is_isolated and not group_schema_tables:
+            continue
+
         groups.append({
-            "index": idx + 1,
+            "index": 0,  # will be re-numbered below
             "tables": sorted(group_tables),
             "table_count": len(group_tables),
             "joins": group_joins,
@@ -97,6 +101,17 @@ def find_groups(schema: dict, joins: list[dict],
             "schema_tables": group_schema_tables,
             "is_isolated": is_isolated,
         })
+
+    # Re-number groups (only valid ones)
+    rel_idx = 0
+    iso_idx = 0
+    for g in groups:
+        if g["is_isolated"]:
+            iso_idx += 1
+            g["index"] = iso_idx
+        else:
+            rel_idx += 1
+            g["index"] = rel_idx
 
     # Classify tables
     if query_tables is None:
