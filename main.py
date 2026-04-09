@@ -384,11 +384,24 @@ def cmd_erd_group(args):
         print(f"  JOIN relationships: {len(joins)}")
         print(f"  Tables in XML: {len(query_tables)}")
 
-    # Parse common tables (manual)
+    # Parse common tables
     common_tables_manual = None
-    if args.common_tables:
+
+    # Priority: file > manual > auto-detect
+    if args.common_tables_file:
+        if os.path.exists(args.common_tables_file):
+            with open(args.common_tables_file, "r", encoding="utf-8") as f:
+                common_tables_manual = set()
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith("#"):
+                        common_tables_manual.add(line.upper())
+            print(f"  Common tables from file: {len(common_tables_manual)} tables")
+        else:
+            print(f"  Warning: {args.common_tables_file} not found, using auto-detect")
+    elif args.common_tables:
         common_tables_manual = {t.strip().upper() for t in args.common_tables.split(",")}
-        print(f"  Manual common tables: {', '.join(sorted(common_tables_manual))}")
+        print(f"  Manual common tables: {len(common_tables_manual)}")
 
     common_threshold = args.common_threshold
 
@@ -408,6 +421,20 @@ def cmd_erd_group(args):
     print(f"  XML에 있지만 JOIN 없음: {len(classification['tables_in_xml_no_join'])}")
     print(f"  XML에 없는 테이블: {len(classification['tables_not_in_xml'])}")
     print(f"  XML에만 있고 스키마에 없음: {len(classification['tables_in_xml_not_in_schema'])}")
+
+    # Export common tables file
+    if args.export_common:
+        common_list = classification.get("common_tables", [])
+        common_file_path = os.path.join(output_dir, "common_tables.txt")
+        with open(common_file_path, "w", encoding="utf-8") as f:
+            f.write("# 공통 테이블 목록 (자동 감지)\n")
+            f.write("# 잘못 분류된 테이블은 삭제하고, 빠진 테이블은 추가하세요.\n")
+            f.write("# '#'으로 시작하는 줄은 무시됩니다.\n")
+            f.write("#\n")
+            for t in common_list:
+                f.write(f"{t}\n")
+        print(f"\n  Common tables exported: {os.path.abspath(common_file_path)} ({len(common_list)} tables)")
+        print(f"  → 파일을 편집한 후 --common-tables-file 옵션으로 재실행하세요.")
 
     # 3. Generate ERD per group
     print(f"\n=== Step 3: Generating ERD files ===")
@@ -617,9 +644,13 @@ def main():
     erd_group_parser.add_argument("--max-size", type=int, default=30,
                                   help="Max tables per group (default: 30)")
     erd_group_parser.add_argument("--common-tables",
-                                  help="Comma-separated common table names to exclude from clustering (e.g. TB_USER,TB_DEPT)")
+                                  help="Comma-separated common table names (e.g. TB_USER,TB_DEPT)")
+    erd_group_parser.add_argument("--common-tables-file",
+                                  help="Path to common_tables.txt file")
     erd_group_parser.add_argument("--common-threshold", type=int, default=None,
                                   help="Auto-detect: tables joined with N+ others are common (default: auto)")
+    erd_group_parser.add_argument("--export-common", action="store_true",
+                                  help="Export auto-detected common tables to common_tables.txt")
 
     # erd-rag command
     erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
