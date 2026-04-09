@@ -118,7 +118,11 @@ def _extract_sql_text(elem) -> str:
 
 
 def _clean_sql(sql: str) -> str:
-    """Clean SQL text by removing MyBatis parameters and extra whitespace."""
+    """Clean SQL text by removing comments, MyBatis parameters and extra whitespace."""
+    # Remove block comments /* ... */
+    sql = re.sub(r'/\*.*?\*/', ' ', sql, flags=re.DOTALL)
+    # Remove line comments -- ...
+    sql = re.sub(r'--[^\n]*', ' ', sql)
     # Remove #{...} and ${...} parameters but keep structure
     sql = re.sub(r'#\{[^}]*\}', '?', sql)
     sql = re.sub(r'\$\{[^}]*\}', '?', sql)
