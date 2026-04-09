@@ -384,11 +384,24 @@ def cmd_erd_group(args):
         print(f"  JOIN relationships: {len(joins)}")
         print(f"  Tables in XML: {len(query_tables)}")
 
+    # Parse common tables (manual)
+    common_tables_manual = None
+    if args.common_tables:
+        common_tables_manual = {t.strip().upper() for t in args.common_tables.split(",")}
+        print(f"  Manual common tables: {', '.join(sorted(common_tables_manual))}")
+
+    common_threshold = args.common_threshold
+
     # 2. Find groups
     print(f"\n=== Step 2: Clustering (max {max_size} tables/group) ===")
-    groups, classification = find_groups(schema, joins, max_size, query_tables)
+    groups, classification = find_groups(
+        schema, joins, max_size, query_tables,
+        common_threshold=common_threshold,
+        common_tables_manual=common_tables_manual,
+    )
     rel_groups = [g for g in groups if not g["is_isolated"]]
     iso_groups = [g for g in groups if g["is_isolated"]]
+    print(f"  Common tables: {len(classification.get('common_tables', []))}")
     print(f"  Groups with relationships: {len(rel_groups)}")
     print(f"  Isolated table groups: {len(iso_groups)}")
     print(f"  JOIN 관계 테이블: {len(classification['tables_with_joins'])}")
@@ -603,6 +616,10 @@ def main():
     erd_group_parser.add_argument("--query-md", help="Path to query analysis .md file")
     erd_group_parser.add_argument("--max-size", type=int, default=30,
                                   help="Max tables per group (default: 30)")
+    erd_group_parser.add_argument("--common-tables",
+                                  help="Comma-separated common table names to exclude from clustering (e.g. TB_USER,TB_DEPT)")
+    erd_group_parser.add_argument("--common-threshold", type=int, default=None,
+                                  help="Auto-detect: tables joined with N+ others are common (default: auto)")
 
     # erd-rag command
     erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
