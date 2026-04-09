@@ -296,16 +296,29 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         if delete_match:
             tables.add(delete_match.group(1))
 
+        # Identify main table (FROM 바로 뒤) vs join tables
+        main_table = _extract_main_table(sql, aliases_in_stmt)
+        join_tables = set()
+        for match in re.finditer(r'JOIN\s+(\w+)', sql):
+            jt = match.group(1)
+            if jt not in SQL_KEYWORDS and jt not in aliases_in_stmt:
+                join_tables.add(jt)
+
         for table in tables:
             if table not in usage:
                 usage[table] = {
                     "select_count": 0, "insert_count": 0,
                     "update_count": 0, "delete_count": 0,
+                    "as_main_count": 0, "as_join_count": 0,
                     "mappers": set(), "queries": [],
                 }
             key = f"{stmt['type'].lower()}_count"
             if key in usage[table]:
                 usage[table][key] += 1
+            if table == main_table:
+                usage[table]["as_main_count"] += 1
+            if table in join_tables:
+                usage[table]["as_join_count"] += 1
             usage[table]["mappers"].add(stmt["mapper"])
             usage[table]["queries"].append(f"{stmt['mapper']}#{stmt['id']}")
 
@@ -314,6 +327,38 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         usage[table]["mappers"] = sorted(usage[table]["mappers"])
 
     return usage
+
+
+def _extract_main_table(sql: str, aliases: set) -> str:
+    """Extract the main table from SQL (first table after FROM, not after JOIN)."""
+    # SELECT ... FROM main_table ...
+    # INSERT INTO main_table ...
+    # UPDATE main_table ...
+    # DELETE FROM main_table ...
+
+    # INSERT INTO
+    m = re.search(r'INSERT\s+INTO\s+(\w+)', sql)
+    if m and m.group(1) not in SQL_KEYWORDS:
+        return m.group(1)
+
+    # UPDATE
+    m = re.search(r'UPDATE\s+(\w+)', sql)
+    if m and m.group(1) not in SQL_KEYWORDS:
+        return m.group(1)
+
+    # DELETE FROM
+    m = re.search(r'DELETE\s+FROM\s+(\w+)', sql)
+    if m and m.group(1) not in SQL_KEYWORDS:
+        return m.group(1)
+
+    # SELECT ... FROM table (first FROM, not inside subquery)
+    m = re.search(r'\bFROM\s+(\w+)', sql)
+    if m:
+        table = m.group(1)
+        if table not in SQL_KEYWORDS and table not in aliases:
+            return table
+
+    return None
 
 
 def parse_all_mappers(base_dir: str) -> dict:

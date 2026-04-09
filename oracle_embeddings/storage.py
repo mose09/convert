@@ -161,8 +161,8 @@ def _write_table_usage(f, table_usage: dict):
 
     f.write("## Table Usage Summary\n\n")
     f.write("각 테이블이 쿼리에서 어떻게 사용되는지 통계입니다.\n\n")
-    f.write("| Table | SELECT | INSERT | UPDATE | DELETE | Mappers |\n")
-    f.write("|-------|--------|--------|--------|--------|----------|\n")
+    f.write("| Table | SELECT | INSERT | UPDATE | DELETE | AsMain | AsJoin | Mappers |\n")
+    f.write("|-------|--------|--------|--------|--------|--------|--------|----------|\n")
 
     for table in sorted(table_usage.keys()):
         u = table_usage[table]
@@ -170,7 +170,8 @@ def _write_table_usage(f, table_usage: dict):
         if len(u["mappers"]) > 3:
             mappers += f" +{len(u['mappers']) - 3}"
         f.write(f"| {table} | {u['select_count']} | {u['insert_count']} "
-                f"| {u['update_count']} | {u['delete_count']} | {mappers} |\n")
+                f"| {u['update_count']} | {u['delete_count']} "
+                f"| {u.get('as_main_count', 0)} | {u.get('as_join_count', 0)} | {mappers} |\n")
 
     f.write("\n---\n\n")
 

@@ -176,3 +176,31 @@ def parse_query_tables(md_path: str) -> set:
 
     logger.info("Parsed query tables: %d tables from %s", len(tables), md_path)
     return tables
+
+
+def parse_table_usage(md_path: str) -> dict:
+    """Parse Table Usage Summary from query .md to get as_main/as_join counts."""
+    with open(md_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    usage = {}
+
+    # | TABLE | SELECT | INSERT | UPDATE | DELETE | AsMain | AsJoin | Mappers |
+    for match in re.finditer(
+        r'^\|\s*(\w+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|',
+        content, re.MULTILINE
+    ):
+        table = match.group(1)
+        if table in ("Table", "--------", "-----"):
+            continue
+        usage[table] = {
+            "select_count": int(match.group(2)),
+            "insert_count": int(match.group(3)),
+            "update_count": int(match.group(4)),
+            "delete_count": int(match.group(5)),
+            "as_main_count": int(match.group(6)),
+            "as_join_count": int(match.group(7)),
+        }
+
+    logger.info("Parsed table usage: %d tables from %s", len(usage), md_path)
+    return usage

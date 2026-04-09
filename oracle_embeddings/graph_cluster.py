@@ -10,12 +10,14 @@ def find_groups(schema: dict, joins: list[dict],
                 max_group_size: int = MAX_GROUP_SIZE,
                 query_tables: set = None,
                 common_threshold: int = None,
-                common_tables_manual: set = None) -> tuple:
+                common_tables_manual: set = None,
+                table_usage: dict = None) -> tuple:
     """Find table groups based on JOIN relationships using connected components.
 
     query_tables: XML 쿼리에서 사용된 전체 테이블 목록 (JOIN 여부 무관)
     common_threshold: 이 수 이상의 다른 테이블과 JOIN되면 공통 테이블로 간주
     common_tables_manual: 수동 지정 공통 테이블 목록
+    table_usage: mybatis_parser.extract_table_usage 결과 (as_main_count, as_join_count)
     """
 
     # Build adjacency list
@@ -27,18 +29,32 @@ def find_groups(schema: dict, joins: list[dict],
     all_tables = {t["name"] for t in schema.get("tables", [])}
     tables_in_joins = set(adj.keys())
 
-    # Detect common/hub tables (joined from too many tables)
-    if common_threshold is None:
-        # Auto-detect: tables connected to 30%+ of all joined tables, minimum 5
-        common_threshold = max(5, int(len(tables_in_joins) * 0.3))
-
+    # Detect common/reference tables
     common_tables = set()
     if common_tables_manual:
         common_tables = common_tables_manual & tables_in_joins
-    # Auto-detect high-connectivity tables
-    for table, neighbors in adj.items():
-        if len(neighbors) >= common_threshold:
-            common_tables.add(table)
+
+    # Auto-detect using main vs join ratio from SQL analysis
+    if not common_tables_manual and table_usage:
+        for table in tables_in_joins:
+            u = table_usage.get(table, {})
+            main_count = u.get("as_main_count", 0)
+            join_count = u.get("as_join_count", 0)
+            total = main_count + join_count
+            if total == 0:
+                continue
+            # JOIN으로만 사용되는 비율이 80% 이상이면 공통/참조 테이블
+            join_ratio = join_count / total
+            if join_ratio >= 0.8 and join_count >= 3:
+                common_tables.add(table)
+
+    # Fallback: connectivity threshold (table_usage가 없을 때)
+    if not common_tables_manual and not table_usage:
+        if common_threshold is None:
+            common_threshold = max(5, int(len(tables_in_joins) * 0.3))
+        for table, neighbors in adj.items():
+            if len(neighbors) >= common_threshold:
+                common_tables.add(table)
 
     if common_tables:
         logger.info("Common tables detected (%d): %s", len(common_tables), sorted(common_tables))

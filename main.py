@@ -359,7 +359,7 @@ def cmd_enrich_schema(args):
 
 def cmd_erd_group(args):
     """Generate ERD files grouped by relationship clusters."""
-    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md, parse_query_tables
+    from oracle_embeddings.md_parser import parse_schema_md, parse_query_md, parse_query_tables, parse_table_usage
     from oracle_embeddings.graph_cluster import find_groups, build_summary_markdown, build_summary_excel
     from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
 
@@ -378,11 +378,15 @@ def cmd_erd_group(args):
 
     joins = []
     query_tables = set()
+    table_usage = None
     if args.query_md:
         joins = parse_query_md(args.query_md)
         query_tables = parse_query_tables(args.query_md)
+        table_usage = parse_table_usage(args.query_md)
         print(f"  JOIN relationships: {len(joins)}")
         print(f"  Tables in XML: {len(query_tables)}")
+        if table_usage:
+            print(f"  Table usage data: {len(table_usage)} tables")
 
     # Parse common tables
     common_tables_manual = None
@@ -411,6 +415,7 @@ def cmd_erd_group(args):
         schema, joins, max_size, query_tables,
         common_threshold=common_threshold,
         common_tables_manual=common_tables_manual,
+        table_usage=table_usage,
     )
     rel_groups = [g for g in groups if not g["is_isolated"]]
     iso_groups = [g for g in groups if g["is_isolated"]]
@@ -428,11 +433,18 @@ def cmd_erd_group(args):
         common_file_path = os.path.join(output_dir, "common_tables.txt")
         with open(common_file_path, "w", encoding="utf-8") as f:
             f.write("# 공통 테이블 목록 (자동 감지)\n")
+            f.write("# 판단 기준: JOIN으로만 사용되는 비율이 80% 이상인 테이블\n")
             f.write("# 잘못 분류된 테이블은 삭제하고, 빠진 테이블은 추가하세요.\n")
             f.write("# '#'으로 시작하는 줄은 무시됩니다.\n")
             f.write("#\n")
+            f.write("# 테이블명 | 주테이블 횟수 | JOIN 횟수 | JOIN 비율\n")
             for t in common_list:
-                f.write(f"{t}\n")
+                u = (table_usage or {}).get(t, {})
+                main_c = u.get("as_main_count", 0)
+                join_c = u.get("as_join_count", 0)
+                total = main_c + join_c
+                ratio = f"{join_c/total*100:.0f}%" if total > 0 else "-"
+                f.write(f"{t}  # main:{main_c} join:{join_c} ratio:{ratio}\n")
         print(f"\n  Common tables exported: {os.path.abspath(common_file_path)} ({len(common_list)} tables)")
         print(f"  → 파일을 편집한 후 --common-tables-file 옵션으로 재실행하세요.")
 
