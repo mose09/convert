@@ -47,6 +47,8 @@ def parse_mapper_file(filepath: str) -> list[dict]:
         with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
             xml_content = f.read()
         xml_content = re.sub(r'<!DOCTYPE[^>]*>', '', xml_content)
+        # Remove XML comments <!-- ... -->
+        xml_content = re.sub(r'<!--.*?-->', '', xml_content, flags=re.DOTALL)
         root = ET.fromstring(xml_content)
     except ET.ParseError:
         return _parse_mapper_fallback(filepath)
@@ -83,6 +85,9 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
     except Exception as e:
         logger.warning("Cannot read %s: %s", filepath, e)
         return []
+
+    # Remove XML comments <!-- ... -->
+    content = re.sub(r'<!--.*?-->', '', content, flags=re.DOTALL)
 
     namespace_match = re.search(r'namespace\s*=\s*["\']([^"\']+)', content)
     namespace = namespace_match.group(1) if namespace_match else ""
