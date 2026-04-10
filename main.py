@@ -309,6 +309,43 @@ def cmd_standardize(args):
     print(f"\nReport generated: {os.path.abspath(report_dir)}")
 
 
+def cmd_audit_standards(args):
+    """Audit entire schema for naming standard violations."""
+    from oracle_embeddings.md_parser import parse_schema_md
+    from oracle_embeddings.standards_auditor import audit_schema, save_audit_markdown, save_audit_excel
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.schema_md:
+        print("Error: --schema-md 는 필수입니다.")
+        return
+
+    # 1. Parse schema
+    print(f"=== Step 1: Parsing Schema: {args.schema_md} ===")
+    schema = parse_schema_md(args.schema_md)
+    print(f"  Tables: {len(schema['tables'])}")
+
+    # 2. Audit
+    print("\n=== Step 2: Auditing ===")
+    audit = audit_schema(schema, terms_dict_path=args.terms_md)
+    print(f"  Total tables: {audit['total_tables']}, Invalid: {audit['invalid_tables']}")
+    print(f"  Total columns: {audit['total_columns']}, Invalid: {audit['invalid_columns']}")
+    print(f"  Severity: CRITICAL={audit['severity_counts'].get('CRITICAL', 0)}, "
+          f"HIGH={audit['severity_counts'].get('HIGH', 0)}, "
+          f"MEDIUM={audit['severity_counts'].get('MEDIUM', 0)}, "
+          f"LOW={audit['severity_counts'].get('LOW', 0)}")
+
+    # 3. Save reports
+    print("\n=== Step 3: Saving Reports ===")
+    md_path = save_audit_markdown(audit, output_dir)
+    xlsx_path = save_audit_excel(audit, output_dir)
+
+    print(f"\n  Markdown: {os.path.abspath(md_path)}")
+    print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+
+
 def cmd_gen_ddl(args):
     """Generate DDL from natural language request with validation."""
     from oracle_embeddings.ddl_generator import generate_ddl, save_ddl
@@ -901,6 +938,11 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # audit-standards command
+    audit_parser = subparsers.add_parser("audit-standards", help="Audit schema for naming standard violations")
+    audit_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
+    audit_parser.add_argument("--terms-md", help="Path to terms_dictionary .md file")
+
     # gen-ddl command
     gen_ddl_parser = subparsers.add_parser("gen-ddl", help="Generate DDL from natural language request")
     gen_ddl_parser.add_argument("--request", required=True, help="Natural language request (예: '고객 주문 이력 테이블 만들어줘')")
@@ -992,6 +1034,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "audit-standards":
+        cmd_audit_standards(args)
     elif args.command == "gen-ddl":
         cmd_gen_ddl(args)
     elif args.command == "validate-naming":

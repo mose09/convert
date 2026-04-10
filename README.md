@@ -15,6 +15,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
+| `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
@@ -179,7 +180,34 @@ python main.py gen-ddl \
 4. 검증 결과 출력 + DDL 파일 저장
 5. `--execute` 옵션 시 사용자 컨펌 후 Oracle 실행
 
-### 7. 네이밍룰 검증
+### 7. 표준 위반 자동 감지 (audit-standards)
+
+기존 스키마 전체를 대상으로 네이밍 표준 위반을 일괄 검사합니다.
+
+```bash
+# 기본 약어 사전으로 검사
+python main.py audit-standards --schema-md ./output/스키마.md
+
+# 용어사전 기반 검사 (권장)
+python main.py audit-standards \
+  --schema-md ./output/스키마.md \
+  --terms-md ./output/terms_dictionary.md
+```
+
+**산출물:**
+```
+output/
+├── audit_standards_TIMESTAMP.md    # Markdown 리포트
+└── audit_standards_TIMESTAMP.xlsx  # Excel (4개 시트)
+    ├── Sheet: Summary          (전체 집계)
+    ├── Sheet: Invalid Tables   (위반 테이블)
+    ├── Sheet: Invalid Columns  (위반 컬럼)
+    └── Sheet: Pattern Summary  (룰별 위반 빈도)
+```
+
+각 위반 항목에 심각도와 유사 약어 추천이 포함되어 마이그레이션/정비 작업 기초자료로 활용할 수 있습니다.
+
+### 8. 네이밍룰 검증
 
 용어사전 기반으로 테이블/컬럼명이 표준을 따르는지 검증합니다.
 
@@ -206,7 +234,7 @@ python main.py validate-naming --ddl create_tables.sql --terms-md ./output/terms
 | MEDIUM | UNKNOWN_ABBREVIATION | 용어사전에 없는 약어 (유사 약어 추천) |
 | LOW | PREFIX | 테이블 접두어 (TB, TBL 등) 미사용 |
 
-### 8. SQL 리뷰 (정적 분석 + LLM)
+### 9. SQL 리뷰 (정적 분석 + LLM)
 
 MyBatis/iBatis XML의 SQL 쿼리를 분석하여 비효율 패턴을 자동 감지합니다.
 
@@ -247,7 +275,7 @@ output/
     └── Sheet: LLM Review    (LLM 개선안, --llm-review 시)
 ```
 
-### 9. 표준화 분석 리포트
+### 10. 표준화 분석 리포트
 
 ```bash
 # 구조 분석만 (Oracle 불필요, LLM으로 표준안 제안)
