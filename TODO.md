@@ -18,4 +18,4 @@
 - [x] README.md 업데이트
 
 ## 마무리
-- [ ] Commit and push
+- [x] Commit and push
