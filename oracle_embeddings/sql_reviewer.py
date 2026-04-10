@@ -40,10 +40,10 @@ PATTERNS = [
     },
     {
         "id": "CARTESIAN_JOIN",
-        "name": "카티시안 곱 의심",
-        "severity": "CRITICAL",
-        "pattern": r'FROM\s+\w+\s*,\s*\w+\s+(?:WHERE(?!.*\w+\.\w+\s*=\s*\w+\.\w+))',
-        "description": "FROM 절에 여러 테이블을 콤마로 나열하면서 JOIN 조건이 없으면 카티시안 곱이 발생합니다.",
+        "name": "콤마 조인 사용 (카티시안 곱 가능성)",
+        "severity": "HIGH",
+        "pattern": r'FROM\s+\w+(?:\s+\w+)?\s*,\s*\w+',
+        "description": "FROM 절에 콤마로 나열된 테이블은 JOIN 조건을 빠뜨리면 카티시안 곱이 발생합니다.",
         "suggestion": "명시적 JOIN ON 절을 사용하세요.",
     },
     {
@@ -86,14 +86,7 @@ PATTERNS = [
         "description": "SELECT 절의 스칼라 서브쿼리는 행 단위로 실행되어 성능 문제를 일으킬 수 있습니다.",
         "suggestion": "JOIN으로 변경을 검토하세요.",
     },
-    {
-        "id": "MISSING_WHERE",
-        "name": "UPDATE/DELETE WHERE 없음",
-        "severity": "CRITICAL",
-        "pattern": r'^\s*(?:UPDATE|DELETE\s+FROM)\s+\w+(?!\s*.*\bWHERE\b)',
-        "description": "UPDATE 또는 DELETE 문에 WHERE 조건이 없으면 전체 테이블이 영향을 받습니다.",
-        "suggestion": "WHERE 조건을 반드시 추가하세요. 의도된 것이면 검토 후 실행하세요.",
-    },
+    # MISSING_WHERE는 review_statements에서 특별 처리 (regex로는 부정 조건 처리가 어려움)
 ]
 
 
@@ -106,6 +99,40 @@ def review_statements(statements: list[dict]) -> dict:
         sql = stmt["sql"]
         sql_upper = sql.upper()
         stmt_findings = []
+
+        # Special check: UPDATE/DELETE without WHERE clause
+        stmt_type_upper = stmt.get("type", "").upper()
+        if stmt_type_upper in ("UPDATE", "DELETE"):
+            if not re.search(r'\bWHERE\b', sql_upper, re.IGNORECASE | re.DOTALL):
+                missing_where_pattern = {
+                    "id": "MISSING_WHERE",
+                    "name": "UPDATE/DELETE WHERE 없음",
+                    "severity": "CRITICAL",
+                    "description": "UPDATE 또는 DELETE 문에 WHERE 조건이 없으면 전체 테이블이 영향을 받습니다.",
+                    "suggestion": "WHERE 조건을 반드시 추가하세요. 의도된 것이면 검토 후 실행하세요.",
+                }
+                finding = {
+                    "pattern_id": missing_where_pattern["id"],
+                    "pattern_name": missing_where_pattern["name"],
+                    "severity": missing_where_pattern["severity"],
+                    "mapper": stmt["mapper"],
+                    "stmt_id": stmt["id"],
+                    "stmt_type": stmt["type"],
+                    "description": missing_where_pattern["description"],
+                    "suggestion": missing_where_pattern["suggestion"],
+                    "sql_preview": sql[:200] + ("..." if len(sql) > 200 else ""),
+                }
+                stmt_findings.append(finding)
+                if "MISSING_WHERE" not in findings_by_pattern:
+                    findings_by_pattern["MISSING_WHERE"] = {
+                        "pattern": missing_where_pattern,
+                        "occurrences": [],
+                    }
+                findings_by_pattern["MISSING_WHERE"]["occurrences"].append({
+                    "mapper": stmt["mapper"],
+                    "stmt_id": stmt["id"],
+                    "stmt_type": stmt["type"],
+                })
 
         for pattern in PATTERNS:
             regex = pattern["pattern"]

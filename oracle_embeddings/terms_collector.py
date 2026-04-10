@@ -107,8 +107,8 @@ def merge_words(schema_words: dict, react_words: dict) -> list[dict]:
 
     merged = []
     for word in sorted(all_keys):
-        sw = schema_words.get(word, {"db_count": 0, "sources": set()})
-        rw = react_words.get(word, {"fe_count": 0, "sources": set()})
+        sw = schema_words.get(word, {"db_count": 0, "fe_count": 0, "sources": set()})
+        rw = react_words.get(word, {"db_count": 0, "fe_count": 0, "sources": set()})
 
         db_count = sw.get("db_count", 0)
         fe_count = rw.get("fe_count", 0)

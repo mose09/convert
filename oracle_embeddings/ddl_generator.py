@@ -116,14 +116,17 @@ def _load_schema_samples(schema_md: str, limit: int) -> str:
 
     try:
         schema = parse_schema_md(schema_md)
-    except Exception:
+    except Exception as e:
+        logger.error("Failed to parse schema %s: %s", schema_md, e)
         return ""
 
     samples = []
     for table in schema.get("tables", [])[:limit]:
         cols = []
-        for col in table["columns"][:10]:
-            cols.append(f"    {col['column_name']} {col['data_type']}")
+        for col in (table.get("columns") or [])[:10]:
+            col_name = col.get("column_name", "")
+            data_type = col.get("data_type", "")
+            cols.append(f"    {col_name} {data_type}")
         if not cols:
             continue
         table_str = f"  {table['name']}:\n" + "\n".join(cols)

@@ -239,13 +239,13 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
             continue
         if col1.isdigit() or col2.isdigit():
             continue
-            results.append({
-                "table1": table1,
-                "column1": col1.upper(),
-                "table2": table2,
-                "column2": col2.upper(),
-                "join_type": _detect_join_type(sql, match.start()),
-            })
+        results.append({
+            "table1": table1,
+            "column1": col1.upper(),
+            "table2": table2,
+            "column2": col2.upper(),
+            "join_type": _detect_join_type(sql, match.start()),
+        })
 
     return results
 

@@ -193,6 +193,8 @@ def _write_query_details(f, statements: list[dict]):
 
     for mapper_name in sorted(mappers.keys()):
         stmts = mappers[mapper_name]
+        if not stmts:
+            continue
         namespace = stmts[0].get("namespace", "")
 
         f.write(f"### {mapper_name}\n\n")

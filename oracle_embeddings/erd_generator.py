@@ -48,9 +48,9 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
                 lines.append(f"    %% {table_name}: {table_comment}")
             lines.append(f"    {table_name} {{")
             pk_cols = set(table_info.get("primary_keys", []))
-            for col in table_info["columns"]:
-                col_name = col["column_name"]
-                data_type = col["data_type"].split("(")[0]  # NUMBER(10) -> NUMBER
+            for col in table_info.get("columns", []):
+                col_name = col.get("column_name", "UNKNOWN")
+                data_type = (col.get("data_type") or "VARCHAR2").split("(")[0]
                 constraint = ""
                 if col_name in pk_cols:
                     constraint = " PK"
@@ -85,7 +85,6 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
         t1, t2 = j["table1"], j["table2"]
         if t1 not in schema_table_map or t2 not in schema_table_map:
             continue
-        t1, t2 = j["table1"], j["table2"]
         key = tuple(sorted([t1, t2]))
         if key in seen_rels:
             continue

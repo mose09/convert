@@ -96,12 +96,17 @@ def search(query: str, config: dict, db_path: str = "./vectordb",
             n_results=n_results,
         )
 
-        for i, doc in enumerate(res["documents"][0]):
+        docs = res.get("documents") or [[]]
+        metas = res.get("metadatas") or [[]]
+        dists = res.get("distances") or [[]]
+        for i, doc in enumerate(docs[0]):
+            meta = metas[0][i] if len(metas[0]) > i else {}
+            dist = dists[0][i] if len(dists[0]) > i else 0
             results.append({
                 "text": doc,
                 "collection": col_name,
-                "metadata": res["metadatas"][0][i] if res["metadatas"] else {},
-                "distance": res["distances"][0][i] if res["distances"] else 0,
+                "metadata": meta,
+                "distance": dist,
             })
 
     # Sort by distance (lower = more relevant)
