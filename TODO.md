@@ -1,27 +1,25 @@
-# TODO: SQL 리뷰/최적화 제안 기능
+# TODO: 네이밍룰 검증 엔진
 
-## 정적 분석 (코드 기반)
-- [x] sql_reviewer.py - 비효율 패턴 자동 감지
-- [x] SELECT * 사용 감지
-- [x] NOT IN → NOT EXISTS 권장 패턴
-- [x] LIKE '%...%' 풀스캔 패턴
-- [x] 카티시안 곱 (JOIN 조건 없는 CROSS JOIN)
-- [x] OR 조건 (인덱스 미사용 가능성)
-- [x] 서브쿼리 중복
-- [x] 불필요한 DISTINCT
-- [x] UPPER/LOWER in WHERE (함수 기반 인덱스 필요)
+## 핵심 기능
+- [x] naming_validator.py - 테이블/컬럼명 검증 엔진
+- [x] 용어사전 로드 (terms_dictionary .md/.xlsx)
+- [x] 단어 분해 후 각 토큰 검증
+- [x] 용어사전에 없는 약어 감지
+- [x] 유사 약어 추천 (Levenshtein)
+- [x] 길이 제한 체크 (Oracle 30자)
+- [x] 대소문자/언더스코어 규칙 검증
 
-## LLM 분석
-- [x] sql_reviewer_llm.py - 복잡한 쿼리 LLM 분석
-- [x] 개선 SQL 제안
-- [x] 심각도 평가
+## 검증 대상
+- [x] 단일 이름 검증 (--name)
+- [x] 파일 기반 일괄 검증 (--file)
+- [x] DDL 파일 파싱 후 검증 (--ddl)
 
 ## 산출물
-- [x] sql_review_report.md - 문제 패턴별 목록
-- [x] sql_review_report.xlsx - 매퍼/쿼리별 문제점
+- [x] 콘솔 출력 (즉시 결과)
+- [x] 리포트 .md / .xlsx (대량 검증 시)
 
 ## CLI
-- [x] main.py에 review-sql 커맨드 추가
+- [x] main.py에 validate-naming 커맨드 추가
 - [x] README.md 업데이트
 
 ## 마무리

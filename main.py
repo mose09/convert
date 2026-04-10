@@ -309,6 +309,79 @@ def cmd_standardize(args):
     print(f"\nReport generated: {os.path.abspath(report_dir)}")
 
 
+def cmd_validate_naming(args):
+    """Validate table/column names against naming standards."""
+    from oracle_embeddings.naming_validator import (
+        NamingValidator, format_result_console, save_validation_report
+    )
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    validator = NamingValidator(terms_dict_path=args.terms_md)
+    print(f"  Loaded: {len(validator.standard_abbreviations)} abbreviations, "
+          f"{len(validator.standard_words)} full words")
+
+    results = []
+
+    if args.name:
+        # Single name
+        kind = args.kind or "table"
+        result = validator.validate_name(args.name, kind=kind)
+        print(format_result_console(result))
+        results.append(result)
+
+    elif args.file:
+        # File with list of names
+        if not os.path.exists(args.file):
+            print(f"Error: File not found: {args.file}")
+            return
+        with open(args.file, "r", encoding="utf-8") as f:
+            content = f.read().replace("\r\n", "\n")
+        kind = args.kind or "table"
+        names = [l.strip() for l in content.split("\n") if l.strip() and not l.startswith("#")]
+        print(f"=== Validating {len(names)} {kind} names ===")
+        for name in names:
+            result = validator.validate_name(name, kind=kind)
+            results.append(result)
+            if not result["valid"]:
+                print(format_result_console(result))
+
+    elif args.ddl:
+        # DDL file
+        if not os.path.exists(args.ddl):
+            print(f"Error: DDL file not found: {args.ddl}")
+            return
+        with open(args.ddl, "r", encoding="utf-8") as f:
+            ddl_text = f.read().replace("\r\n", "\n")
+        print(f"=== Validating DDL: {args.ddl} ===")
+        table_results = validator.validate_ddl(ddl_text)
+        for tr in table_results:
+            results.append(tr)
+            print(format_result_console(tr))
+            for cr in tr.get("columns", []):
+                results.append(cr)
+                if not cr["valid"]:
+                    print(format_result_console(cr))
+    else:
+        print("Error: --name, --file, 또는 --ddl 중 하나를 지정하세요.")
+        return
+
+    # Summary + report
+    valid = sum(1 for r in results if r["valid"])
+    invalid = len(results) - valid
+    print(f"\n=== Summary ===")
+    print(f"  Total: {len(results)}")
+    print(f"  Valid: {valid}")
+    print(f"  Invalid: {invalid}")
+
+    if len(results) > 1:
+        md_path, xlsx_path = save_validation_report(results, output_dir)
+        print(f"\n  Report: {os.path.abspath(md_path)}")
+        print(f"  Excel:  {os.path.abspath(xlsx_path)}")
+
+
 def cmd_review_sql(args):
     """Review SQL queries for inefficient patterns (static analysis + LLM)."""
     from oracle_embeddings.mybatis_parser import parse_all_mappers
@@ -740,6 +813,15 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # validate-naming command
+    vn_parser = subparsers.add_parser("validate-naming", help="Validate table/column names against naming standards")
+    vn_parser.add_argument("--name", help="Single name to validate")
+    vn_parser.add_argument("--file", help="File containing list of names (one per line)")
+    vn_parser.add_argument("--ddl", help="DDL file to parse and validate")
+    vn_parser.add_argument("--kind", choices=["table", "column"], default=None,
+                            help="Kind of name (default: table for --name/--file)")
+    vn_parser.add_argument("--terms-md", help="Path to terms_dictionary .md file")
+
     # review-sql command
     review_sql_parser = subparsers.add_parser("review-sql", help="Review SQL queries for inefficient patterns")
     review_sql_parser.add_argument("--mybatis-dir", required=True, help="Path to MyBatis/iBatis mapper XML directory")
@@ -814,6 +896,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "validate-naming":
+        cmd_validate_naming(args)
     elif args.command == "review-sql":
         cmd_review_sql(args)
     elif args.command == "terms":

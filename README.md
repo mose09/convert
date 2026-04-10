@@ -14,6 +14,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
+| `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
@@ -149,7 +150,34 @@ output/
     └── Sheet: 미식별        (LLM이 해석 못한 단어)
 ```
 
-### 6. SQL 리뷰 (정적 분석 + LLM)
+### 6. 네이밍룰 검증
+
+용어사전 기반으로 테이블/컬럼명이 표준을 따르는지 검증합니다.
+
+```bash
+# 단일 이름 검증
+python main.py validate-naming --name "TB_CUSTOMER_ORDER" --terms-md ./output/terms_dictionary.md
+python main.py validate-naming --name "CUST_NO" --kind column
+
+# 파일의 이름 목록 일괄 검증
+python main.py validate-naming --file new_tables.txt --terms-md ./output/terms_dictionary.md
+
+# DDL 파일 파싱 후 검증
+python main.py validate-naming --ddl create_tables.sql --terms-md ./output/terms_dictionary.md
+```
+
+**검증 항목:**
+
+| 심각도 | 항목 | 설명 |
+|--------|------|------|
+| CRITICAL | LENGTH | 30자 초과 (Oracle 11g) |
+| CRITICAL | SPECIAL_CHAR | 특수문자 사용 |
+| CRITICAL | FIRST_CHAR | 첫 글자 숫자 |
+| HIGH | CASE | 소문자 사용 (대문자+언더스코어 권장) |
+| MEDIUM | UNKNOWN_ABBREVIATION | 용어사전에 없는 약어 (유사 약어 추천) |
+| LOW | PREFIX | 테이블 접두어 (TB, TBL 등) 미사용 |
+
+### 7. SQL 리뷰 (정적 분석 + LLM)
 
 MyBatis/iBatis XML의 SQL 쿼리를 분석하여 비효율 패턴을 자동 감지합니다.
 
