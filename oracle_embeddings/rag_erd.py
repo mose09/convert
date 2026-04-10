@@ -164,6 +164,7 @@ erDiagram
             {"role": "user", "content": prompt},
         ],
         temperature=0.1,
+        timeout=180,
     )
 
     text = response.choices[0].message.content.strip()

@@ -400,6 +400,7 @@ def _write_llm_proposals(analysis: dict, data_validation: dict,
                 {"role": "user", "content": prompt},
             ],
             temperature=0.2,
+            timeout=180,
         )
         proposal_text = response.choices[0].message.content.strip()
     except Exception as e:

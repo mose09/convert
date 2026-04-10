@@ -131,6 +131,7 @@ def _enrich_batch(client, model: str, tables: list[dict], max_retries: int = 2) 
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
+                timeout=120,
             )
             text = response.choices[0].message.content.strip()
 
@@ -141,9 +142,10 @@ def _enrich_batch(client, model: str, tables: list[dict], max_retries: int = 2) 
 
             return json.loads(text)
         except json.JSONDecodeError:
+            wait = 2 ** (attempt + 1)
             if attempt < max_retries:
-                logger.warning("LLM returned invalid JSON (attempt %d), retrying...", attempt + 1)
-                time.sleep(1)
+                logger.warning("LLM returned invalid JSON (attempt %d), retrying in %ds...", attempt + 1, wait)
+                time.sleep(wait)
             else:
                 logger.error("Failed to parse LLM response after %d attempts", max_retries + 1)
         except Exception as e:

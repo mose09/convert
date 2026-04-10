@@ -8,6 +8,7 @@ def parse_schema_md(md_path: str) -> dict:
     """Parse schema .md file back into structured data."""
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
+    content = content.replace("\r\n", "\n")  # Windows CRLF → LF
 
     schema = {"owner": "UNKNOWN", "tables": []}
 
@@ -114,6 +115,7 @@ def parse_query_md(md_path: str) -> list[dict]:
     """Parse query analysis .md file to extract JOIN relationships."""
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
+    content = content.replace("\r\n", "\n")
 
     joins = []
 
@@ -144,6 +146,7 @@ def parse_query_tables(md_path: str) -> set:
     """Extract all table names referenced in query analysis .md (from Table Usage Summary)."""
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
+    content = content.replace("\r\n", "\n")
 
     tables = set()
 
@@ -182,6 +185,7 @@ def parse_table_usage(md_path: str) -> dict:
     """Parse Table Usage Summary from query .md to get as_main/as_join counts."""
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
+    content = content.replace("\r\n", "\n")
 
     usage = {}
 

@@ -158,6 +158,7 @@ def _call_llm_json(client, model: str, prompt: str, default=None,
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
+                timeout=120,
             )
             text = response.choices[0].message.content.strip()
 
@@ -168,9 +169,10 @@ def _call_llm_json(client, model: str, prompt: str, default=None,
 
             return json.loads(text)
         except json.JSONDecodeError:
-            logger.warning("LLM returned invalid JSON (attempt %d/%d)", attempt + 1, max_retries + 1)
+            wait = 2 ** (attempt + 1)
+            logger.warning("LLM returned invalid JSON (attempt %d/%d), retrying in %ds...", attempt + 1, max_retries + 1, wait)
             if attempt < max_retries:
-                time.sleep(1)
+                time.sleep(wait)
         except Exception as e:
             logger.error("LLM call failed: %s", e)
             break

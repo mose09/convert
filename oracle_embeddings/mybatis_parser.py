@@ -6,6 +6,19 @@ import xml.etree.ElementTree as ET
 logger = logging.getLogger(__name__)
 
 
+def _read_file_safe(filepath: str, limit: int = None) -> str:
+    """Read a file trying multiple encodings."""
+    for encoding in ("utf-8", "euc-kr", "cp949", "latin-1"):
+        try:
+            with open(filepath, "r", encoding=encoding) as f:
+                return f.read(limit) if limit else f.read()
+        except (UnicodeDecodeError, UnicodeError):
+            continue
+    # Final fallback
+    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+        return f.read(limit) if limit else f.read()
+
+
 def scan_mybatis_dir(base_dir: str) -> list[str]:
     """Find all MyBatis/iBatis mapper XML files recursively."""
     xml_files = []
@@ -22,8 +35,7 @@ def scan_mybatis_dir(base_dir: str) -> list[str]:
 def _is_sql_mapper(filepath: str) -> bool:
     """Check if an XML file is a MyBatis or iBatis mapper."""
     try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            head = f.read(5000)
+        head = _read_file_safe(filepath, limit=5000)
         head_lower = head.lower()
 
         has_sql_tags = ("<select" in head_lower or "<insert" in head_lower or
@@ -44,8 +56,7 @@ def parse_mapper_file(filepath: str) -> list[dict]:
     statements = []
     try:
         # Read and strip DOCTYPE to avoid DTD resolution errors (common in iBatis)
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            xml_content = f.read()
+        xml_content = _read_file_safe(filepath)
         xml_content = re.sub(r'<!DOCTYPE[^>]*>', '', xml_content)
         # Remove XML comments <!-- ... -->
         xml_content = re.sub(r'<!--.*?-->', '', xml_content, flags=re.DOTALL)
@@ -80,8 +91,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
     mapper_name = os.path.basename(filepath)
 
     try:
-        with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
-            content = f.read()
+        content = _read_file_safe(filepath)
     except Exception as e:
         logger.warning("Cannot read %s: %s", filepath, e)
         return []
@@ -224,8 +234,11 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
         table1 = alias_map.get(alias1.upper())
         table2 = alias_map.get(alias2.upper())
 
-        # Only include if BOTH aliases resolved to real table names
-        if table1 and table2 and table1 != table2:
+        # Skip if aliases not resolved, same table, or constant values (1=1)
+        if not table1 or not table2 or table1 == table2:
+            continue
+        if col1.isdigit() or col2.isdigit():
+            continue
             results.append({
                 "table1": table1,
                 "column1": col1.upper(),

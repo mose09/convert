@@ -16,7 +16,12 @@ def get_connection(config: dict) -> oracledb.Connection:
             oracledb.init_oracle_client(lib_dir=lib_dir)
             logger.info("Thick mode initialized (Oracle Instant Client)")
         except oracledb.ProgrammingError:
-            pass
+            pass  # Already initialized
+        except Exception as e:
+            logger.error("Oracle Instant Client init failed: %s", e)
+            print(f"Error: Oracle Instant Client 초기화 실패 - {e}")
+            print(f"  경로를 확인하세요: {lib_dir}")
+            raise
 
     user = os.environ.get("ORACLE_USER") or oracle_cfg.get("user", "")
     password = os.environ["ORACLE_PASSWORD"]
