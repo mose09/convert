@@ -1,20 +1,27 @@
-# TODO: 용어사전 자동 생성 기능
+# TODO: SQL 리뷰/최적화 제안 기능
 
-## 단어 수집
-- [x] terms_collector.py - 스키마 .md에서 테이블/컬럼명 단어 분리 수집
-- [x] terms_collector.py - React 소스에서 컴포넌트/변수/함수명 단어 분리 수집
-- [x] 수집된 단어 중복 제거 + 빈도 집계 (DB 출현 횟수, FE 출현 횟수)
+## 정적 분석 (코드 기반)
+- [x] sql_reviewer.py - 비효율 패턴 자동 감지
+- [x] SELECT * 사용 감지
+- [x] NOT IN → NOT EXISTS 권장 패턴
+- [x] LIKE '%...%' 풀스캔 패턴
+- [x] 카티시안 곱 (JOIN 조건 없는 CROSS JOIN)
+- [x] OR 조건 (인덱스 미사용 가능성)
+- [x] 서브쿼리 중복
+- [x] 불필요한 DISTINCT
+- [x] UPPER/LOWER in WHERE (함수 기반 인덱스 필요)
 
-## LLM 처리
-- [x] terms_llm.py - 수집된 단어를 LLM에 전달하여 약어, 영문 Full Name, 한글명 생성
-- [x] 확신 없는 단어는 빈칸 처리
+## LLM 분석
+- [x] sql_reviewer_llm.py - 복잡한 쿼리 LLM 분석
+- [x] 개선 SQL 제안
+- [x] 심각도 평가
 
 ## 산출물
-- [x] 용어사전 .md 파일 생성
-- [x] 용어사전 .xlsx 파일 생성
+- [x] sql_review_report.md - 문제 패턴별 목록
+- [x] sql_review_report.xlsx - 매퍼/쿼리별 문제점
 
 ## CLI
-- [x] main.py에 terms 커맨드 추가
+- [x] main.py에 review-sql 커맨드 추가
 - [x] README.md 업데이트
 
 ## 마무리

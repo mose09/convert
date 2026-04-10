@@ -309,6 +309,59 @@ def cmd_standardize(args):
     print(f"\nReport generated: {os.path.abspath(report_dir)}")
 
 
+def cmd_review_sql(args):
+    """Review SQL queries for inefficient patterns (static analysis + LLM)."""
+    from oracle_embeddings.mybatis_parser import parse_all_mappers
+    from oracle_embeddings.sql_reviewer import review_statements
+    from oracle_embeddings.sql_review_report import save_review_markdown, save_review_excel
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.mybatis_dir:
+        print("Error: --mybatis-dir 는 필수입니다.")
+        return
+
+    if not os.path.isdir(args.mybatis_dir):
+        print(f"Error: Directory not found: {args.mybatis_dir}")
+        return
+
+    # 1. Parse XML
+    print("=== Step 1: Parsing MyBatis/iBatis XML ===")
+    analysis = parse_all_mappers(args.mybatis_dir)
+    statements = analysis["statements"]
+    print(f"  Statements: {len(statements)}")
+
+    # 2. Static analysis
+    print("\n=== Step 2: Static Analysis ===")
+    review = review_statements(statements)
+    print(f"  Statements with issues: {review['statements_with_issues']}")
+    print(f"  Severity: CRITICAL={review['severity_summary']['CRITICAL']}, "
+          f"HIGH={review['severity_summary']['HIGH']}, "
+          f"MEDIUM={review['severity_summary']['MEDIUM']}, "
+          f"LOW={review['severity_summary']['LOW']}")
+
+    # 3. LLM review (optional)
+    llm_reviews = []
+    if args.llm_review:
+        print("\n=== Step 3: LLM Review ===")
+        from oracle_embeddings.sql_reviewer_llm import llm_review_batch
+        max_samples = args.max_samples or 20
+        llm_reviews = llm_review_batch(review["by_statement"], config, max_samples)
+        print(f"  LLM reviewed: {len(llm_reviews)} statements")
+    else:
+        print("\n=== Step 3: LLM Review (skipped, use --llm-review) ===")
+
+    # 4. Save reports
+    print("\n=== Step 4: Saving Reports ===")
+    md_path = save_review_markdown(review, llm_reviews, output_dir)
+    xlsx_path = save_review_excel(review, llm_reviews, output_dir)
+
+    print(f"\n  Markdown: {os.path.abspath(md_path)}")
+    print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+
+
 def cmd_terms(args):
     """Generate terminology dictionary from schema and/or React source."""
     from oracle_embeddings.terms_collector import collect_from_schema, collect_from_react, merge_words
@@ -687,6 +740,14 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # review-sql command
+    review_sql_parser = subparsers.add_parser("review-sql", help="Review SQL queries for inefficient patterns")
+    review_sql_parser.add_argument("--mybatis-dir", required=True, help="Path to MyBatis/iBatis mapper XML directory")
+    review_sql_parser.add_argument("--llm-review", action="store_true",
+                                    help="Use LLM for detailed review of top issues")
+    review_sql_parser.add_argument("--max-samples", type=int, default=20,
+                                    help="Max statements for LLM review (default: 20)")
+
     # terms command
     terms_parser = subparsers.add_parser("terms", help="Generate terminology dictionary")
     terms_parser.add_argument("--schema-md", help="Path to schema .md file")
@@ -753,6 +814,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "review-sql":
+        cmd_review_sql(args)
     elif args.command == "terms":
         cmd_terms(args)
     elif args.command == "standardize":

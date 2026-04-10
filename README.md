@@ -14,6 +14,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
+| `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
@@ -148,7 +149,48 @@ output/
     └── Sheet: 미식별        (LLM이 해석 못한 단어)
 ```
 
-### 6. 표준화 분석 리포트
+### 6. SQL 리뷰 (정적 분석 + LLM)
+
+MyBatis/iBatis XML의 SQL 쿼리를 분석하여 비효율 패턴을 자동 감지합니다.
+
+```bash
+# 정적 분석만
+python main.py review-sql --mybatis-dir /path/to/mapper
+
+# LLM 리뷰 포함 (상위 20개 이슈)
+python main.py review-sql --mybatis-dir /path/to/mapper --llm-review
+
+# LLM 리뷰 샘플 수 조절
+python main.py review-sql --mybatis-dir /path/to/mapper --llm-review --max-samples 50
+```
+
+**감지 패턴:**
+
+| 심각도 | 패턴 | 설명 |
+|--------|------|------|
+| CRITICAL | 카티시안 곱 | FROM 절 콤마 나열, JOIN 조건 없음 |
+| CRITICAL | UPDATE/DELETE WHERE 없음 | 전체 테이블 영향 |
+| HIGH | NOT IN | NULL 처리 및 성능 문제 |
+| HIGH | LIKE '%...' | 선두 와일드카드 → 풀스캔 |
+| MEDIUM | SELECT * | 불필요한 컬럼 조회 |
+| MEDIUM | WHERE 컬럼 함수 | 인덱스 미사용 |
+| MEDIUM | 스칼라 서브쿼리 | SELECT 절 서브쿼리 |
+| MEDIUM | 암시적 형변환 | 타입 불일치 비교 |
+| LOW | DISTINCT | 정렬 비용 |
+| LOW | WHERE OR | 인덱스 방해 |
+
+**산출물:**
+```
+output/
+├── sql_review_TIMESTAMP.md    # 패턴별 + LLM 리뷰
+└── sql_review_TIMESTAMP.xlsx  # Excel
+    ├── Sheet: Summary       (심각도 집계)
+    ├── Sheet: Issues        (전체 이슈 목록)
+    ├── Sheet: Pattern Summary (패턴별 집계)
+    └── Sheet: LLM Review    (LLM 개선안, --llm-review 시)
+```
+
+### 7. 표준화 분석 리포트
 
 ```bash
 # 구조 분석만 (Oracle 불필요, LLM으로 표준안 제안)
