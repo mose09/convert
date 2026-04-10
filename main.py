@@ -309,6 +309,65 @@ def cmd_standardize(args):
     print(f"\nReport generated: {os.path.abspath(report_dir)}")
 
 
+def cmd_terms(args):
+    """Generate terminology dictionary from schema and/or React source."""
+    from oracle_embeddings.terms_collector import collect_from_schema, collect_from_react, merge_words
+    from oracle_embeddings.terms_report import save_terms_markdown, save_terms_excel
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.schema_md and not args.react_dir:
+        print("Error: --schema-md 또는 --react-dir 중 하나 이상 지정하세요.")
+        return
+
+    # 1. Collect words
+    print("=== Step 1: Collecting Words ===")
+    schema_words = {}
+    react_words = {}
+
+    if args.schema_md:
+        print(f"  Schema: {args.schema_md}")
+        schema_words = collect_from_schema(args.schema_md)
+        print(f"  Schema words: {len(schema_words)}")
+
+    if args.react_dir:
+        if not os.path.isdir(args.react_dir):
+            print(f"  Error: Directory not found: {args.react_dir}")
+            return
+        print(f"  React: {args.react_dir}")
+        react_words = collect_from_react(args.react_dir)
+        print(f"  React words: {len(react_words)}")
+
+    # 2. Merge
+    print("\n=== Step 2: Merging ===")
+    merged = merge_words(schema_words, react_words)
+    print(f"  Total unique words: {len(merged)}")
+
+    both_count = sum(1 for w in merged if w["db_count"] > 0 and w["fe_count"] > 0)
+    print(f"  DB+FE 공통: {both_count}")
+
+    # 3. LLM enrichment
+    if not args.skip_llm:
+        print("\n=== Step 3: LLM Enrichment ===")
+        from oracle_embeddings.terms_llm import enrich_terms
+        merged = enrich_terms(merged, config)
+    else:
+        print("\n=== Step 3: LLM Enrichment (skipped) ===")
+
+    # 4. Save
+    print("\n=== Step 4: Saving ===")
+    md_path = save_terms_markdown(merged, output_dir)
+    xlsx_path = save_terms_excel(merged, output_dir)
+
+    print(f"\n  Markdown: {os.path.abspath(md_path)}")
+    print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+
+    enriched_count = sum(1 for w in merged if w.get("korean"))
+    print(f"\n  Total: {len(merged)} words, Enriched: {enriched_count}")
+
+
 def cmd_enrich_schema(args):
     """Enrich schema .md with LLM-generated comments for empty descriptions."""
     from oracle_embeddings.md_parser import parse_schema_md
@@ -628,6 +687,13 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # terms command
+    terms_parser = subparsers.add_parser("terms", help="Generate terminology dictionary")
+    terms_parser.add_argument("--schema-md", help="Path to schema .md file")
+    terms_parser.add_argument("--react-dir", help="Path to React source directory")
+    terms_parser.add_argument("--skip-llm", action="store_true",
+                              help="Skip LLM enrichment (collect words only)")
+
     # standardize command
     std_parser = subparsers.add_parser("standardize", help="Generate standardization analysis report")
     std_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
@@ -687,6 +753,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "terms":
+        cmd_terms(args)
     elif args.command == "standardize":
         cmd_standardize(args)
     elif args.command == "enrich-schema":

@@ -13,6 +13,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `enrich-schema` | 빈 코멘트를 LLM이 추천하여 보강 | X | O |
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
+| `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
@@ -120,7 +121,34 @@ python main.py erd-group --schema-md ./output/스키마.md --query-md ./output/q
 python main.py erd-group --schema-md ./output/스키마.md --query-md ./output/query.md --max-size 15
 ```
 
-### 5. 표준화 분석 리포트
+### 5. 용어사전 자동 생성
+
+스키마 컬럼명 + React 소스 변수명에서 단어를 수집하고, LLM이 약어/영문명/한글명을 생성합니다.
+
+```bash
+# 스키마 + React 소스 양쪽에서 수집
+python main.py terms --schema-md ./output/스키마.md --react-dir /path/to/react/src
+
+# 스키마만
+python main.py terms --schema-md ./output/스키마.md
+
+# LLM 없이 단어 수집만
+python main.py terms --schema-md ./output/스키마.md --react-dir ./src --skip-llm
+```
+
+산출물:
+```
+output/
+├── terms_dictionary_TIMESTAMP.md    # 용어사전 Markdown
+└── terms_dictionary_TIMESTAMP.xlsx  # 용어사전 Excel
+    ├── Sheet: 용어사전      (전체)
+    ├── Sheet: DB+FE공통     (양쪽에서 사용, 표준화 우선)
+    ├── Sheet: DB전용        (DB에서만 사용)
+    ├── Sheet: FE전용        (프론트에서만 사용)
+    └── Sheet: 미식별        (LLM이 해석 못한 단어)
+```
+
+### 6. 표준화 분석 리포트
 
 ```bash
 # 구조 분석만 (Oracle 불필요, LLM으로 표준안 제안)
