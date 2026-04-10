@@ -14,6 +14,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
+| `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
@@ -150,7 +151,35 @@ output/
     └── Sheet: 미식별        (LLM이 해석 못한 단어)
 ```
 
-### 6. 네이밍룰 검증
+### 6. DDL 자동 생성 (자연어)
+
+자연어 요청으로 표준을 준수하는 CREATE TABLE DDL을 자동 생성합니다.
+
+```bash
+# 기본 사용 (용어사전 없이)
+python main.py gen-ddl --request "고객 주문 이력 테이블"
+
+# 용어사전 + 스키마 참조 (권장)
+python main.py gen-ddl \
+  --request "고객 주문 이력 테이블 만들어줘. 고객ID, 주문일자, 금액 포함" \
+  --terms-md ./output/terms_dictionary.md \
+  --schema-md ./output/스키마.md
+
+# 생성 + 검증 + Oracle 실행 (컨펌 후)
+python main.py gen-ddl \
+  --request "배송 정보 테이블" \
+  --terms-md ./output/terms_dictionary.md \
+  --execute
+```
+
+**처리 흐름:**
+1. 자연어 요청 + 용어사전 + 기존 스키마 샘플을 LLM에 전달
+2. LLM이 표준 약어로 DDL 생성
+3. 생성된 DDL을 자동으로 네이밍 표준 검증
+4. 검증 결과 출력 + DDL 파일 저장
+5. `--execute` 옵션 시 사용자 컨펌 후 Oracle 실행
+
+### 7. 네이밍룰 검증
 
 용어사전 기반으로 테이블/컬럼명이 표준을 따르는지 검증합니다.
 
@@ -177,7 +206,7 @@ python main.py validate-naming --ddl create_tables.sql --terms-md ./output/terms
 | MEDIUM | UNKNOWN_ABBREVIATION | 용어사전에 없는 약어 (유사 약어 추천) |
 | LOW | PREFIX | 테이블 접두어 (TB, TBL 등) 미사용 |
 
-### 7. SQL 리뷰 (정적 분석 + LLM)
+### 8. SQL 리뷰 (정적 분석 + LLM)
 
 MyBatis/iBatis XML의 SQL 쿼리를 분석하여 비효율 패턴을 자동 감지합니다.
 
@@ -218,7 +247,7 @@ output/
     └── Sheet: LLM Review    (LLM 개선안, --llm-review 시)
 ```
 
-### 7. 표준화 분석 리포트
+### 9. 표준화 분석 리포트
 
 ```bash
 # 구조 분석만 (Oracle 불필요, LLM으로 표준안 제안)

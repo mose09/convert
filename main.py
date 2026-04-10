@@ -309,6 +309,94 @@ def cmd_standardize(args):
     print(f"\nReport generated: {os.path.abspath(report_dir)}")
 
 
+def cmd_gen_ddl(args):
+    """Generate DDL from natural language request with validation."""
+    from oracle_embeddings.ddl_generator import generate_ddl, save_ddl
+    from oracle_embeddings.naming_validator import NamingValidator, format_result_console
+
+    load_dotenv()
+    config = load_config(args.config)
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not args.request:
+        print("Error: --request 로 자연어 요청을 입력하세요.")
+        print('예: python main.py gen-ddl --request "고객 주문 이력 테이블 만들어줘" --terms-md ./output/terms.md')
+        return
+
+    # 1. Generate DDL
+    print("=== Step 1: Generating DDL ===")
+    print(f"  Request: {args.request}")
+    print(f"  LLM model: {os.environ.get('LLM_MODEL') or config.get('llm', {}).get('model', 'llama3')}")
+
+    result = generate_ddl(
+        args.request,
+        config,
+        terms_md=args.terms_md,
+        schema_md=args.schema_md,
+    )
+
+    if result.get("error"):
+        print(f"  Error: {result['error']}")
+        return
+
+    table_name = result.get("table_name", "")
+    ddl = result.get("ddl", "")
+
+    print(f"\n  Table: {table_name}")
+    print(f"  Comment: {result.get('table_comment', '')}")
+    print(f"\n--- Generated DDL ---")
+    print(ddl)
+    print("---")
+    if result.get("explanation"):
+        print(f"\n  Explanation: {result['explanation']}")
+
+    # 2. Validate
+    print("\n=== Step 2: Validating Naming ===")
+    validator = NamingValidator(terms_dict_path=args.terms_md)
+    validation_results = validator.validate_ddl(ddl)
+
+    has_issues = False
+    for vr in validation_results:
+        if not vr["valid"]:
+            has_issues = True
+        print(format_result_console(vr))
+        for cr in vr.get("columns", []):
+            if not cr["valid"]:
+                has_issues = True
+                print(format_result_console(cr))
+
+    if has_issues:
+        print("\n  WARNING: 네이밍 표준 위반이 있습니다. DDL 수정 후 재생성 권장.")
+    else:
+        print("\n  OK: 모든 이름이 표준을 준수합니다.")
+
+    # 3. Save
+    print("\n=== Step 3: Saving DDL ===")
+    filepath = save_ddl(result, output_dir)
+    print(f"  Saved: {os.path.abspath(filepath)}")
+
+    # 4. Confirmation prompt (if requested)
+    if args.execute:
+        print("\n=== Step 4: Confirmation ===")
+        print("실제 DB에 DDL을 실행하시겠습니까?")
+        confirm = input("  (yes/no): ").strip().lower()
+        if confirm in ("yes", "y"):
+            try:
+                from oracle_embeddings.db import get_connection
+                connection = get_connection(config)
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute(ddl)
+                    connection.commit()
+                    print(f"  DDL executed successfully.")
+                finally:
+                    connection.close()
+            except Exception as e:
+                print(f"  Error executing DDL: {e}")
+        else:
+            print("  DDL execution cancelled.")
+
+
 def cmd_validate_naming(args):
     """Validate table/column names against naming standards."""
     from oracle_embeddings.naming_validator import (
@@ -813,6 +901,14 @@ def main():
     embed_parser.add_argument("--schema-md", help="Path to schema .md file")
     embed_parser.add_argument("--query-md", help="Path to query analysis .md file")
 
+    # gen-ddl command
+    gen_ddl_parser = subparsers.add_parser("gen-ddl", help="Generate DDL from natural language request")
+    gen_ddl_parser.add_argument("--request", required=True, help="Natural language request (예: '고객 주문 이력 테이블 만들어줘')")
+    gen_ddl_parser.add_argument("--terms-md", help="Path to terms_dictionary .md for standard abbreviations")
+    gen_ddl_parser.add_argument("--schema-md", help="Path to schema .md for style reference")
+    gen_ddl_parser.add_argument("--execute", action="store_true",
+                                 help="Prompt to execute DDL on Oracle after confirmation")
+
     # validate-naming command
     vn_parser = subparsers.add_parser("validate-naming", help="Validate table/column names against naming standards")
     vn_parser.add_argument("--name", help="Single name to validate")
@@ -896,6 +992,8 @@ def main():
         cmd_erd(args)
     elif args.command == "embed":
         cmd_embed(args)
+    elif args.command == "gen-ddl":
+        cmd_gen_ddl(args)
     elif args.command == "validate-naming":
         cmd_validate_naming(args)
     elif args.command == "review-sql":
