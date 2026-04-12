@@ -318,37 +318,34 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         if delete_match:
             tables.add(delete_match.group(1))
 
-        # Oracle comma-style JOIN: FROM T1, T2, T3 (T2, T3 are effectively joins)
-        # Extract tables from comma-separated FROM clause and add to tables set
+        # Oracle comma-style JOIN: FROM T1 [a1], T2 [a2], T3 [a3] [JOIN ... | WHERE | ...]
+        # Strict pattern: require at least one comma and word-only table names
         comma_tables = []  # preserve order; idx 0 is main, rest are joins
-        from_comma_match = re.search(
-            r'\bFROM\s+(.+?)(?:\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|$)',
-            sql, re.DOTALL,
+        # Match: FROM TBL [alias] (, TBL [alias])+ before any non-word-comma content
+        # First capture first table + optional alias
+        strict_from = re.search(
+            r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?((?:\s*,\s*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
+            sql, re.IGNORECASE,
         )
-        if from_comma_match:
-            from_clause = from_comma_match.group(1)
-            # Remove content inside parentheses (subqueries)
-            while re.search(r'\([^()]*\)', from_clause):
-                from_clause = re.sub(r'\([^()]*\)', ' ', from_clause)
-            # Remove JOIN ... ON ... clauses to get pure comma-separated list
-            # (JOIN tables are handled separately below)
-            from_clause_no_joins = re.sub(
-                r'\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+|OUTER\s+)*JOIN\s+\w+(?:\s+\w+)?\s+ON\s+.+?(?=(?:JOIN|,|$))',
-                ' ',
-                from_clause,
-                flags=re.DOTALL,
-            )
-            # Split by comma; first word of each segment is the table
-            segments = from_clause_no_joins.split(",")
-            for idx, seg in enumerate(segments):
-                words = re.findall(r'\w+', seg)
-                if not words:
+        if strict_from:
+            first_table = strict_from.group(1)
+            rest_clause = strict_from.group(3) or ""
+            # first table
+            if first_table and first_table.upper() not in SQL_KEYWORDS and first_table not in aliases_in_stmt:
+                comma_tables.append(first_table)
+                tables.add(first_table)
+            # remaining tables in comma list
+            for match in re.finditer(r',\s*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest_clause):
+                tbl = match.group(1)
+                alias = match.group(2)
+                if tbl.upper() in SQL_KEYWORDS:
                     continue
-                tbl = words[0]
-                if tbl in SQL_KEYWORDS or tbl in aliases_in_stmt:
+                if tbl in aliases_in_stmt:
                     continue
                 comma_tables.append(tbl)
                 tables.add(tbl)
+                if alias and alias.upper() not in SQL_KEYWORDS:
+                    aliases_in_stmt.add(alias)
 
         # Identify main table (FROM 바로 뒤) vs join tables
         main_table = _extract_main_table(sql, aliases_in_stmt)
@@ -413,7 +410,11 @@ def _extract_main_table(sql: str, aliases: set) -> str:
         return m.group(1)
 
     # SELECT ... FROM table (first FROM, not inside subquery)
-    m = re.search(r'\bFROM\s+(\w+)', sql)
+    # Remove paren content to skip FROMs inside subqueries
+    cleaned = sql
+    while re.search(r'\([^()]*\)', cleaned):
+        cleaned = re.sub(r'\([^()]*\)', ' ', cleaned)
+    m = re.search(r'\bFROM\s+(\w+)', cleaned)
     if m:
         table = m.group(1)
         if table not in SQL_KEYWORDS and table not in aliases:
