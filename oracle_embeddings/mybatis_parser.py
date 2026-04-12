@@ -318,13 +318,52 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         if delete_match:
             tables.add(delete_match.group(1))
 
+        # Oracle comma-style JOIN: FROM T1, T2, T3 (T2, T3 are effectively joins)
+        # Extract tables from comma-separated FROM clause and add to tables set
+        comma_tables = []  # preserve order; idx 0 is main, rest are joins
+        from_comma_match = re.search(
+            r'\bFROM\s+(.+?)(?:\bWHERE\b|\bGROUP\s+BY\b|\bORDER\s+BY\b|\bHAVING\b|$)',
+            sql, re.DOTALL,
+        )
+        if from_comma_match:
+            from_clause = from_comma_match.group(1)
+            # Remove content inside parentheses (subqueries)
+            while re.search(r'\([^()]*\)', from_clause):
+                from_clause = re.sub(r'\([^()]*\)', ' ', from_clause)
+            # Remove JOIN ... ON ... clauses to get pure comma-separated list
+            # (JOIN tables are handled separately below)
+            from_clause_no_joins = re.sub(
+                r'\b(?:INNER\s+|LEFT\s+|RIGHT\s+|FULL\s+|CROSS\s+|OUTER\s+)*JOIN\s+\w+(?:\s+\w+)?\s+ON\s+.+?(?=(?:JOIN|,|$))',
+                ' ',
+                from_clause,
+                flags=re.DOTALL,
+            )
+            # Split by comma; first word of each segment is the table
+            segments = from_clause_no_joins.split(",")
+            for idx, seg in enumerate(segments):
+                words = re.findall(r'\w+', seg)
+                if not words:
+                    continue
+                tbl = words[0]
+                if tbl in SQL_KEYWORDS or tbl in aliases_in_stmt:
+                    continue
+                comma_tables.append(tbl)
+                tables.add(tbl)
+
         # Identify main table (FROM 바로 뒤) vs join tables
         main_table = _extract_main_table(sql, aliases_in_stmt)
         join_tables = set()
+
+        # ANSI JOIN: JOIN TABLE
         for match in re.finditer(r'JOIN\s+(\w+)', sql):
             jt = match.group(1)
             if jt not in SQL_KEYWORDS and jt not in aliases_in_stmt:
                 join_tables.add(jt)
+
+        # Comma-joined tables (2nd and beyond)
+        for idx, tbl in enumerate(comma_tables):
+            if idx > 0 and tbl != main_table:
+                join_tables.add(tbl)
 
         for table in tables:
             if table not in usage:
