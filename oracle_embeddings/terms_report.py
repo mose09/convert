@@ -5,6 +5,13 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _md_escape(text: str) -> str:
+    """Escape characters that would break a Markdown table cell."""
+    if not text:
+        return ""
+    return str(text).replace("|", "\\|").replace("\n", "<br>").replace("\r", "")
+
+
 def save_terms_markdown(words: list[dict], output_dir: str) -> str:
     """Save terminology dictionary as Markdown."""
     os.makedirs(output_dir, exist_ok=True)
@@ -23,11 +30,12 @@ def save_terms_markdown(words: list[dict], output_dir: str) -> str:
 
         # Enriched terms
         f.write("## Terminology\n\n")
-        f.write("| Word | Abbreviation | English Full | Korean | DB | FE | Total |\n")
-        f.write("|------|-------------|-------------|--------|----|----|-------|\n")
+        f.write("| Word | Abbreviation | English Full | Korean | Definition | DB | FE | Total |\n")
+        f.write("|------|-------------|-------------|--------|------------|----|----|-------|\n")
         for w in enriched:
             f.write(f"| {w['word']} | {w.get('abbreviation', '')} "
                     f"| {w.get('english_full', '')} | {w.get('korean', '')} "
+                    f"| {_md_escape(w.get('definition', ''))} "
                     f"| {w['db_count']} | {w['fe_count']} | {w['total_count']} |\n")
         f.write("\n")
 
@@ -39,11 +47,12 @@ def save_terms_markdown(words: list[dict], output_dir: str) -> str:
         if both:
             f.write(f"## DB + FE 공통 단어 ({len(both)})\n\n")
             f.write("DB와 프론트엔드 양쪽에서 사용되는 단어입니다. 표준화 우선 대상입니다.\n\n")
-            f.write("| Word | Abbreviation | English Full | Korean | DB | FE |\n")
-            f.write("|------|-------------|-------------|--------|----|----|  \n")
+            f.write("| Word | Abbreviation | English Full | Korean | Definition | DB | FE |\n")
+            f.write("|------|-------------|-------------|--------|------------|----|----|  \n")
             for w in both:
                 f.write(f"| {w['word']} | {w.get('abbreviation', '')} "
                         f"| {w.get('english_full', '')} | {w.get('korean', '')} "
+                        f"| {_md_escape(w.get('definition', ''))} "
                         f"| {w['db_count']} | {w['fe_count']} |\n")
             f.write("\n")
 
@@ -110,14 +119,15 @@ def save_terms_excel(words: list[dict], output_dir: str) -> str:
     # Sheet 1: 전체 용어사전
     ws_all = wb.active
     ws_all.title = "용어사전"
-    _write_header(ws_all, ["Word", "Abbreviation", "English Full", "Korean",
+    _write_header(ws_all, ["Word", "Abbreviation", "English Full", "Korean", "Definition",
                             "DB Count", "FE Count", "Total", "Sources"])
 
     for i, w in enumerate(enriched, 2):
         is_both = w["db_count"] > 0 and w["fe_count"] > 0
         _write_row(ws_all, i, [
             w["word"], w.get("abbreviation", ""), w.get("english_full", ""),
-            w.get("korean", ""), w["db_count"], w["fe_count"], w["total_count"],
+            w.get("korean", ""), w.get("definition", ""),
+            w["db_count"], w["fe_count"], w["total_count"],
             ", ".join(w.get("sample_sources", [])[:3]),
         ], highlight=is_both)
 
@@ -125,35 +135,36 @@ def save_terms_excel(words: list[dict], output_dir: str) -> str:
 
     # Sheet 2: DB+FE 공통
     ws_both = wb.create_sheet("DB+FE공통")
-    _write_header(ws_both, ["Word", "Abbreviation", "English Full", "Korean",
+    _write_header(ws_both, ["Word", "Abbreviation", "English Full", "Korean", "Definition",
                              "DB Count", "FE Count"])
     both = [w for w in enriched if w["db_count"] > 0 and w["fe_count"] > 0]
     for i, w in enumerate(both, 2):
         _write_row(ws_both, i, [
             w["word"], w.get("abbreviation", ""), w.get("english_full", ""),
-            w.get("korean", ""), w["db_count"], w["fe_count"],
+            w.get("korean", ""), w.get("definition", ""),
+            w["db_count"], w["fe_count"],
         ])
     _auto_width(ws_both)
 
     # Sheet 3: DB Only
     ws_db = wb.create_sheet("DB전용")
-    _write_header(ws_db, ["Word", "Abbreviation", "English Full", "Korean", "DB Count"])
+    _write_header(ws_db, ["Word", "Abbreviation", "English Full", "Korean", "Definition", "DB Count"])
     db_only = [w for w in enriched if w["db_count"] > 0 and w["fe_count"] == 0]
     for i, w in enumerate(db_only, 2):
         _write_row(ws_db, i, [
             w["word"], w.get("abbreviation", ""), w.get("english_full", ""),
-            w.get("korean", ""), w["db_count"],
+            w.get("korean", ""), w.get("definition", ""), w["db_count"],
         ])
     _auto_width(ws_db)
 
     # Sheet 4: FE Only
     ws_fe = wb.create_sheet("FE전용")
-    _write_header(ws_fe, ["Word", "Abbreviation", "English Full", "Korean", "FE Count"])
+    _write_header(ws_fe, ["Word", "Abbreviation", "English Full", "Korean", "Definition", "FE Count"])
     fe_only = [w for w in enriched if w["fe_count"] > 0 and w["db_count"] == 0]
     for i, w in enumerate(fe_only, 2):
         _write_row(ws_fe, i, [
             w["word"], w.get("abbreviation", ""), w.get("english_full", ""),
-            w.get("korean", ""), w["fe_count"],
+            w.get("korean", ""), w.get("definition", ""), w["fe_count"],
         ])
     _auto_width(ws_fe)
 

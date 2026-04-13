@@ -1,3 +1,16 @@
+# TODO: 용어사전 자동 생성에 정의(Definition) 필드 추가
+
+## 작업 항목
+- [x] terms_llm.py `_enrich_batch` 프롬프트에 정의 규칙/JSON 키 추가
+- [x] terms_llm.py `enrich_terms` 응답 매핑에 `definition` 추가
+- [x] terms_report.py `_md_escape` 헬퍼 추가
+- [x] terms_report.py Markdown 두 테이블(Terminology, DB+FE 공통)에 Definition 컬럼 추가
+- [x] terms_report.py Excel 4개 시트(용어사전/DB+FE공통/DB전용/FE전용)에 Definition 컬럼 추가
+- [x] 변경 검증 (구문/임포트)
+- [x] 커밋 및 푸시
+
+---
+
 # TODO: 버그 수정 (완료)
 
 ## Critical 🔴

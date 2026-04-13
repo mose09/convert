@@ -40,6 +40,7 @@ def enrich_terms(words: list[dict], config: dict) -> list[dict]:
                     w["abbreviation"] = r.get("abbreviation", "")
                     w["english_full"] = r.get("english_full", "")
                     w["korean"] = r.get("korean", "")
+                    w["definition"] = r.get("definition", "")
                     if w["korean"]:
                         enriched += 1
 
@@ -58,7 +59,7 @@ def _enrich_batch(client, model: str, words: list[dict], max_retries: int = 2) -
     )
 
     prompt = f"""다음은 Oracle DB 컬럼명과 React 소스코드에서 수집한 단어 목록입니다.
-각 단어에 대해 약어, 영문 Full Name, 한글명을 생성해주세요.
+각 단어에 대해 약어, 영문 Full Name, 한글명, 한글 정의를 생성해주세요.
 
 ## 규칙
 1. DB 컬럼 약어 해석: CUST→CUSTOMER→고객, ORD→ORDER→주문, DT→DATE→일자, AMT→AMOUNT→금액
@@ -66,6 +67,7 @@ def _enrich_batch(client, model: str, words: list[dict], max_retries: int = 2) -
 3. 약어(Abbreviation)는 표준 DB 약어를 제안 (2~5자)
 4. 확신할 수 없는 단어는 모든 필드를 빈 문자열 ""로 두세요
 5. 의미가 명확한 것만 작성하세요
+6. 정의(Definition)는 해당 용어가 업무에서 어떤 의미인지 한글로 1~2문장 (50자 내외) 으로 설명. 확신 없으면 빈 문자열.
 
 ## 단어 목록 (DB출현/FE출현 횟수)
 {word_list}
@@ -76,7 +78,8 @@ JSON만 응답하세요:
   "WORD": {{
     "abbreviation": "약어 (2~5자)",
     "english_full": "영문 Full Name",
-    "korean": "한글명"
+    "korean": "한글명",
+    "definition": "한글 정의 (1~2문장)"
   }}
 }}"""
 
