@@ -19,6 +19,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
+| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Java+MyBatis+React+Menu) | 선택 | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -45,7 +46,13 @@ convert/
     ├── vector_store.py           # ChromaDB 벡터 저장소
     ├── rag_erd.py                # RAG 기반 ERD 생성
     ├── llm_assist.py             # LLM 보조 (컬럼 해석, 관계 추론)
-    └── storage.py                # Markdown 파일 생성
+    ├── storage.py                # Markdown 파일 생성
+    ├── legacy_java_parser.py     # 레거시 Java 정규식 파서 (Controller/Service/Mapper/RFC)
+    ├── legacy_react_router.py    # React Router v5/v6 + lazy import 스캐너
+    ├── legacy_menu_loader.py     # DB 메뉴 테이블 로드 + 계층 평탄화
+    ├── legacy_analyzer.py        # AS-IS 통합 오케스트레이터 (양방향 URL 매칭)
+    ├── legacy_report.py          # AS-IS 리포트 Markdown + Excel (7시트)
+    └── legacy_util.py            # URL 정규화 공유 헬퍼
 ```
 
 ## 설치
@@ -127,7 +134,7 @@ python main.py erd-group --schema-md ./output/스키마.md --query-md ./output/q
 
 ### 5. 용어사전 자동 생성
 
-스키마 컬럼명 + React 소스 변수명에서 단어를 수집하고, LLM이 약어/영문명/한글명을 생성합니다.
+스키마 컬럼명 + React 소스 변수명에서 단어를 수집하고, LLM이 약어/영문명/한글명/한글 정의를 생성합니다.
 
 ```bash
 # 스키마 + React 소스 양쪽에서 수집
@@ -140,12 +147,18 @@ python main.py terms --schema-md ./output/스키마.md
 python main.py terms --schema-md ./output/스키마.md --react-dir ./src --skip-llm
 ```
 
+LLM이 생성하는 필드:
+- **Abbreviation** — 표준 DB 약어 (2~5자)
+- **English Full** — 영문 Full Name
+- **Korean** — 한글명
+- **Definition** — 한글 정의 (업무 의미 1~2문장, 50자 내외)
+
 산출물:
 ```
 output/
 ├── terms_dictionary_TIMESTAMP.md    # 용어사전 Markdown
 └── terms_dictionary_TIMESTAMP.xlsx  # 용어사전 Excel
-    ├── Sheet: 용어사전      (전체)
+    ├── Sheet: 용어사전      (전체, Definition 포함)
     ├── Sheet: DB+FE공통     (양쪽에서 사용, 표준화 우선)
     ├── Sheet: DB전용        (DB에서만 사용)
     ├── Sheet: FE전용        (프론트에서만 사용)
@@ -303,6 +316,104 @@ output/std_report_TIMESTAMP/
 └── 08_llm_proposals.md            # LLM 표준화 제안
 ```
 
+### 11. AS-IS 레거시 소스 분석 (analyze-legacy)
+
+Java/Spring + MyBatis + React + DB 메뉴 테이블을 **통합 분석**하여
+차세대 전환 전 **프로그램 단위 메타데이터**를 일괄 추출합니다.
+한 행 = 한 Controller 엔드포인트이며 메뉴 계층 → Controller → Service
+→ Mapper XML → 관련 테이블 → RFC 호출까지 한 번에 매핑됩니다.
+
+```bash
+# 전체 분석 (메뉴 테이블 접속 포함)
+python main.py analyze-legacy \
+  --java-dir /path/to/legacy/src/main/java \
+  --mybatis-dir /path/to/legacy/src/main/resources/mapper \
+  --react-dir /path/to/legacy/frontend/src
+
+# 메뉴 테이블 없이 (내부 테스트용)
+python main.py analyze-legacy \
+  --java-dir ./src/main/java \
+  --mybatis-dir ./src/main/resources/mapper \
+  --skip-menu
+
+# 메뉴 테이블 이름 오버라이드 + RFC 탐색 깊이 조절 + 포맷 지정
+python main.py analyze-legacy \
+  --java-dir ./src/main/java --mybatis-dir ./mapper --react-dir ./web \
+  --menu-table SYS_MENU --rfc-depth 3 --format excel
+```
+
+**핵심 설계 — Controller ↔ Menu 양방향 교차 검증**
+
+URL을 정규화하여 (`/user/{id}`, `/user/:id`, `/user/{userNo}` → 동일 키)
+양쪽을 인덱싱한 뒤 교집합/차집합으로 세 가지로 분류합니다.
+
+| 분류 | 의미 |
+|------|------|
+| **Matched** | 메뉴와 Controller 모두 존재 (정상 프로그램 행) |
+| **Unmatched Controller** | 코드는 있으나 메뉴에 없음 (내부 API 또는 메뉴 누락) |
+| **Orphan Menu** | 메뉴는 있으나 Controller 없음 (미구현 또는 삭제된 기능) |
+
+**설정 (`config.yaml`):**
+
+```yaml
+legacy:
+  menu:
+    table: "TB_MENU"
+    columns:
+      program_id: "PROGRAM_ID"
+      program_nm: "PROGRAM_NM"
+      url:        "URL"
+      parent_id:  "PARENT_ID"
+      level:      "LEVEL"
+  rfc_depth: 2
+```
+
+메뉴 테이블의 컬럼명이 프로젝트마다 다르므로 각 매핑을 override 할 수
+있습니다. 메뉴 트리는 `PARENT_ID` + `LEVEL` 로 구성되고,
+leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계로
+평탄화됩니다.
+
+**지원하는 레거시 패턴:**
+
+- Java: `@Controller` / `@RestController` / `@Service` / `@Component` /
+  `@Mapper` / `@Repository`, class + method 레벨 `@RequestMapping` 계열
+  (배열 `{"/a","/b"}`, 동적 `/{id}`, `RequestMethod.GET` 포함)
+- 의존성 주입: `@Autowired` / `@Resource` / `@Inject` 필드,
+  **생성자 주입**, **Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor`** (
+  `private final` 필드)
+- MyBatis namespace = Mapper 인터페이스 FQCN (기본), 단순 클래스명 fallback
+- 인터페이스 + `*Impl` 패턴 (`OrderService` → `OrderServiceImpl` 자동 추적)
+- Abstract Controller 의 `extends` 체인 class-level mapping 상속
+- SAP JCo RFC: `destination.getFunction("Z_...")` 직접 호출
+  + `String FN_XXX = "..."` 상수를 거친 **2-pass 해석**
+  + 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
+- React Router v5 `component={X}` / v6 `element={<X/>}` / 객체 라우트 /
+  `React.lazy(() => import("./X"))` / 중첩 Route 의 부모 path 누적 결합
+- 인코딩: UTF-8 / EUC-KR / CP949 / Latin-1 자동 fallback
+
+**산출물:**
+
+```
+output/
+├── as_is_analysis_TIMESTAMP.md      # Markdown 리포트
+└── as_is_analysis_TIMESTAMP.xlsx    # Excel (7개 시트)
+    ├── Sheet: Summary                 (전체 집계)
+    ├── Sheet: Programs                (메인 — 14개 컬럼)
+    ├── Sheet: Menu Hierarchy          (메뉴 계층 + 매칭 여부)
+    ├── Sheet: Unmatched Controllers   (메뉴 없는 컨트롤러)
+    ├── Sheet: Orphan Menu Entries     (컨트롤러 없는 메뉴)
+    ├── Sheet: RFC Calls               (SAP 인터페이스 cross-reference)
+    └── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
+```
+
+**Programs 시트 컬럼 (14개):**
+
+`No, Main, Sub, Tab, Program, HTTP, URL, File, React, Controller, Service,
+Query XML, Tables, RFC`
+
+매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
+행은 **회색**으로 하이라이트됩니다.
+
 ### 6. 벡터 DB 임베딩 + RAG ERD
 
 ```bash
@@ -331,6 +442,12 @@ python main.py erd-group --schema-md ./output/스키마_enriched.md --query-md .
 
 # 5. 표준화 리포트
 python main.py standardize --schema-md ./output/스키마_enriched.md --query-md ./output/query.md --validate-data
+
+# 6. 차세대 전환 대비 — AS-IS 레거시 소스 통합 분석 (선택)
+python main.py analyze-legacy \
+  --java-dir /legacy/src/main/java \
+  --mybatis-dir /legacy/src/main/resources/mapper \
+  --react-dir /legacy/frontend/src
 ```
 
 ## ERD 렌더링
