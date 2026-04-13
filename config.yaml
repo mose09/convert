@@ -27,3 +27,15 @@ llm:
   api_base: "${LLM_API_BASE}"
   api_key: "${LLM_API_KEY}"
   model: "${LLM_MODEL}"
+
+# AS-IS 레거시 소스 분석 (analyze-legacy 명령어)
+legacy:
+  menu:
+    table: "TB_MENU"
+    columns:
+      program_id: "PROGRAM_ID"
+      program_nm: "PROGRAM_NM"
+      url: "URL"
+      parent_id: "PARENT_ID"
+      level: "LEVEL"
+  rfc_depth: 2

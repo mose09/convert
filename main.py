@@ -906,6 +906,70 @@ def cmd_all(args):
     cmd_erd(args)
 
 
+def cmd_analyze_legacy(args):
+    """Analyze AS-IS legacy sources (Java/Spring + MyBatis + React + DB menu)."""
+    from oracle_embeddings.legacy_analyzer import analyze_legacy
+    from oracle_embeddings.legacy_report import save_legacy_excel, save_legacy_markdown
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not os.path.isdir(args.java_dir):
+        print(f"Error: Java dir not found: {args.java_dir}")
+        return
+    if not os.path.isdir(args.mybatis_dir):
+        print(f"Error: MyBatis dir not found: {args.mybatis_dir}")
+        return
+    if args.react_dir and not os.path.isdir(args.react_dir):
+        print(f"Error: React dir not found: {args.react_dir}")
+        return
+
+    # Load menu rows from DB unless --skip-menu
+    menu_programs = None
+    if not args.skip_menu:
+        try:
+            from oracle_embeddings.legacy_menu_loader import load_menu_hierarchy
+            print("=== Step 1: Loading menu table ===")
+            menu_programs = load_menu_hierarchy(config, table_override=args.menu_table)
+            print(f"  Menu programs: {len(menu_programs)}")
+        except Exception as e:
+            print(f"  Warning: Menu table load failed — {e}")
+            print("  Continuing without menu hierarchy (use --skip-menu to suppress).")
+            menu_programs = None
+
+    print("\n=== Step 2: Parsing sources ===")
+    rfc_depth = args.rfc_depth
+    if rfc_depth is None:
+        rfc_depth = config.get("legacy", {}).get("rfc_depth", 2)
+
+    result = analyze_legacy(
+        java_dir=args.java_dir,
+        react_dir=args.react_dir,
+        mybatis_dir=args.mybatis_dir,
+        menu_rows=menu_programs,
+        rfc_depth=rfc_depth,
+    )
+
+    print("\n=== Step 3: Writing report ===")
+    fmt = args.format
+    md_path = None
+    xlsx_path = None
+    if fmt in ("markdown", "both"):
+        md_path = save_legacy_markdown(result, output_dir)
+        print(f"  Markdown: {os.path.abspath(md_path)}")
+    if fmt in ("excel", "both"):
+        xlsx_path = save_legacy_excel(result, output_dir)
+        print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+
+    s = result["stats"]
+    print()
+    print(f"  Endpoints: {s['endpoints']} "
+          f"(matched: {s['matched']}, unmatched: {s['unmatched']}, "
+          f"orphan menus: {s['orphan_menus']})")
+    print(f"  With React file: {s['with_react']}, With RFC: {s['with_rfc']}")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Oracle Schema & Query Analyzer for Msty Knowledge Base"
@@ -1015,6 +1079,21 @@ def main():
     erd_rag_parser = subparsers.add_parser("erd-rag", help="Generate ERD via RAG (vector DB + LLM)")
     erd_rag_parser.add_argument("--tables", help="Comma-separated table names to focus on")
 
+    # analyze-legacy command
+    al_parser = subparsers.add_parser(
+        "analyze-legacy",
+        help="Analyze AS-IS legacy sources (Java/Spring + MyBatis + React + DB menu)")
+    al_parser.add_argument("--java-dir", required=True, help="Java/Spring source root")
+    al_parser.add_argument("--mybatis-dir", required=True, help="MyBatis mapper XML dir")
+    al_parser.add_argument("--react-dir", help="React source root (optional)")
+    al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
+    al_parser.add_argument("--skip-menu", action="store_true",
+                           help="Skip DB menu load (menu columns left blank)")
+    al_parser.add_argument("--rfc-depth", type=int, default=None,
+                           help="Service-of-service walk depth for RFC collection (default 2)")
+    al_parser.add_argument("--format", choices=["markdown", "excel", "both"], default="both",
+                           help="Output format (default both)")
+
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
@@ -1054,6 +1133,8 @@ def main():
         cmd_erd_group(args)
     elif args.command == "erd-rag":
         cmd_erd_rag(args)
+    elif args.command == "analyze-legacy":
+        cmd_analyze_legacy(args)
     elif args.command == "all":
         cmd_all(args)
     else:

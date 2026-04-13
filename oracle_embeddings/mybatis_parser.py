@@ -76,6 +76,7 @@ def parse_mapper_file(filepath: str) -> list[dict]:
             if sql_text.strip():
                 statements.append({
                     "mapper": mapper_name,
+                    "mapper_path": filepath,
                     "namespace": namespace,
                     "id": stmt_id,
                     "type": tag.upper(),
@@ -109,6 +110,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
         if sql_text.strip():
             statements.append({
                 "mapper": mapper_name,
+                "mapper_path": filepath,
                 "namespace": namespace,
                 "id": stmt_id,
                 "type": tag.upper(),

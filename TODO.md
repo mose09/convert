@@ -1,4 +1,39 @@
-# TODO: 용어사전 자동 생성에 정의(Definition) 필드 추가
+# TODO: AS-IS Legacy Source Code Analyzer (완료)
+
+## Phase 1 - 코어 파서
+- [x] `legacy_java_parser.py` 신규 (패키지/import/스테레오타입/매핑/autowired/RFC)
+- [x] `mybatis_parser.parse_mapper_file` 에 `mapper_path` 필드 추가
+- [x] `legacy_analyzer.py` 골격 (컨트롤러→서비스→매퍼→테이블 체인)
+
+## Phase 2 - 메뉴 & URL 양방향 매칭
+- [x] `legacy_menu_loader.py` 신규 (DB 메뉴 트리 + URL 인덱스)
+- [x] URL 정규화 공유 유틸 (`legacy_util.normalize_url`)
+- [x] 양방향 매칭 (matched / unmatched / orphan)
+
+## Phase 3 - React 프레젠테이션 레이어
+- [x] `legacy_react_router.py` 신규 (라우트 스캔 + 컴포넌트 인덱스)
+- [x] analyzer 에 presentation_layer 연결
+
+## Phase 4 - RFC 추출
+- [x] Java parser 의 `_extract_rfc_calls` + 2-pass 상수 해석
+- [x] 서비스 체인 트랜지티브 RFC 수집
+
+## Phase 5 - 출력
+- [x] `legacy_report.py` 신규 (Markdown)
+- [x] Excel 7시트 출력
+
+## CLI 통합
+- [x] `main.py` 에 `cmd_analyze_legacy` + 서브커맨드 등록
+- [x] `config.yaml` 에 `legacy.menu` 섹션 추가
+
+## 검증
+- [x] mock Java/React/XML 디렉토리로 end-to-end 테스트
+- [x] 기존 명령(query, erd-group 등) 회귀 없음 확인
+- [x] 커밋 & 푸시
+
+---
+
+# TODO: 용어사전 자동 생성에 정의(Definition) 필드 추가 (완료)
 
 ## 작업 항목
 - [x] terms_llm.py `_enrich_batch` 프롬프트에 정의 규칙/JSON 키 추가
