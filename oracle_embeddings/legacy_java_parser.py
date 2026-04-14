@@ -147,9 +147,44 @@ _METHOD_KEYWORDS = {
 
 _REQUEST_METHOD_RE = re.compile(r"RequestMethod\.(\w+)")
 
-# RFC patterns
-_RFC_GETFUNCTION_STR_RE = re.compile(r'\.getFunction\s*\(\s*"([^"]+)"\s*\)')
-_RFC_GETFUNCTION_VAR_RE = re.compile(r"\.getFunction\s*\(\s*(\w+)\s*\)")
+# Vert.x routing DSL patterns:
+#   router.get("/order/list").handler(...)
+#   router.post("/order/save").handler(this::save)
+#   router.route("/any/path").handler(...)                  ← ANY method
+#   router.route().path("/any").method(HttpMethod.GET)...   ← chained form
+#
+# We match the literal form first. The chained form is best-effort: we walk
+# the statement text forward from a ``router.route()`` call to pick up
+# ``.path("/x")`` and ``.method(HttpMethod.GET)`` if present.
+_VERTX_ROUTE_LITERAL_RE = re.compile(
+    r"""\b\w+\.(?P<method>get|post|put|delete|patch|options|head|route)
+        \s*\(\s*"(?P<path>[^"]+)"\s*\)
+    """,
+    re.VERBOSE,
+)
+_VERTX_ROUTE_CHAIN_RE = re.compile(
+    r"""\b\w+\.route\s*\(\s*\)
+        (?P<chain>(?:\s*\.\s*\w+\s*\([^)]*\))+)
+    """,
+    re.VERBOSE,
+)
+_VERTX_CHAIN_PATH_RE = re.compile(r'\.path\s*\(\s*"([^"]+)"\s*\)')
+_VERTX_CHAIN_METHOD_RE = re.compile(r"\.method\s*\(\s*HttpMethod\.(\w+)\s*\)")
+
+# Vert.x stereotypes detected via inheritance rather than annotation.
+_VERTX_BASE_CLASSES = {"AbstractVerticle", "Verticle", "Routable"}
+
+
+# RFC patterns. Supports both forms:
+#   * SAP JCo standard: `destination.getFunction("Z_NAME")`
+#   * Project-local util:  `JCoUtil.getCoFunction("Z_NAME")`
+# (The receiver name doesn't matter — we match the final method call.)
+_RFC_GETFUNCTION_STR_RE = re.compile(
+    r'\.(?:getFunction|getCoFunction)\s*\(\s*"([^"]+)"\s*\)'
+)
+_RFC_GETFUNCTION_VAR_RE = re.compile(
+    r"\.(?:getFunction|getCoFunction)\s*\(\s*(\w+)\s*\)"
+)
 _RFC_CONST_RE = re.compile(
     r"""(?:public\s+|private\s+|protected\s+)?
         (?:static\s+)?(?:final\s+)?
@@ -298,12 +333,36 @@ def _extract_class_mapping(content: str, class_start: int) -> list[str]:
     return [m.group("single") or ""]
 
 
-def _extract_autowired_fields(content: str, class_info: dict) -> list[dict]:
-    """Extract dependency-injected fields of the class.
+# Plain Java field: `private OrderService orderService;` — captures
+# annotation-free fields so Vert.x / plain-Java projects work without
+# ``@Autowired``. Type must start with an uppercase letter so we skip
+# primitives (``int x``). ``static`` is intentionally NOT allowed here
+# because ``private static final String FN_XXX = "..."`` style constants
+# are never DI targets — keeping them in would pollute the field list
+# (analyzer would filter them, but the stats become misleading).
+_PLAIN_FIELD_RE = re.compile(
+    r"""^\s*(?:private|protected)\s+
+        (?:final\s+|transient\s+|volatile\s+)*
+        (?P<type>[A-Z]\w*)(?:\s*<[^>]*>)?\s+
+        (?P<name>\w+)\s*[=;]
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
 
-    Covers ``@Autowired``/``@Resource``/``@Inject`` explicit fields, Lombok
-    ``@RequiredArgsConstructor`` (all ``private final`` fields), and
-    constructor injection (``public ClassName(Type1 n1, Type2 n2)``).
+
+def _extract_autowired_fields(content: str, class_info: dict) -> list[dict]:
+    """Extract candidate dependency-injection fields of the class.
+
+    Covers, in decreasing specificity:
+      * ``@Autowired``/``@Resource``/``@Inject`` annotated fields (Spring)
+      * Lombok ``@RequiredArgsConstructor``/``@AllArgsConstructor`` final
+        fields (Spring)
+      * Constructor parameters (Spring + plain Java DI)
+      * Plain ``private`` / ``protected`` class fields with a user-defined
+        (Uppercase) type — Vert.x, Guice, or hand-wired projects
+
+    The analyzer downstream filters by the service/mapper index, so
+    over-capturing here (e.g. ``private Logger log;``) is harmless.
     """
     if not class_info:
         return []
@@ -335,6 +394,13 @@ def _extract_autowired_fields(content: str, class_info: dict) -> list[dict]:
             params = m.group("params")
             for pm in _PARAM_RE.finditer(params):
                 _add(pm.group("type"), pm.group("name"))
+
+    # Plain-Java fields without any DI annotation. Restricted to the class
+    # body (after the class header) so method locals are not captured.
+    body_start = class_info.get("header_end", 0)
+    body = content[body_start:]
+    for m in _PLAIN_FIELD_RE.finditer(body):
+        _add(m.group("type"), m.group("name"))
 
     return fields
 
@@ -389,6 +455,97 @@ def _extract_endpoints(content: str, class_paths: list[str]) -> list[dict]:
                     "line_number": line_number,
                 })
     return endpoints
+
+
+def _extract_vertx_endpoints(content: str, class_paths: list[str]) -> list[dict]:
+    """Extract HTTP endpoints from Vert.x routing DSL.
+
+    Handles two forms:
+
+    1. Literal: ``router.get("/order/list")`` / ``router.post("/x")`` etc.
+       Method is taken from the call name. For ``router.route("/x")`` the
+       HTTP method is ``ANY``.
+    2. Chained: ``router.route().path("/x").method(HttpMethod.GET)...``.
+       We pull ``path`` and ``method`` out of the chain; missing parts
+       default to ``/`` and ``ANY``.
+
+    The method name recorded on each endpoint is the ``.handler(...)``
+    reference when available (``this::doList`` → ``doList``), otherwise
+    the fallback ``"handler"``. This mirrors the "controller method name"
+    slot used for the program_name fallback in the analyzer.
+    """
+    endpoints = []
+
+    def _emit(http_method: str, path: str, method_name: str, line: int):
+        for cp in class_paths:
+            endpoints.append({
+                "annotation": "Vert.x",
+                "http_method": http_method,
+                "path": path,
+                "full_url": _combine_paths(cp, path),
+                "method_name": method_name,
+                "line_number": line,
+            })
+
+    # 1) literal form
+    for m in _VERTX_ROUTE_LITERAL_RE.finditer(content):
+        method = m.group("method").upper()
+        path = m.group("path")
+        if method == "ROUTE":
+            http_method = "ANY"
+        else:
+            http_method = method
+        handler_name = _find_vertx_handler_after(content, m.end()) or "handler"
+        line = content.count("\n", 0, m.start()) + 1
+        _emit(http_method, path, handler_name, line)
+
+    # 2) chained form. Because the chain regex is greedy it usually also
+    # includes ``.handler(...)`` inside the captured chain, so we search
+    # the chain text first and only fall back to the post-match window.
+    for m in _VERTX_ROUTE_CHAIN_RE.finditer(content):
+        chain = m.group("chain") or ""
+        path_match = _VERTX_CHAIN_PATH_RE.search(chain)
+        method_match = _VERTX_CHAIN_METHOD_RE.search(chain)
+        if not path_match:
+            continue
+        path = path_match.group(1)
+        http_method = method_match.group(1).upper() if method_match else "ANY"
+        hm = _VERTX_HANDLER_REF_RE.search(chain)
+        handler_name = ""
+        if hm:
+            handler_name = hm.group("ref") or hm.group("cls_ref") or ""
+        if not handler_name:
+            handler_name = _find_vertx_handler_after(content, m.end())
+        handler_name = handler_name or "handler"
+        line = content.count("\n", 0, m.start()) + 1
+        _emit(http_method, path, handler_name, line)
+
+    return endpoints
+
+
+_VERTX_HANDLER_REF_RE = re.compile(
+    r"""\.handler\s*\(\s*
+        (?:
+            this\s*::\s*(?P<ref>\w+)
+          | (?P<lambda>\w+)\s*->        # lambda variable (just a label)
+          | (?P<cls>\w+)\s*::\s*(?P<cls_ref>\w+)
+        )
+    """,
+    re.VERBOSE,
+)
+
+
+def _find_vertx_handler_after(content: str, start: int) -> str:
+    """Find the first ``.handler(...)`` reference after ``start``.
+
+    Returns the referenced method name (``this::foo`` → ``foo``), or an
+    empty string if none is found within the next 200 characters.
+    """
+    window = content[start:start + 300]
+    m = _VERTX_HANDLER_REF_RE.search(window)
+    if not m:
+        return ""
+    return m.group("ref") or m.group("cls_ref") or ""
 
 
 def _extract_rfc_calls(content: str) -> list[dict]:
@@ -468,8 +625,22 @@ def parse_java_file(filepath: str) -> dict:
     class_name = class_info["name"]
     fqcn = f"{package}.{class_name}" if package else class_name
 
-    class_paths = [""]
+    # Stereotype: annotation (Spring) wins; Vert.x ``extends AbstractVerticle``
+    # is detected as a fallback so plain-Java projects work without any
+    # framework annotation.
     stereotype = class_info.get("stereotype", "")
+    if not stereotype:
+        extends_simple = re.sub(
+            r"<.*$", "", class_info.get("extends", "")
+        ).strip().rsplit(".", 1)[-1]
+        impls_simple = {
+            re.sub(r"<.*$", "", i).strip().rsplit(".", 1)[-1]
+            for i in class_info.get("implements", [])
+        }
+        if extends_simple in _VERTX_BASE_CLASSES or impls_simple & _VERTX_BASE_CLASSES:
+            stereotype = "Verticle"
+
+    class_paths = [""]
     if stereotype in ("Controller", "RestController"):
         class_paths = _extract_class_mapping(content_nc, class_info["start"])
 
@@ -482,6 +653,9 @@ def parse_java_file(filepath: str) -> dict:
     if stereotype in ("Controller", "RestController"):
         body = content_nc[class_info["header_end"]:]
         endpoints = _extract_endpoints(body, class_paths)
+    elif stereotype == "Verticle":
+        body = content_nc[class_info["header_end"]:]
+        endpoints = _extract_vertx_endpoints(body, class_paths)
 
     rfc_calls = _extract_rfc_calls(raw)
 

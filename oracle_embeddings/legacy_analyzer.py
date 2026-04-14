@@ -59,7 +59,10 @@ def _build_indexes(classes: list[dict]) -> dict:
         stereo = c.get("stereotype", "")
         name = c["class_name"]
 
-        if stereo in ("Controller", "RestController"):
+        # Spring @Controller/@RestController and Vert.x Verticles are both
+        # treated as HTTP entry points. The parser already produced the
+        # right endpoints list for each; here we just unify the index.
+        if stereo in ("Controller", "RestController", "Verticle"):
             controllers[fqcn] = c
         if stereo in ("Service", "Component") or name.endswith("ServiceImpl") or name.endswith("Service"):
             services[fqcn] = c

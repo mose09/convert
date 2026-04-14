@@ -19,7 +19,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
-| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (backend + frontend + Menu) | 선택 | X |
+| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x + MyBatis + React + Menu) | 선택 | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -379,21 +379,37 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
 
 **지원하는 레거시 패턴:**
 
-- Java: `@Controller` / `@RestController` / `@Service` / `@Component` /
-  `@Mapper` / `@Repository`, class + method 레벨 `@RequestMapping` 계열
-  (배열 `{"/a","/b"}`, 동적 `/{id}`, `RequestMethod.GET` 포함)
-- 의존성 주입: `@Autowired` / `@Resource` / `@Inject` 필드,
-  **생성자 주입**, **Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor`** (
-  `private final` 필드)
-- MyBatis namespace = Mapper 인터페이스 FQCN (기본), 단순 클래스명 fallback
+- **백엔드 프레임워크 — Spring**: `@Controller` / `@RestController` /
+  `@Service` / `@Component` / `@Mapper` / `@Repository`, class + method
+  레벨 `@RequestMapping` 계열 (배열 `{"/a","/b"}`, 동적 `/{id}`,
+  `RequestMethod.GET` 포함)
+- **백엔드 프레임워크 — Vert.x**: `extends AbstractVerticle` 를 Controller
+  로 자동 인식. 라우팅 DSL 두 가지 형태 모두 지원:
+  - 리터럴: `router.get("/order/list").handler(this::doList)` /
+    `router.post("/x")` / `router.route("/x")` (ANY)
+  - 체인: `router.route().path("/x").method(HttpMethod.GET).handler(...)`
+  - 핸들러 이름은 `this::foo` / `Class::bar` 참조에서 추출
+- **의존성 주입**:
+  - Spring: `@Autowired` / `@Resource` / `@Inject` 필드, **생성자 주입**,
+    **Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor`** (`private
+    final` 필드)
+  - Vert.x / plain Java: **어노테이션 없는 필드도 자동 수집**
+    (`private OrderService orderService;` 형태. `static final` 상수는 제외)
+- **MyBatis XML 파일 형식**: `*Mapper.xml` / `*_sql.xml` 등 **파일명과 무관
+  하게** 내용(`<mapper namespace="...">` + SQL 태그) 기준으로 판별
+- **MyBatis namespace** = Mapper 인터페이스 FQCN (기본), 단순 클래스명
+  fallback
 - 인터페이스 + `*Impl` 패턴 (`OrderService` → `OrderServiceImpl` 자동 추적)
 - Abstract Controller 의 `extends` 체인 class-level mapping 상속
-- SAP JCo RFC: `destination.getFunction("Z_...")` 직접 호출
-  + `String FN_XXX = "..."` 상수를 거친 **2-pass 해석**
-  + 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
-- React Router v5 `component={X}` / v6 `element={<X/>}` / 객체 라우트 /
+- **SAP JCo RFC**:
+  - 표준: `destination.getFunction("Z_...")`
+  - 프로젝트 유틸: `JCoUtil.getCoFunction("Z_...")` 등 `.getFunction` /
+    `.getCoFunction` 메서드 호출 모두 인식
+  - `String FN_XXX = "..."` 상수를 거친 **2-pass 해석**
+  - 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
+- **React Router** v5 `component={X}` / v6 `element={<X/>}` / 객체 라우트 /
   `React.lazy(() => import("./X"))` / 중첩 Route 의 부모 path 누적 결합
-- 인코딩: UTF-8 / EUC-KR / CP949 / Latin-1 자동 fallback
+- **인코딩**: UTF-8 / EUC-KR / CP949 / Latin-1 자동 fallback
 
 **산출물:**
 
