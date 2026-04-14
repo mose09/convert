@@ -717,6 +717,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         for r in (c.get("rfc_calls") or [])
         if r.get("name")
     }
+    rfc_hints_total = sum(c.get("rfc_hint_count", 0) for c in classes)
     print(f"  Classes parsed: {len(classes)}")
     print(f"  Stereotype distribution: {dist_str}")
     print(f"  Endpoints discovered in parser: {ep_total} "
@@ -729,6 +730,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         sample = sorted(rfc_names)[:8]
         more = f", … (+{len(rfc_names) - 8} more)" if len(rfc_names) > 8 else ""
         print(f"    sample: {', '.join(sample)}{more}")
+    if rfc_hints_total and rfc_total < rfc_hints_total:
+        print(f"    (hint: {rfc_hints_total} call sites match the loose "
+              f"'.*Function(' pattern but only {rfc_total} were captured "
+              f"- the strict regex may be missing the project's actual "
+              f"method-name or call shape)")
 
     mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)

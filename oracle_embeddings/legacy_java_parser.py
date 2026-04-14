@@ -256,14 +256,25 @@ def _is_verticle_base(name: str) -> bool:
 #   * Co-function util:         JCoUtil.getCoFunction("Z_NAME")
 #   * Project-local helper:     helper.getJCoFunction("Z_NAME")
 #   * RFC-specific helper:      client.getRfcFunction("Z_NAME")
-# The receiver name is ignored; we rely on the ``get*Function`` suffix
-# convention that SAP JCo wrappers follow.
+#
+# IMPORTANT: We only pin the FIRST argument and do NOT require the
+# closing ``)``. Real projects almost always pass extra arguments:
+#
+#   JCoUtil.getJCoFunction("ZPM_ORDER_CREATE", timeout, session);
+#
+# A strict closing-paren regex would miss every one of these calls.
 _RFC_GETFUNCTION_STR_RE = re.compile(
-    r'\.get\w*Function\s*\(\s*"([^"]+)"\s*\)'
+    r'\.get\w*Function\s*\(\s*"([^"]+)"'
 )
 _RFC_GETFUNCTION_VAR_RE = re.compile(
-    r"\.get\w*Function\s*\(\s*(\w+)\s*\)"
+    r'\.get\w*Function\s*\(\s*(\w+)\b'
 )
+
+# Overly-broad "candidate" pattern used only for the diagnostic hint
+# counter. Matches anything that looks like ``...Function(`` and is
+# NOT the main matcher — it lets users see how many potential RFC call
+# sites exist in the source even when the strict regex returns zero.
+_RFC_HINT_RE = re.compile(r'\.\s*\w*[Ff]unction\s*\(')
 _RFC_CONST_RE = re.compile(
     r"""(?:public\s+|private\s+|protected\s+)?
         (?:static\s+)?(?:final\s+)?
@@ -682,13 +693,24 @@ def _find_vertx_handler_after(content: str, start: int) -> str:
     return m.group("ref") or m.group("cls_ref") or ""
 
 
+def _count_rfc_hints(content: str) -> int:
+    """Return a rough count of ``*Function(`` call sites in ``content``.
+
+    Purely a diagnostic helper — when the strict RFC regex returns zero
+    but this count is non-zero the user knows the regex is missing the
+    project's actual method-name pattern.
+    """
+    return len(_RFC_HINT_RE.findall(content))
+
+
 def _extract_rfc_calls(content: str) -> list[dict]:
     """Find SAP JCo RFC function calls.
 
     Two-pass:
       1) ``String FN_XXX = "Z_..."`` constants in the same file.
-      2) ``.getFunction("LITERAL")`` or ``.getFunction(FN_XXX)`` — constants
-         resolved via the first pass.
+      2) ``.getXxxFunction("LITERAL", ...)`` or ``.getXxxFunction(FN_XXX, ...)``
+         — constants resolved via the first pass. Extra arguments after
+         the first one are allowed.
     """
     constants = {
         name: value for name, value in _RFC_CONST_RE.findall(content)
@@ -817,6 +839,7 @@ def parse_java_file(filepath: str) -> dict:
         })
 
     rfc_calls = _extract_rfc_calls(raw)
+    rfc_hint_count = _count_rfc_hints(raw)
     sql_calls = _extract_sql_calls(raw)
 
     # Resolve extends to FQCN too (may need this for abstract controller chain)
@@ -839,6 +862,7 @@ def parse_java_file(filepath: str) -> dict:
         "autowired_fields": autowired,
         "endpoints": endpoints,
         "rfc_calls": rfc_calls,
+        "rfc_hint_count": rfc_hint_count,
         "sql_calls": sql_calls,
         "extends": extends_fqcn,
         "implements": class_info.get("implements", []),
