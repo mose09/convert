@@ -346,6 +346,27 @@ python main.py analyze-legacy \
   --menu-table SYS_MENU --rfc-depth 3 --format excel
 ```
 
+**백엔드 프레임워크 자동 감지 + 분기**
+
+분석을 시작하면 백엔드 루트의 `pom.xml` / `build.gradle` / `build.gradle.kts`
+의존성을 스캔해 **Spring** 인지 **Vert.x** 인지 자동으로 판별합니다.
+빌드 파일이 없는 경우 최대 200개의 `.java` 파일을 샘플링해 어노테이션/
+상속 흔적(`@Controller` / `@RestController` vs `AbstractVerticle` /
+`io.vertx`) 을 비교하는 휴리스틱으로 fallback 합니다.
+
+| 감지 결과 | Controller 로 인정되는 클래스 |
+|-----------|-------------------------------|
+| `spring`  | `@Controller` / `@RestController` 어노테이션만 |
+| `vertx`   | `extends AbstractVerticle` 만 |
+| `mixed`   | 둘 다 (Spring 과 Vert.x 소스가 한 레포에 공존) |
+| `unknown` | 둘 다 (fallback — 어느 것도 명확히 감지되지 않음) |
+
+감지 결과는 CLI 로그, Markdown 리포트 헤더, Excel `Summary` 시트의
+`Backend framework` 행에 표시됩니다. Spring 프로젝트에 우연히 `extends
+AbstractVerticle` 클래스가 섞여 있어도 해당 클래스는 controller 로 취급
+되지 않고 서비스/유틸로만 취급됩니다(반대도 동일). 감지 결과가 의도와
+다르면 프로젝트 루트에 적절한 `pom.xml` / `build.gradle` 을 두면 됩니다.
+
 **핵심 설계 — Controller ↔ Menu 양방향 교차 검증**
 
 URL을 정규화하여 (`/user/{id}`, `/user/:id`, `/user/{userNo}` → 동일 키)
@@ -395,8 +416,8 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
     final` 필드)
   - Vert.x / plain Java: **어노테이션 없는 필드도 자동 수집**
     (`private OrderService orderService;` 형태. `static final` 상수는 제외)
-- **MyBatis XML 파일 형식**: `*Mapper.xml` / `*_sql.xml` 등 **파일명과 무관
-  하게** 내용(`<mapper namespace="...">` + SQL 태그) 기준으로 판별
+- **MyBatis XML** 은 파일명과 무관하게 내용(`<mapper namespace="...">` +
+  SQL 태그) 기준으로 자동 판별 — iBatis `<sqlMap>` 포맷도 동일하게 지원
 - **MyBatis namespace** = Mapper 인터페이스 FQCN (기본), 단순 클래스명
   fallback
 - 인터페이스 + `*Impl` 패턴 (`OrderService` → `OrderServiceImpl` 자동 추적)

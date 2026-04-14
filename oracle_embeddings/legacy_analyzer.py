@@ -16,16 +16,131 @@ Each category is emitted as its own sheet / section in the output report.
 """
 
 import logging
+import os
 import re
 
 from .legacy_java_parser import parse_all_java, resolve_type_fqcn
 from .legacy_util import normalize_url
-from .mybatis_parser import extract_table_usage, parse_all_mappers
+from .mybatis_parser import _read_file_safe, extract_table_usage, parse_all_mappers
 
 logger = logging.getLogger(__name__)
 
 
 SQL_KEYWORDS_GUARD = {"FROM", "JOIN", "WHERE", "SELECT"}
+
+_FRAMEWORK_SKIP_DIRS = {"target", "build", ".git", ".gradle", ".idea",
+                        "bin", "out", "node_modules", "dist", ".next"}
+
+_BUILD_FILE_NAMES = {"pom.xml", "build.gradle", "build.gradle.kts",
+                     "settings.gradle", "settings.gradle.kts"}
+
+# Dependency coordinates that strongly indicate each framework. We keep the
+# strings short enough to avoid false matches on unrelated comments.
+_SPRING_MARKERS = (
+    "org.springframework",
+    "spring-boot",
+    "spring-webmvc",
+    "spring-web",
+)
+_VERTX_MARKERS = (
+    "io.vertx",
+    "vertx-core",
+    "vertx-web",
+    "vertx-web-api",
+)
+
+
+def _find_build_files(backend_dir: str, limit: int = 30) -> list[str]:
+    """Return up to ``limit`` build files found under ``backend_dir``."""
+    results = []
+    for root, dirs, files in os.walk(backend_dir):
+        dirs[:] = [d for d in dirs if d.lower() not in _FRAMEWORK_SKIP_DIRS]
+        for f in files:
+            if f in _BUILD_FILE_NAMES:
+                results.append(os.path.join(root, f))
+                if len(results) >= limit:
+                    return results
+    return results
+
+
+def _source_heuristic(backend_dir: str) -> tuple[int, int]:
+    """Peek at a handful of ``.java`` files and count framework markers.
+
+    Returns ``(spring_hits, vertx_hits)``. Only a bounded sample (first
+    200 java files) is scanned so this stays fast on very large repos.
+    """
+    spring_hits = 0
+    vertx_hits = 0
+    seen = 0
+    for root, dirs, files in os.walk(backend_dir):
+        dirs[:] = [d for d in dirs if d.lower() not in _FRAMEWORK_SKIP_DIRS]
+        for f in files:
+            if not f.endswith(".java"):
+                continue
+            fp = os.path.join(root, f)
+            try:
+                head = _read_file_safe(fp, limit=4000)
+            except Exception:
+                continue
+            seen += 1
+            if "org.springframework" in head or re.search(
+                r"@(?:Rest)?Controller\b", head
+            ):
+                spring_hits += 1
+            if "io.vertx" in head or "AbstractVerticle" in head:
+                vertx_hits += 1
+            if seen >= 200:
+                return spring_hits, vertx_hits
+    return spring_hits, vertx_hits
+
+
+def detect_backend_framework(backend_dir: str) -> str:
+    """Detect whether the backend project is Spring or Vert.x based.
+
+    Strategy (in order, first decisive signal wins):
+
+    1. Build files (``pom.xml``, ``build.gradle``, ``build.gradle.kts``):
+       check for ``org.springframework`` / ``spring-boot`` vs ``io.vertx``
+       / ``vertx-core`` / ``vertx-web`` coordinates.
+    2. Source heuristic: sample up to 200 ``.java`` files and count
+       `` @Controller``/``@RestController`` vs ``AbstractVerticle`` /
+       ``io.vertx`` occurrences.
+
+    Returns one of:
+      * ``"spring"``
+      * ``"vertx"``
+      * ``"mixed"``   — both frameworks present (rare; polyglot monorepo)
+      * ``"unknown"`` — neither signal detected
+    """
+    spring_hits = 0
+    vertx_hits = 0
+
+    for bf in _find_build_files(backend_dir):
+        try:
+            content = _read_file_safe(bf, limit=50000)
+        except Exception:
+            continue
+        if any(m in content for m in _SPRING_MARKERS):
+            spring_hits += 10
+        if any(m in content for m in _VERTX_MARKERS):
+            vertx_hits += 10
+
+    # If build files were inconclusive, fall back to source heuristic.
+    if spring_hits == 0 and vertx_hits == 0:
+        spring_hits, vertx_hits = _source_heuristic(backend_dir)
+
+    if spring_hits > 0 and vertx_hits == 0:
+        return "spring"
+    if vertx_hits > 0 and spring_hits == 0:
+        return "vertx"
+    if spring_hits > 0 and vertx_hits > 0:
+        # Prefer the stronger signal; tie → "mixed"
+        if spring_hits >= vertx_hits * 3:
+            return "spring"
+        if vertx_hits >= spring_hits * 3:
+            return "vertx"
+        return "mixed"
+    return "unknown"
 
 
 def _tables_for_statement(stmt: dict) -> set:
@@ -39,8 +154,14 @@ def _tables_for_statement(stmt: dict) -> set:
     return set(usage.keys())
 
 
-def _build_indexes(classes: list[dict]) -> dict:
+def _build_indexes(classes: list[dict], framework: str = "mixed") -> dict:
     """Partition parsed Java classes into role-specific indexes.
+
+    ``framework`` gates which classes are eligible as HTTP entry points:
+
+    * ``spring`` — only ``@Controller`` / ``@RestController``
+    * ``vertx``  — only Verticle subclasses
+    * ``mixed`` / ``unknown`` — both are accepted (backward-compatible)
 
     Returns a dict with:
       * controllers_by_fqcn
@@ -48,6 +169,13 @@ def _build_indexes(classes: list[dict]) -> dict:
       * mappers_by_fqcn   (``@Mapper``/``@Repository`` interfaces + ``*Mapper`` / ``*Dao``)
       * by_simple         — ``{SimpleName: [class, ...]}`` for name fallback
     """
+    if framework == "spring":
+        controller_stereos = {"Controller", "RestController"}
+    elif framework == "vertx":
+        controller_stereos = {"Verticle"}
+    else:
+        controller_stereos = {"Controller", "RestController", "Verticle"}
+
     controllers = {}
     services = {}
     mappers = {}
@@ -59,10 +187,7 @@ def _build_indexes(classes: list[dict]) -> dict:
         stereo = c.get("stereotype", "")
         name = c["class_name"]
 
-        # Spring @Controller/@RestController and Vert.x Verticles are both
-        # treated as HTTP entry points. The parser already produced the
-        # right endpoints list for each; here we just unify the index.
-        if stereo in ("Controller", "RestController", "Verticle"):
+        if stereo in controller_stereos:
             controllers[fqcn] = c
         if stereo in ("Service", "Component") or name.endswith("ServiceImpl") or name.endswith("Service"):
             services[fqcn] = c
@@ -356,8 +481,17 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         rows, unmatched_controllers, orphan_menus, stats
     """
     print(f"  Backend dir: {backend_dir}")
+    framework = detect_backend_framework(backend_dir)
+    _FRAMEWORK_LABEL = {
+        "spring": "Spring (detected via pom/gradle or @Controller annotations)",
+        "vertx": "Vert.x (detected via pom/gradle or AbstractVerticle usage)",
+        "mixed": "mixed (both Spring and Vert.x signals present)",
+        "unknown": "unknown (no framework signal detected — accepting both)",
+    }
+    print(f"  Backend framework: {_FRAMEWORK_LABEL[framework]}")
+
     classes = parse_all_java(backend_dir)
-    indexes = _build_indexes(classes)
+    indexes = _build_indexes(classes, framework=framework)
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
     )
@@ -430,6 +564,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             })
 
     stats = {
+        "backend_framework": framework,
         "controllers": len(indexes["controllers_by_fqcn"]),
         "services": len(indexes["services_by_fqcn"]),
         "mappers": len(indexes["mappers_by_fqcn"]),
@@ -446,6 +581,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "unmatched_controllers": unmatched,
         "orphan_menus": orphan_menus,
         "stats": stats,
+        "backend_framework": framework,
         "backend_dir": backend_dir,
         "frontend_dir": frontend_dir or "",
     }

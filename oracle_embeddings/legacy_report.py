@@ -50,12 +50,15 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
         f.write("# AS-IS Legacy Source Analysis\n\n")
         f.write(f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
         f.write(f"- Backend dir: `{result.get('backend_dir', '')}`\n")
+        framework = result.get("backend_framework", "unknown")
+        f.write(f"- Backend framework: **{framework}**\n")
         if result.get("frontend_dir"):
             f.write(f"- Frontend dir: `{result.get('frontend_dir', '')}`\n")
         f.write("\n")
 
         f.write("## Summary\n\n")
-        f.write("| Category | Count |\n|---|---|\n")
+        f.write("| Category | Value |\n|---|---|\n")
+        f.write(f"| Backend framework | {stats.get('backend_framework', 'unknown')} |\n")
         for label, key in [
             ("Controllers scanned", "controllers"),
             ("Services scanned", "services"),
@@ -190,8 +193,9 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
     # Sheet 1: Summary
     ws = wb.active
     ws.title = "Summary"
-    _write_header(ws, ["Category", "Count"])
+    _write_header(ws, ["Category", "Value"])
     summary_rows = [
+        ("Backend framework", stats.get("backend_framework", "unknown")),
         ("Controllers scanned", stats.get("controllers", 0)),
         ("Services scanned", stats.get("services", 0)),
         ("Mappers scanned", stats.get("mappers", 0)),
