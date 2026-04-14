@@ -49,10 +49,9 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
     with open(filepath, "w", encoding="utf-8") as f:
         f.write("# AS-IS Legacy Source Analysis\n\n")
         f.write(f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-        f.write(f"- Java dir: `{result.get('java_dir', '')}`\n")
-        f.write(f"- MyBatis dir: `{result.get('mybatis_dir', '')}`\n")
-        if result.get("react_dir"):
-            f.write(f"- React dir: `{result.get('react_dir', '')}`\n")
+        f.write(f"- Backend dir: `{result.get('backend_dir', '')}`\n")
+        if result.get("frontend_dir"):
+            f.write(f"- Frontend dir: `{result.get('frontend_dir', '')}`\n")
         f.write("\n")
 
         f.write("## Summary\n\n")

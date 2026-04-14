@@ -907,7 +907,7 @@ def cmd_all(args):
 
 
 def cmd_analyze_legacy(args):
-    """Analyze AS-IS legacy sources (Java/Spring + MyBatis + React + DB menu)."""
+    """Analyze AS-IS legacy sources (backend + frontend + DB menu)."""
     from oracle_embeddings.legacy_analyzer import analyze_legacy
     from oracle_embeddings.legacy_report import save_legacy_excel, save_legacy_markdown
 
@@ -915,14 +915,11 @@ def cmd_analyze_legacy(args):
     config = load_config(args.config) if os.path.exists(args.config) else {}
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
-    if not os.path.isdir(args.java_dir):
-        print(f"Error: Java dir not found: {args.java_dir}")
+    if not os.path.isdir(args.backend_dir):
+        print(f"Error: Backend dir not found: {args.backend_dir}")
         return
-    if not os.path.isdir(args.mybatis_dir):
-        print(f"Error: MyBatis dir not found: {args.mybatis_dir}")
-        return
-    if args.react_dir and not os.path.isdir(args.react_dir):
-        print(f"Error: React dir not found: {args.react_dir}")
+    if args.frontend_dir and not os.path.isdir(args.frontend_dir):
+        print(f"Error: Frontend dir not found: {args.frontend_dir}")
         return
 
     # Load menu rows from DB unless --skip-menu
@@ -934,7 +931,7 @@ def cmd_analyze_legacy(args):
             menu_programs = load_menu_hierarchy(config, table_override=args.menu_table)
             print(f"  Menu programs: {len(menu_programs)}")
         except Exception as e:
-            print(f"  Warning: Menu table load failed — {e}")
+            print(f"  Warning: Menu table load failed - {e}")
             print("  Continuing without menu hierarchy (use --skip-menu to suppress).")
             menu_programs = None
 
@@ -944,9 +941,8 @@ def cmd_analyze_legacy(args):
         rfc_depth = config.get("legacy", {}).get("rfc_depth", 2)
 
     result = analyze_legacy(
-        java_dir=args.java_dir,
-        react_dir=args.react_dir,
-        mybatis_dir=args.mybatis_dir,
+        backend_dir=args.backend_dir,
+        frontend_dir=args.frontend_dir,
         menu_rows=menu_programs,
         rfc_depth=rfc_depth,
     )
@@ -1082,10 +1078,12 @@ def main():
     # analyze-legacy command
     al_parser = subparsers.add_parser(
         "analyze-legacy",
-        help="Analyze AS-IS legacy sources (Java/Spring + MyBatis + React + DB menu)")
-    al_parser.add_argument("--java-dir", required=True, help="Java/Spring source root")
-    al_parser.add_argument("--mybatis-dir", required=True, help="MyBatis mapper XML dir")
-    al_parser.add_argument("--react-dir", help="React source root (optional)")
+        help="Analyze AS-IS legacy sources (backend + frontend + DB menu)")
+    al_parser.add_argument("--backend-dir", required=True,
+                           help="Backend project root (recursively scans .java + MyBatis XML; "
+                                "target/build/.git 등 자동 제외)")
+    al_parser.add_argument("--frontend-dir",
+                           help="Frontend project root (React .js/.jsx/.ts/.tsx, optional)")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
     al_parser.add_argument("--skip-menu", action="store_true",
                            help="Skip DB menu load (menu columns left blank)")

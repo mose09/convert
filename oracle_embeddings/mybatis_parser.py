@@ -19,10 +19,21 @@ def _read_file_safe(filepath: str, limit: int = None) -> str:
         return f.read(limit) if limit else f.read()
 
 
+_MYBATIS_SKIP_DIRS = {"target", "build", ".git", ".gradle", ".idea", "bin", "out",
+                      "node_modules", "dist", ".next"}
+
+
 def scan_mybatis_dir(base_dir: str) -> list[str]:
-    """Find all MyBatis/iBatis mapper XML files recursively."""
+    """Find all MyBatis/iBatis mapper XML files recursively.
+
+    Skips typical build-output and VCS directories so that a project-root
+    path can be passed safely (the legacy analyzer does this). Each
+    candidate XML is still validated via ``_is_sql_mapper`` to filter out
+    pom.xml, config files, and other non-mapper XML.
+    """
     xml_files = []
     for root, dirs, files in os.walk(base_dir):
+        dirs[:] = [d for d in dirs if d.lower() not in _MYBATIS_SKIP_DIRS]
         for f in files:
             if f.endswith(".xml"):
                 filepath = os.path.join(root, f)

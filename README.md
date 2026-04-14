@@ -19,7 +19,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
-| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Java+MyBatis+React+Menu) | 선택 | X |
+| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (backend + frontend + Menu) | 선택 | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -323,22 +323,26 @@ Java/Spring + MyBatis + React + DB 메뉴 테이블을 **통합 분석**하여
 한 행 = 한 Controller 엔드포인트이며 메뉴 계층 → Controller → Service
 → Mapper XML → 관련 테이블 → RFC 호출까지 한 번에 매핑됩니다.
 
+경로는 **백엔드/프론트엔드 루트 한 개씩만** 지정하면 됩니다. 백엔드 루트
+하위를 재귀 탐색해서 `.java` 와 MyBatis `*.xml` 을 모두 찾아내며,
+`target` / `build` / `.git` / `.gradle` / `.idea` / `bin` / `out` /
+`node_modules` 등 빌드/VCS 폴더는 자동으로 제외됩니다.
+
 ```bash
 # 전체 분석 (메뉴 테이블 접속 포함)
 python main.py analyze-legacy \
-  --java-dir /path/to/legacy/src/main/java \
-  --mybatis-dir /path/to/legacy/src/main/resources/mapper \
-  --react-dir /path/to/legacy/frontend/src
+  --backend-dir /path/to/legacy/backend \
+  --frontend-dir /path/to/legacy/frontend
 
 # 메뉴 테이블 없이 (내부 테스트용)
 python main.py analyze-legacy \
-  --java-dir ./src/main/java \
-  --mybatis-dir ./src/main/resources/mapper \
+  --backend-dir /path/to/legacy/backend \
   --skip-menu
 
 # 메뉴 테이블 이름 오버라이드 + RFC 탐색 깊이 조절 + 포맷 지정
 python main.py analyze-legacy \
-  --java-dir ./src/main/java --mybatis-dir ./mapper --react-dir ./web \
+  --backend-dir /path/to/legacy/backend \
+  --frontend-dir /path/to/legacy/frontend \
   --menu-table SYS_MENU --rfc-depth 3 --format excel
 ```
 
@@ -443,11 +447,10 @@ python main.py erd-group --schema-md ./output/스키마_enriched.md --query-md .
 # 5. 표준화 리포트
 python main.py standardize --schema-md ./output/스키마_enriched.md --query-md ./output/query.md --validate-data
 
-# 6. 차세대 전환 대비 — AS-IS 레거시 소스 통합 분석 (선택)
+# 6. 차세대 전환 대비 - AS-IS 레거시 소스 통합 분석 (선택)
 python main.py analyze-legacy \
-  --java-dir /legacy/src/main/java \
-  --mybatis-dir /legacy/src/main/resources/mapper \
-  --react-dir /legacy/frontend/src
+  --backend-dir /path/to/legacy/backend \
+  --frontend-dir /path/to/legacy/frontend
 ```
 
 ## ERD 렌더링

@@ -290,10 +290,10 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         service_fqcns, indexes, controller.get("rfc_calls", []), depth=rfc_depth
     )
 
-    # Relative file paths for readability
-    java_dir = base_dirs.get("java_dir") or ""
-    mybatis_dir = base_dirs.get("mybatis_dir") or ""
-    react_dir = base_dirs.get("react_dir") or ""
+    # Relative file paths for readability. Both Java sources and MyBatis
+    # XMLs live under ``backend_dir`` now, so we resolve both against it.
+    backend_dir = base_dirs.get("backend_dir") or ""
+    frontend_dir = base_dirs.get("frontend_dir") or ""
 
     def _rel(path: str, base: str) -> str:
         if not path or not base:
@@ -312,11 +312,11 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "program_name": (menu_entry or {}).get("program_name", "") or endpoint["method_name"],
         "http_method": endpoint["http_method"],
         "url": endpoint["full_url"],
-        "file_name": _rel(controller["filepath"], java_dir),
-        "presentation_layer": _rel(react_file or "", react_dir),
+        "file_name": _rel(controller["filepath"], backend_dir),
+        "presentation_layer": _rel(react_file or "", frontend_dir),
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
-        "query_xml": "; ".join(_rel(p, mybatis_dir) for p in xml_files),
+        "query_xml": "; ".join(_rel(p, backend_dir) for p in xml_files),
         "related_tables": ", ".join(tables),
         "rfc": ", ".join(rfc_names),
         "matched": menu_entry is not None,
@@ -324,20 +324,21 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
     return row
 
 
-def analyze_legacy(java_dir: str, react_dir: str | None, mybatis_dir: str,
+def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
                    rfc_depth: int = 2) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
     ----------
-    java_dir : str
-        Root directory of the Spring Java source tree.
-    react_dir : str or None
+    backend_dir : str
+        Root directory of the backend project. Both ``.java`` sources and
+        MyBatis/iBatis mapper XMLs are scanned recursively under this
+        path — build/VCS folders (``target``, ``build``, ``.git`` etc.)
+        are skipped automatically, so a project root is a safe value.
+    frontend_dir : str or None
         Root directory of the React source tree. If ``None``, the
         ``presentation_layer`` column is left blank.
-    mybatis_dir : str
-        Root directory of the MyBatis/iBatis mapper XMLs.
     menu_rows : list of dict or None
         Pre-loaded DB menu rows from ``legacy_menu_loader``. Each row is
         ``{program_id, program_name, main_menu, sub_menu, tab, url}``. If
@@ -351,8 +352,8 @@ def analyze_legacy(java_dir: str, react_dir: str | None, mybatis_dir: str,
     dict with keys:
         rows, unmatched_controllers, orphan_menus, stats
     """
-    print(f"  Java dir: {java_dir}")
-    classes = parse_all_java(java_dir)
+    print(f"  Backend dir: {backend_dir}")
+    classes = parse_all_java(backend_dir)
     indexes = _build_indexes(classes)
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
@@ -362,16 +363,15 @@ def analyze_legacy(java_dir: str, react_dir: str | None, mybatis_dir: str,
           f"services={len(indexes['services_by_fqcn'])} "
           f"mappers={len(indexes['mappers_by_fqcn'])})")
 
-    print(f"  MyBatis dir: {mybatis_dir}")
-    mybatis_result = parse_all_mappers(mybatis_dir)
+    mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
 
     react_url_map = {}
-    if react_dir:
+    if frontend_dir:
         try:
             from .legacy_react_router import build_url_to_component_map
-            print(f"  React dir: {react_dir}")
-            react_url_map = build_url_to_component_map(react_dir)
+            print(f"  Frontend dir: {frontend_dir}")
+            react_url_map = build_url_to_component_map(frontend_dir)
             print(f"  React routes indexed: {len(react_url_map)}")
         except Exception as e:
             logger.warning("React scan skipped: %s", e)
@@ -383,7 +383,10 @@ def analyze_legacy(java_dir: str, react_dir: str | None, mybatis_dir: str,
         if key:
             menu_url_index[key] = r
 
-    base_dirs = {"java_dir": java_dir, "mybatis_dir": mybatis_dir, "react_dir": react_dir or ""}
+    base_dirs = {
+        "backend_dir": backend_dir,
+        "frontend_dir": frontend_dir or "",
+    }
 
     rows = []
     unmatched = []
@@ -440,7 +443,6 @@ def analyze_legacy(java_dir: str, react_dir: str | None, mybatis_dir: str,
         "unmatched_controllers": unmatched,
         "orphan_menus": orphan_menus,
         "stats": stats,
-        "mybatis_dir": mybatis_dir,
-        "java_dir": java_dir,
-        "react_dir": react_dir or "",
+        "backend_dir": backend_dir,
+        "frontend_dir": frontend_dir or "",
     }
