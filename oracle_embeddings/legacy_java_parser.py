@@ -269,6 +269,55 @@ _RFC_CONST_RE = re.compile(
 )
 
 
+# String-based MyBatis SQL calls. Legacy projects often invoke SQL through
+# a helper (``CommonSQL.selectList("order.findAll", params)``) instead of
+# injecting a Mapper interface. We match when BOTH the receiver name
+# carries a clear hint AND the first argument is a string containing at
+# least one ``.`` (namespace separator). This keeps false positives off
+# ordinary ``map.update(k,v)`` / ``list.insert(0,x)`` style calls.
+_SQL_CALL_RE = re.compile(
+    r"""\b(?:commonSQL|CommonSQL|sqlSession|SqlSession|sqlClient|SqlClient
+             |sqlExec|SqlExec|sqlHelper|SqlHelper|sqlMap|SqlMap
+             |commonDao|CommonDao|sqlTemplate|SqlTemplate
+             |\w*[Dd]ao|\w*SQL|\w*Sql|queryRunner)
+        (?:\.\w+)?
+        \.\s*(?P<op>selectList|selectOne|selectMap|selectPage|selectCount
+                    |insert|update|delete|save|execute|call|query)
+        \s*\(\s*"(?P<sqlid>[^"]+\.[^"]+)"
+    """,
+    re.VERBOSE,
+)
+
+
+def _extract_sql_calls(content: str) -> list[dict]:
+    """Find string-based MyBatis SQL helper calls.
+
+    Returns a list of ``{op, sqlid, namespace, sql_id, line}``. The SQL ID
+    is split at the LAST ``.`` so ``com.example.order.findAll`` becomes
+    ``namespace='com.example.order'`` + ``sql_id='findAll'``. IDs without
+    any dot are skipped (filtered at the regex level).
+    """
+    results = []
+    seen = set()
+    for m in _SQL_CALL_RE.finditer(content):
+        sqlid = m.group("sqlid")
+        namespace, _, sql_id = sqlid.rpartition(".")
+        if not namespace:
+            continue
+        key = (m.group("op"), sqlid)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "op": m.group("op"),
+            "sqlid": sqlid,
+            "namespace": namespace,
+            "sql_id": sql_id,
+            "line": content.count("\n", 0, m.start()) + 1,
+        })
+    return results
+
+
 _ANNOTATION_TO_HTTP = {
     "GetMapping": "GET",
     "PostMapping": "POST",
@@ -764,6 +813,7 @@ def parse_java_file(filepath: str) -> dict:
         })
 
     rfc_calls = _extract_rfc_calls(raw)
+    sql_calls = _extract_sql_calls(raw)
 
     # Resolve extends to FQCN too (may need this for abstract controller chain)
     extends_fqcn = ""
@@ -785,6 +835,7 @@ def parse_java_file(filepath: str) -> dict:
         "autowired_fields": autowired,
         "endpoints": endpoints,
         "rfc_calls": rfc_calls,
+        "sql_calls": sql_calls,
         "extends": extends_fqcn,
         "implements": class_info.get("implements", []),
     }

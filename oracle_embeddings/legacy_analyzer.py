@@ -352,12 +352,89 @@ def _find_mapper_fqcns(service_fqcn: str, indexes: dict) -> list[str]:
     return results
 
 
+def _find_service_namespaces(service_fqcn: str, indexes: dict) -> set:
+    """Return the set of SQL namespaces referenced by a service or its Impl.
+
+    Looks at ``sql_calls`` collected by the Java parser — these are
+    string-based helper calls like ``CommonSQL.selectList("ns.id", ...)``
+    that bypass the Mapper interface convention entirely.
+    """
+    svc_index = indexes["services_by_fqcn"]
+    iface_to_impl = indexes["iface_to_impl"]
+    by_simple = indexes["by_simple"]
+
+    target_fqcn = iface_to_impl.get(service_fqcn, service_fqcn)
+    cls = svc_index.get(target_fqcn) or svc_index.get(service_fqcn)
+
+    namespaces = set()
+
+    def _collect(c):
+        if not c:
+            return
+        for call in c.get("sql_calls") or []:
+            ns = call.get("namespace") or ""
+            if ns:
+                namespaces.add(ns)
+
+    _collect(cls)
+    # Name-based impl fallback for interfaces that don't declare ``implements``
+    # but whose impl is discoverable via the ``*Impl`` suffix.
+    if cls and cls.get("kind") == "interface":
+        impl_name = cls["class_name"] + "Impl"
+        for cand in by_simple.get(impl_name, []):
+            _collect(cand)
+    return namespaces
+
+
+def _match_namespace(ns: str, ns_to_xml: dict) -> str | None:
+    """Find the MyBatis XML namespace that corresponds to ``ns``.
+
+    SQL helper calls may use the full FQCN (``com.example.order``) or a
+    shorthand (``order``, ``OrderSQL``). The XML file's ``namespace``
+    attribute may be one or the other. We try:
+
+    1. Exact match
+    2. ``ns`` is a suffix of an XML namespace (``order`` → ``com.x.order``)
+    3. ``ns`` is a prefix and the XML namespace is a suffix of ``ns``
+       (``com.x.order`` → ``order``)
+    """
+    if not ns:
+        return None
+    if ns in ns_to_xml:
+        return ns
+    # Suffix match: shorthand SQL call → longer XML namespace
+    suffix_matches = [
+        k for k in ns_to_xml
+        if k == ns or k.endswith("." + ns)
+    ]
+    if suffix_matches:
+        return max(suffix_matches, key=len)
+    # Prefix match: FQCN SQL call → shorter XML namespace
+    parts = ns.split(".")
+    for n in range(len(parts) - 1, 0, -1):
+        candidate = ".".join(parts[-n:])
+        if candidate in ns_to_xml:
+            return candidate
+    return None
+
+
 def _resolve_mapper_chain(service_fqcns: list[str], indexes: dict,
                           mybatis_idx: dict) -> tuple:
     """Walk service → mapper → namespace → (xml files, tables).
 
+    Two resolution paths are combined:
+
+    * **Interface path**: ``service.autowired_fields`` → Mapper interface
+      → namespace FQCN (the MyBatis default convention).
+    * **SQL-call path**: ``service.sql_calls`` → ``CommonSQL.xxx("ns.id")``
+      → direct namespace match (``_match_namespace``). This is the legacy
+      pattern used by projects that don't declare Mapper interfaces at
+      all — they use a string-keyed helper instead.
+
     Returns ``(query_xml_paths, related_tables, mapper_fqcns)`` as sorted
-    lists. Namespace matching tries (1) full FQCN, (2) simple class name.
+    lists. ``mapper_fqcns`` only contains Java interface FQCNs found via
+    the interface path; the SQL-call path contributes xml/tables without
+    a Java-side mapper identifier.
     """
     ns_to_xml = mybatis_idx["namespace_to_xml_files"]
     ns_to_tbl = mybatis_idx["namespace_to_tables"]
@@ -368,19 +445,18 @@ def _resolve_mapper_chain(service_fqcns: list[str], indexes: dict,
     seen_mappers = set()
 
     for svc in service_fqcns:
+        # --- Path 1: injected Mapper interface -----------------------
         for mfqcn in _find_mapper_fqcns(svc, indexes):
             if mfqcn in seen_mappers:
                 continue
             seen_mappers.add(mfqcn)
             mapper_fqcns.append(mfqcn)
 
-            # Primary: namespace == mapper FQCN (MyBatis convention)
             if mfqcn in ns_to_xml:
                 xml_files.update(ns_to_xml[mfqcn])
             if mfqcn in ns_to_tbl:
                 tables.update(ns_to_tbl[mfqcn])
 
-            # Fallback: namespace ends with simple name
             simple = mfqcn.rsplit(".", 1)[-1]
             for ns in ns_to_xml:
                 if ns == mfqcn:
@@ -388,6 +464,14 @@ def _resolve_mapper_chain(service_fqcns: list[str], indexes: dict,
                 if ns.endswith("." + simple) or ns == simple:
                     xml_files.update(ns_to_xml.get(ns, []))
                     tables.update(ns_to_tbl.get(ns, []))
+
+        # --- Path 2: string-based SQL helper calls -------------------
+        for raw_ns in _find_service_namespaces(svc, indexes):
+            matched_ns = _match_namespace(raw_ns, ns_to_xml)
+            if not matched_ns:
+                continue
+            xml_files.update(ns_to_xml.get(matched_ns, []))
+            tables.update(ns_to_tbl.get(matched_ns, []))
 
     return sorted(xml_files), sorted(tables), mapper_fqcns
 
@@ -548,24 +632,45 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # sees. For ``mixed`` / ``unknown`` this is a no-op.
     _filter_endpoints_by_framework(classes, framework)
 
-    # Diagnostic: stereotype + endpoint distribution so users can self-
-    # diagnose why a project might parse to zero controllers/mappers.
+    # Diagnostic: stereotype + endpoint + SQL-call distribution so users
+    # can self-diagnose why a project might parse to zero controllers /
+    # mappers / mapper chains.
     from collections import Counter
     stereo_dist = Counter(c.get("stereotype") or "(none)" for c in classes)
     dist_str = ", ".join(f"{k}={v}" for k, v in sorted(stereo_dist.items()))
     ep_total = sum(len(c.get("endpoints") or []) for c in classes)
     classes_with_eps = sum(1 for c in classes if c.get("endpoints"))
+    sql_total = sum(len(c.get("sql_calls") or []) for c in classes)
+    classes_with_sql = sum(1 for c in classes if c.get("sql_calls"))
+    sql_namespaces = {
+        call["namespace"]
+        for c in classes
+        for call in (c.get("sql_calls") or [])
+        if call.get("namespace")
+    }
     print(f"  Classes parsed: {len(classes)}")
     print(f"  Stereotype distribution: {dist_str}")
     print(f"  Endpoints discovered in parser: {ep_total} "
           f"(in {classes_with_eps} classes)")
+    print(f"  SQL helper calls: {sql_total} in {classes_with_sql} classes, "
+          f"{len(sql_namespaces)} distinct namespaces")
 
     mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
+    xml_namespaces = set(mybatis_idx["namespace_to_xml_files"].keys())
+
+    # How many of the SQL call namespaces actually match an XML namespace?
+    matched_ns = 0
+    for raw_ns in sql_namespaces:
+        if _match_namespace(raw_ns, mybatis_idx["namespace_to_xml_files"]):
+            matched_ns += 1
+    print(f"  Mapper XMLs parsed: {mybatis_result.get('mapper_count', 0)} "
+          f"({len(xml_namespaces)} namespaces); "
+          f"SQL-call namespaces matched: {matched_ns}/{len(sql_namespaces)}")
 
     indexes = _build_indexes(
         classes, framework=framework,
-        mybatis_namespaces=set(mybatis_idx["namespace_to_xml_files"].keys()),
+        mybatis_namespaces=xml_namespaces,
     )
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
