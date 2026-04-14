@@ -215,10 +215,26 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
 
     namespaces = mybatis_namespaces or set()
 
+    # Service detection suffixes. Projects use various naming conventions
+    # for business-logic classes (OrderService / OrderBo / OrderBiz /
+    # OrderManager / OrderFacade / OrderHelper) and for their
+    # implementations (*Impl). We want any of these to land in the
+    # services index so that the Controller → Service → Mapper / RFC
+    # chain can walk through.
+    service_suffixes = (
+        "Service", "ServiceImpl",
+        "Bo", "BoImpl", "Biz", "BizImpl",
+        "Manager", "ManagerImpl",
+        "Facade", "FacadeImpl",
+    )
+
     controllers = {}
     services = {}
     mappers = {}
     by_simple = {}
+
+    def _is_service_name(n):
+        return any(n.endswith(sfx) for sfx in service_suffixes)
 
     for c in classes:
         fqcn = c["fqcn"]
@@ -235,7 +251,7 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
             # above, so this can't pull in a Spring class into a Vert.x
             # project or vice versa.
             controllers[fqcn] = c
-        if stereo in ("Service", "Component") or name.endswith("ServiceImpl") or name.endswith("Service"):
+        if stereo in ("Service", "Component") or _is_service_name(name):
             services[fqcn] = c
         if stereo in ("Mapper", "Repository") or name.endswith("Mapper") or name.endswith("Dao"):
             mappers[fqcn] = c
@@ -277,27 +293,72 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
     }
 
 
+# Name-based impl discovery suffixes. Legacy projects use many different
+# suffixes for the concrete implementation of a service interface.
+_IMPL_SUFFIXES = ("Impl", "Bo", "Biz", "Manager", "Helper", "Handler", "Delegate")
+# And for core-name variants: OrderService → Order, OrderBiz → Order, ...
+_SERVICE_STRIP = re.compile(r"(?:Service|Bo|Biz|Manager|Facade)$")
+
+
 def _resolve_service_impls(services_by_fqcn: dict, by_simple: dict) -> dict:
     """For each Service interface, find its implementing class.
 
-    Heuristic: if ``OrderService`` exists and ``OrderServiceImpl`` also exists
-    in the same package (or anywhere with implements matching), map the
-    interface FQCN to the Impl FQCN.
+    Three strategies run in order; first hit wins:
+
+    1. **``implements`` declaration**: a class in the service index declares
+       ``implements OrderService`` → map that interface to the impl.
+    2. **Name-based suffix fallback**: for a service named ``OrderService``
+       try every suffix in ``_IMPL_SUFFIXES`` (``OrderServiceImpl``,
+       ``OrderServiceBo``, …) against the global class index.
+    3. **Core-name fallback**: strip any trailing ``Service``/``Bo``/
+       ``Biz``/``Manager``/``Facade`` from the interface name (``OrderBo`` →
+       ``Order``) and try ``Order`` + each impl suffix
+       (``OrderImpl``/``OrderHandler``/…). This catches projects where the
+       "interface" carries the business suffix and the implementation
+       uses a different one.
     """
     iface_to_impl = {}
+
     for fqcn, cls in services_by_fqcn.items():
         if cls["kind"] != "interface" and cls.get("implements"):
-            # Class implements interface(s); map each interface back to this
-            # class
             for iface_simple in cls["implements"]:
                 simple = re.sub(r"<.*$", "", iface_simple).strip()
                 for candidate in by_simple.get(simple, []):
                     iface_to_impl[candidate["fqcn"]] = fqcn
-    # Name-based fallback: XxxService -> XxxServiceImpl
+
     for fqcn, cls in services_by_fqcn.items():
-        impl_name = cls["class_name"] + "Impl"
-        for candidate in by_simple.get(impl_name, []):
-            iface_to_impl.setdefault(fqcn, candidate["fqcn"])
+        if fqcn in iface_to_impl:
+            continue
+        name = cls["class_name"]
+        for suffix in _IMPL_SUFFIXES:
+            impl_name = name + suffix
+            if impl_name == name:
+                continue
+            for candidate in by_simple.get(impl_name, []):
+                if candidate["fqcn"] != fqcn:
+                    iface_to_impl.setdefault(fqcn, candidate["fqcn"])
+                    break
+            if fqcn in iface_to_impl:
+                break
+
+    for fqcn, cls in services_by_fqcn.items():
+        if fqcn in iface_to_impl:
+            continue
+        name = cls["class_name"]
+        core = _SERVICE_STRIP.sub("", name)
+        if not core or core == name:
+            continue
+        for suffix in _IMPL_SUFFIXES + ("Service",):
+            impl_name = core + suffix
+            if impl_name == name:
+                continue
+            for candidate in by_simple.get(impl_name, []):
+                if candidate["fqcn"] != fqcn:
+                    iface_to_impl.setdefault(fqcn, candidate["fqcn"])
+                    break
+            if fqcn in iface_to_impl:
+                break
+
     return iface_to_impl
 
 
@@ -632,9 +693,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # sees. For ``mixed`` / ``unknown`` this is a no-op.
     _filter_endpoints_by_framework(classes, framework)
 
-    # Diagnostic: stereotype + endpoint + SQL-call distribution so users
-    # can self-diagnose why a project might parse to zero controllers /
-    # mappers / mapper chains.
+    # Diagnostic: stereotype + endpoint + SQL-call + RFC-call distribution
+    # so users can self-diagnose why a project might parse to zero
+    # controllers / mappers / mapper chains / RFC calls.
     from collections import Counter
     stereo_dist = Counter(c.get("stereotype") or "(none)" for c in classes)
     dist_str = ", ".join(f"{k}={v}" for k, v in sorted(stereo_dist.items()))
@@ -648,12 +709,26 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         for call in (c.get("sql_calls") or [])
         if call.get("namespace")
     }
+    rfc_total = sum(len(c.get("rfc_calls") or []) for c in classes)
+    classes_with_rfc = sum(1 for c in classes if c.get("rfc_calls"))
+    rfc_names = {
+        r["name"]
+        for c in classes
+        for r in (c.get("rfc_calls") or [])
+        if r.get("name")
+    }
     print(f"  Classes parsed: {len(classes)}")
     print(f"  Stereotype distribution: {dist_str}")
     print(f"  Endpoints discovered in parser: {ep_total} "
           f"(in {classes_with_eps} classes)")
     print(f"  SQL helper calls: {sql_total} in {classes_with_sql} classes, "
           f"{len(sql_namespaces)} distinct namespaces")
+    print(f"  RFC calls: {rfc_total} in {classes_with_rfc} classes, "
+          f"{len(rfc_names)} distinct names")
+    if rfc_names and rfc_total > 0:
+        sample = sorted(rfc_names)[:8]
+        more = f", … (+{len(rfc_names) - 8} more)" if len(rfc_names) > 8 else ""
+        print(f"    sample: {', '.join(sample)}{more}")
 
     mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
