@@ -667,22 +667,26 @@ def parse_java_file(filepath: str) -> dict:
                     stereotype = "Verticle"
                     break
 
-    class_paths = [""]
-    if stereotype in ("Controller", "RestController"):
-        class_paths = _extract_class_mapping(content_nc, class_info["start"])
+    # Always look for a class-level @RequestMapping (no-op if absent), then
+    # run BOTH endpoint extractors regardless of stereotype. The Spring
+    # extractor only fires on @Mapping annotations, the Vert.x one only
+    # fires on ``router.get/post/...`` DSL calls, so a file without the
+    # corresponding patterns simply yields zero endpoints. This matters
+    # for real Vert.x projects where route setup lives in plain
+    # "router builder" classes (e.g. ``OrderRouter``) that neither
+    # extend ``AbstractVerticle`` nor carry any annotation — those
+    # classes still end up as HTTP entry points in the analyzer.
+    class_paths = _extract_class_mapping(content_nc, class_info["start"]) or [""]
 
     autowired = _extract_autowired_fields(content_nc, class_info)
     # Resolve FQCNs for each autowired field
     for f in autowired:
         f["type_fqcn"] = resolve_type_fqcn(f["type_simple"], imports, package)
 
-    endpoints = []
-    if stereotype in ("Controller", "RestController"):
-        body = content_nc[class_info["header_end"]:]
-        endpoints = _extract_endpoints(body, class_paths)
-    elif stereotype == "Verticle":
-        body = content_nc[class_info["header_end"]:]
-        endpoints = _extract_vertx_endpoints(body, class_paths)
+    body = content_nc[class_info["header_end"]:]
+    endpoints = _extract_endpoints(body, class_paths)
+    # Vert.x routes have no class-level prefix concept
+    endpoints += _extract_vertx_endpoints(body, [""])
 
     rfc_calls = _extract_rfc_calls(raw)
 

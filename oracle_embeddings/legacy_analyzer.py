@@ -154,6 +154,22 @@ def _tables_for_statement(stmt: dict) -> set:
     return set(usage.keys())
 
 
+def _filter_endpoints_by_framework(classes: list[dict], framework: str) -> None:
+    """Drop endpoints that don't match the detected framework (in place).
+
+    When framework is ``spring`` we remove Vert.x DSL endpoints and vice
+    versa. ``mixed`` / ``unknown`` keeps both kinds.
+    """
+    if framework not in ("spring", "vertx"):
+        return
+    for c in classes:
+        eps = c.get("endpoints") or []
+        if framework == "spring":
+            c["endpoints"] = [e for e in eps if e.get("annotation") != "Vert.x"]
+        else:
+            c["endpoints"] = [e for e in eps if e.get("annotation") == "Vert.x"]
+
+
 def _build_indexes(classes: list[dict], framework: str = "mixed",
                    mybatis_namespaces: set | None = None) -> dict:
     """Partition parsed Java classes into role-specific indexes.
@@ -163,6 +179,12 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
     * ``spring`` — only ``@Controller`` / ``@RestController``
     * ``vertx``  — only Verticle subclasses
     * ``mixed`` / ``unknown`` — both are accepted (backward-compatible)
+
+    In addition to the stereotype-based rule, **any class that carries at
+    least one extracted endpoint is promoted to a controller**. This
+    covers the common Vert.x pattern where route setup lives in a plain
+    "router builder" class (no ``extends AbstractVerticle``, no Spring
+    annotation) that the main Verticle instantiates and delegates to.
 
     ``mybatis_namespaces`` (optional) enables a namespace-based reverse
     lookup: any class or interface whose FQCN matches a MyBatis
@@ -196,8 +218,15 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
         by_simple.setdefault(c["class_name"], []).append(c)
         stereo = c.get("stereotype", "")
         name = c["class_name"]
+        has_endpoints = bool(c.get("endpoints"))
 
         if stereo in controller_stereos:
+            controllers[fqcn] = c
+        elif has_endpoints:
+            # Promotion: plain class that happens to declare routes. The
+            # endpoint-list was already filtered to match ``framework``
+            # above, so this can't pull in a Spring class into a Vert.x
+            # project or vice versa.
             controllers[fqcn] = c
         if stereo in ("Service", "Component") or name.endswith("ServiceImpl") or name.endswith("Service"):
             services[fqcn] = c
@@ -507,15 +536,22 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
 
     classes = parse_all_java(backend_dir)
 
+    # Apply framework gating to endpoint lists BEFORE counting, so that
+    # the "endpoints discovered" diagnostic matches what the role index
+    # sees. For ``mixed`` / ``unknown`` this is a no-op.
+    _filter_endpoints_by_framework(classes, framework)
+
     # Diagnostic: stereotype + endpoint distribution so users can self-
     # diagnose why a project might parse to zero controllers/mappers.
     from collections import Counter
     stereo_dist = Counter(c.get("stereotype") or "(none)" for c in classes)
     dist_str = ", ".join(f"{k}={v}" for k, v in sorted(stereo_dist.items()))
     ep_total = sum(len(c.get("endpoints") or []) for c in classes)
+    classes_with_eps = sum(1 for c in classes if c.get("endpoints"))
     print(f"  Classes parsed: {len(classes)}")
     print(f"  Stereotype distribution: {dist_str}")
-    print(f"  Endpoints discovered in parser: {ep_total}")
+    print(f"  Endpoints discovered in parser: {ep_total} "
+          f"(in {classes_with_eps} classes)")
 
     mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
@@ -527,8 +563,15 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
     )
-    print(f"  Role index: controllers={len(indexes['controllers_by_fqcn'])} "
-          f"services={len(indexes['services_by_fqcn'])} "
+    # Report how many of those controllers came from stereotype match vs
+    # the endpoint-promotion fallback, so users can understand the flow.
+    promoted = sum(
+        1 for c in indexes["controllers_by_fqcn"].values()
+        if c.get("stereotype") not in ("Controller", "RestController", "Verticle")
+    )
+    promo_note = f" (of which {promoted} promoted via endpoint-only rule)" if promoted else ""
+    print(f"  Role index: controllers={len(indexes['controllers_by_fqcn'])}"
+          f"{promo_note} services={len(indexes['services_by_fqcn'])} "
           f"mappers={len(indexes['mappers_by_fqcn'])}")
 
     react_url_map = {}
