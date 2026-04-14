@@ -250,15 +250,19 @@ def _is_verticle_base(name: str) -> bool:
     return simple.endswith("Verticle")
 
 
-# RFC patterns. Supports both forms:
-#   * SAP JCo standard: `destination.getFunction("Z_NAME")`
-#   * Project-local util:  `JCoUtil.getCoFunction("Z_NAME")`
-# (The receiver name doesn't matter — we match the final method call.)
+# RFC patterns. We accept any method whose name starts with ``get`` and
+# ends with ``Function`` — this covers:
+#   * SAP JCo standard:         destination.getFunction("Z_NAME")
+#   * Co-function util:         JCoUtil.getCoFunction("Z_NAME")
+#   * Project-local helper:     helper.getJCoFunction("Z_NAME")
+#   * RFC-specific helper:      client.getRfcFunction("Z_NAME")
+# The receiver name is ignored; we rely on the ``get*Function`` suffix
+# convention that SAP JCo wrappers follow.
 _RFC_GETFUNCTION_STR_RE = re.compile(
-    r'\.(?:getFunction|getCoFunction)\s*\(\s*"([^"]+)"\s*\)'
+    r'\.get\w*Function\s*\(\s*"([^"]+)"\s*\)'
 )
 _RFC_GETFUNCTION_VAR_RE = re.compile(
-    r"\.(?:getFunction|getCoFunction)\s*\(\s*(\w+)\s*\)"
+    r"\.get\w*Function\s*\(\s*(\w+)\s*\)"
 )
 _RFC_CONST_RE = re.compile(
     r"""(?:public\s+|private\s+|protected\s+)?
