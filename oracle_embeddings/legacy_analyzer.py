@@ -311,7 +311,11 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
 
 # Name-based impl discovery suffixes. Legacy projects use many different
 # suffixes for the concrete implementation of a service interface.
-_IMPL_SUFFIXES = ("Impl", "Bo", "Biz", "Manager", "Helper", "Handler", "Delegate")
+# NOTE: ``Handler`` is intentionally NOT here — in Vert.x projects it is
+# a Controller (verticle-adjacent HTTP handler), not a service impl.
+# ``Facade`` is present in both lists to stay consistent with
+# ``_SERVICE_STRIP`` below.
+_IMPL_SUFFIXES = ("Impl", "Bo", "Biz", "Manager", "Facade", "Helper", "Delegate")
 # And for core-name variants: OrderService → Order, OrderBiz → Order, ...
 _SERVICE_STRIP = re.compile(r"(?:Service|Bo|Biz|Manager|Facade)$")
 

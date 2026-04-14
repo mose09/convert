@@ -886,6 +886,20 @@ _METHOD_SIG_RE = re.compile(
 # class's autowired_fields so false positives on utility calls are safe.
 _FIELD_CALL_RE = re.compile(r"\b(?P<receiver>\w+)\s*\.\s*(?P<method>\w+)\s*\(")
 
+# Nested type declaration (inner class / interface / enum). When we see
+# one of these in the outer class body we must skip its entire ``{...}``
+# block so its methods are NOT picked up as top-level methods of the
+# outer class — otherwise inner Builder/DTO methods leak SQL/RFC calls
+# into the wrong row.
+_NESTED_TYPE_DECL_RE = re.compile(
+    r"""(?:\b(?:public|protected|private|static|final|abstract)\b\s+)*
+        \b(?P<kind>class|interface|enum)\b\s+\w+
+        [^{;]*?
+        \{
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
 _METHOD_NAME_RESERVED = {
     "if", "while", "for", "switch", "catch", "return", "new", "throw",
     "synchronized", "try", "else", "do",
@@ -969,9 +983,24 @@ def _extract_method_bodies(content: str, class_info: dict) -> list[dict]:
     methods = []
     cursor = open_brace + 1
     while cursor < class_body_end:
-        m = _METHOD_SIG_RE.search(content, cursor, class_body_end)
-        if not m:
+        # Whichever comes first — a method signature or a nested type
+        # (inner class / interface / enum) — gets processed. If a
+        # nested type comes first, skip its entire balanced ``{...}``
+        # so its methods are not promoted to the outer class.
+        method_match = _METHOD_SIG_RE.search(content, cursor, class_body_end)
+        nested_match = _NESTED_TYPE_DECL_RE.search(content, cursor, class_body_end)
+
+        if nested_match is not None and (
+            method_match is None or nested_match.start() < method_match.start()
+        ):
+            nested_open = nested_match.end() - 1  # position of the '{'
+            nested_close = _scan_balanced_braces(content, nested_open)
+            cursor = nested_close
+            continue
+
+        if method_match is None:
             break
+        m = method_match
         name = m.group("name")
         if name in _METHOD_NAME_RESERVED or name in _METHOD_KEYWORDS:
             cursor = m.end()
