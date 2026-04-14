@@ -404,12 +404,21 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
   `@Service` / `@Component` / `@Mapper` / `@Repository`, class + method
   레벨 `@RequestMapping` 계열 (배열 `{"/a","/b"}`, 동적 `/{id}`,
   `RequestMethod.GET` 포함)
-- **백엔드 프레임워크 — Vert.x**: `extends AbstractVerticle` 를 Controller
-  로 자동 인식. 라우팅 DSL 두 가지 형태 모두 지원:
-  - 리터럴: `router.get("/order/list").handler(this::doList)` /
-    `router.post("/x")` / `router.route("/x")` (ANY)
-  - 체인: `router.route().path("/x").method(HttpMethod.GET).handler(...)`
-  - 핸들러 이름은 `this::foo` / `Class::bar` 참조에서 추출
+- **백엔드 프레임워크 — Vert.x**: 세 가지 패턴 지원:
+  - **커스텀 어노테이션 (one-class-per-endpoint)**:
+    `@RestVerticle(url = "/api/order/list", method = HttpMethod.POST, isAuth = true)`
+    같은 프로젝트 로컬 어노테이션을 클래스 위에서 찾아 endpoint 를 생성.
+    `url` 은 필수, `method` 는 `HttpMethod.GET` 등 형태로 선택적 지정
+    (없으면 ANY), `isAuth` 등 나머지 속성은 무시
+  - **상속 기반**: `extends AbstractVerticle` / `*Verticle` 로 끝나는 모든
+    커스텀 base 클래스(`BaseVerticle` / `ReactiveVerticle` / …)
+  - **라우팅 DSL**: `router.get("/x").handler(this::foo)` 형태. **`.handler(...)`
+    체이닝이 반드시 뒤따라야** endpoint 로 인정하여 `map.get("...")` /
+    `config.get("...")` 같은 일반 메서드 호출과의 false positive 를 차단
+    - 리터럴: `router.get/post/put/delete/patch/options/head("/x").handler(...)`
+    - 체인: `router.route().path("/x").method(HttpMethod.GET).handler(...)`
+    - 핸들러 이름은 `this::foo` / `Class::bar` / `ctx -> ...` / `new X()`
+      에서 자동 추출
 - **의존성 주입**:
   - Spring: `@Autowired` / `@Resource` / `@Inject` 필드, **생성자 주입**,
     **Lombok `@RequiredArgsConstructor` / `@AllArgsConstructor`** (`private

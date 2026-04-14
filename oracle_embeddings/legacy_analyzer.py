@@ -154,20 +154,27 @@ def _tables_for_statement(stmt: dict) -> set:
     return set(usage.keys())
 
 
+_VERTX_ENDPOINT_ANNOTATIONS = {"Vert.x", "RestVerticle"}
+
+
 def _filter_endpoints_by_framework(classes: list[dict], framework: str) -> None:
     """Drop endpoints that don't match the detected framework (in place).
 
-    When framework is ``spring`` we remove Vert.x DSL endpoints and vice
-    versa. ``mixed`` / ``unknown`` keeps both kinds.
+    When framework is ``spring`` we remove Vert.x / RestVerticle endpoints
+    and vice versa. ``mixed`` / ``unknown`` keeps both kinds.
     """
     if framework not in ("spring", "vertx"):
         return
     for c in classes:
         eps = c.get("endpoints") or []
         if framework == "spring":
-            c["endpoints"] = [e for e in eps if e.get("annotation") != "Vert.x"]
+            c["endpoints"] = [
+                e for e in eps if e.get("annotation") not in _VERTX_ENDPOINT_ANNOTATIONS
+            ]
         else:
-            c["endpoints"] = [e for e in eps if e.get("annotation") == "Vert.x"]
+            c["endpoints"] = [
+                e for e in eps if e.get("annotation") in _VERTX_ENDPOINT_ANNOTATIONS
+            ]
 
 
 def _build_indexes(classes: list[dict], framework: str = "mixed",

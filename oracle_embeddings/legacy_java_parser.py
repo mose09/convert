@@ -164,23 +164,73 @@ _REQUEST_METHOD_RE = re.compile(r"RequestMethod\.(\w+)")
 #   router.route("/any/path").handler(...)                  ← ANY method
 #   router.route().path("/any").method(HttpMethod.GET)...   ← chained form
 #
-# We match the literal form first. The chained form is best-effort: we walk
-# the statement text forward from a ``router.route()`` call to pick up
-# ``.path("/x")`` and ``.method(HttpMethod.GET)`` if present.
+# We REQUIRE a ``.handler(...)`` call to follow the route definition. This
+# is what distinguishes a real Vert.x route setup from ordinary method
+# calls that happen to look similar (``map.get("key")`` /
+# ``config.get("timeout")`` / ``request.get("/api/path")``). Without the
+# ``.handler`` anchor the regex produces an unacceptable number of false
+# positives on large legacy codebases.
 _VERTX_ROUTE_LITERAL_RE = re.compile(
     r"""\b\w+\.(?P<method>get|post|put|delete|patch|options|head|route)
         \s*\(\s*"(?P<path>[^"]+)"\s*\)
+        \s*(?://[^\n]*\n\s*)*        # optional line comments between calls
+        \.\s*handler\s*\(\s*
+        (?:
+            this\s*::\s*(?P<this_ref>\w+)
+          | (?P<cls_simple>[A-Z]\w*)\s*::\s*(?P<cls_ref>\w+)
+          | (?P<lambda_var>\w+)\s*->
+          | new\s+(?P<inline_cls>[A-Z]\w*)
+        )?
     """,
-    re.VERBOSE,
+    re.VERBOSE | re.DOTALL,
 )
 _VERTX_ROUTE_CHAIN_RE = re.compile(
     r"""\b\w+\.route\s*\(\s*\)
-        (?P<chain>(?:\s*\.\s*\w+\s*\([^)]*\))+)
+        (?P<chain>(?:\s*\.\s*\w+\s*\([^)]*\))+?\s*\.\s*handler\s*\([^)]*\))
     """,
     re.VERBOSE,
 )
 _VERTX_CHAIN_PATH_RE = re.compile(r'\.path\s*\(\s*"([^"]+)"\s*\)')
 _VERTX_CHAIN_METHOD_RE = re.compile(r"\.method\s*\(\s*HttpMethod\.(\w+)\s*\)")
+
+# Custom Vert.x project annotation used as a one-class-per-endpoint
+# pattern. Example:
+#
+#   @RestVerticle(url = "/api/order/list", isAuth = true)
+#   public class OrderListHandler { ... }
+#
+# URL is mandatory; method defaults to ``ANY`` if absent. Additional
+# attributes (``isAuth``, ``role``, …) are ignored — only ``url`` /
+# ``method`` drive the endpoint.
+_REST_VERTICLE_ANNO_RE = re.compile(
+    r"@RestVerticle\s*\((?P<args>(?:[^()]|\([^()]*\))*)\)"
+)
+_REST_VERTICLE_URL_RE = re.compile(r'\burl\s*=\s*"([^"]+)"')
+_REST_VERTICLE_METHOD_RE = re.compile(r'\bmethod\s*=\s*(?:HttpMethod\.)?(\w+)')
+
+
+def _extract_rest_verticle(content: str, class_start: int) -> dict | None:
+    """Look for ``@RestVerticle`` just above the class and return its attrs.
+
+    Returns ``{"url": str, "method": str}`` if found, otherwise ``None``.
+    Scans a generous window so that other annotations stacked on top of
+    ``@RestVerticle`` don't hide it.
+    """
+    window_start = max(0, class_start - 1500)
+    window = content[window_start:class_start]
+    m = _REST_VERTICLE_ANNO_RE.search(window)
+    if not m:
+        return None
+    args = m.group("args") or ""
+    url_m = _REST_VERTICLE_URL_RE.search(args)
+    if not url_m:
+        return None
+    method_m = _REST_VERTICLE_METHOD_RE.search(args)
+    return {
+        "url": url_m.group(1),
+        "method": method_m.group(1).upper() if method_m else "ANY",
+    }
+
 
 # Vert.x stereotype is detected by class inheritance rather than annotation.
 # The direct Vert.x base is ``AbstractVerticle``, but real projects often
@@ -520,7 +570,13 @@ def _extract_vertx_endpoints(content: str, class_paths: list[str]) -> list[dict]
             http_method = "ANY"
         else:
             http_method = method
-        handler_name = _find_vertx_handler_after(content, m.end()) or "handler"
+        handler_name = (
+            m.group("this_ref")
+            or m.group("cls_ref")
+            or m.group("lambda_var")
+            or m.group("inline_cls")
+            or "handler"
+        )
         line = content.count("\n", 0, m.start()) + 1
         _emit(http_method, path, handler_name, line)
 
@@ -650,12 +706,18 @@ def parse_java_file(filepath: str) -> dict:
     class_name = class_info["name"]
     fqcn = f"{package}.{class_name}" if package else class_name
 
-    # Stereotype: annotation (Spring) wins; if no annotation, check whether
-    # the class extends/implements a Verticle-like base (direct
-    # AbstractVerticle, a project-local ``*Verticle`` wrapper, or
-    # ``implements Verticle``). This keeps plain-Java Vert.x projects
+    # Custom project-level Vert.x annotation (one-class-per-endpoint
+    # pattern). We check this BEFORE stereotype inference so the class is
+    # promoted to Verticle regardless of what it extends.
+    rest_vert = _extract_rest_verticle(content_nc, class_info["start"])
+
+    # Stereotype: annotation (Spring) wins; then @RestVerticle; then
+    # inheritance-based fallback (extends AbstractVerticle / BaseVerticle
+    # / implements Verticle). This keeps plain-Java Vert.x projects
     # working without any framework annotation.
     stereotype = class_info.get("stereotype", "")
+    if not stereotype and rest_vert:
+        stereotype = "Verticle"
     if not stereotype:
         extends_clean = re.sub(r"<.*$", "", class_info.get("extends", "")).strip()
         if _is_verticle_base(extends_clean):
@@ -687,6 +749,19 @@ def parse_java_file(filepath: str) -> dict:
     endpoints = _extract_endpoints(body, class_paths)
     # Vert.x routes have no class-level prefix concept
     endpoints += _extract_vertx_endpoints(body, [""])
+
+    # @RestVerticle annotation — emit a single endpoint synthesized from
+    # the annotation attributes. The handler method name defaults to the
+    # class name since this pattern uses one class per endpoint.
+    if rest_vert:
+        endpoints.append({
+            "annotation": "RestVerticle",
+            "http_method": rest_vert["method"],
+            "path": rest_vert["url"],
+            "full_url": rest_vert["url"],
+            "method_name": class_name,
+            "line_number": 1,
+        })
 
     rfc_calls = _extract_rfc_calls(raw)
 
