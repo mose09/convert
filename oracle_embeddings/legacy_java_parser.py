@@ -345,28 +345,95 @@ _ANNOTATION_TO_HTTP = {
 def _parse_mapping_paths(args: str) -> list[str]:
     """Given the arg list of a mapping annotation, return the list of paths.
 
-    Handles: ``("/x")`` / ``(value="/x")`` / ``({"/a","/b"})`` / ``(path={"/a"})``.
+    Handles the common Spring MVC forms:
 
-    IMPORTANT: Java string literals can contain ``{...}`` path variables, so
-    we must detect array form by the presence of ``{`` *outside* strings. We
-    do that by stripping string contents first before testing for the array
-    brace.
+    * Bare string:       ``("/x")``
+    * Bare array:        ``({"/a", "/b"})``
+    * ``value`` / ``path`` key: ``(value = "/x")`` / ``(path = "/x")``
+    * Array with key:    ``(value = {"/a", "/b"})`` / ``(path = {"/a"})``
+    * Plus extra attrs:  ``(value = "/x", consumes = "...", produces = {...})``
+
+    The tricky cases are when OTHER attributes (``consumes``, ``produces``,
+    ``params``, ``headers``) also contain string literals or braces. We
+    must not pick those up as paths. So we look ONLY at ``value`` /
+    ``path`` keys, and if no key is present we treat the **first** arg
+    (before any ``,``) as the bare value.
     """
     if args is None:
         return [""]
 
-    # Extract all string literals upfront
-    strings = re.findall(r'"([^"]*)"', args)
+    # 1. value = {...} or path = {...}  (array with key)
+    for key in ("value", "path"):
+        m = re.search(rf'\b{key}\s*=\s*\{{([^}}]*)\}}', args)
+        if m:
+            paths = re.findall(r'"([^"]*)"', m.group(1))
+            return paths or [""]
 
-    # Strip string literals from a scratch copy to check for array braces
-    scratch = re.sub(r'"[^"]*"', '""', args)
+    # 2. value = "..." or path = "..."  (single with key)
+    for key in ("value", "path"):
+        m = re.search(rf'\b{key}\s*=\s*"([^"]*)"', args)
+        if m:
+            return [m.group(1)]
 
-    # Array form: `{ ... }` on the outside, with or without ``value=``/``path=``
-    if re.search(r"=\s*\{", scratch) or re.match(r"\s*\{", scratch):
-        return [s for s in strings] or [""]
+    # 3. No ``value``/``path`` key — the mapping uses the bare form.
+    #    Only look at the first positional argument (i.e. everything
+    #    before the first comma that is not inside a string/brace).
+    #    This prevents ``consumes = "..."`` or ``produces = {...}`` from
+    #    being parsed as paths.
+    first = _first_positional_arg(args)
+    stripped = first.lstrip()
 
-    # Otherwise take the first string literal
-    return [strings[0]] if strings else [""]
+    # 3a. Bare array: {"/a", "/b"}
+    if stripped.startswith("{"):
+        m = re.match(r"\{([^}]*)\}", stripped)
+        if m:
+            paths = re.findall(r'"([^"]*)"', m.group(1))
+            return paths or [""]
+
+    # 3b. Bare string: "/x"
+    m = re.match(r'\s*"([^"]*)"', first)
+    if m:
+        return [m.group(1)]
+
+    return [""]
+
+
+def _first_positional_arg(args: str) -> str:
+    """Return the first positional argument of an annotation argument list.
+
+    Walks the arg string respecting string literals and balanced
+    ``{}``/``()`` brackets, stopping at the first top-level comma. The
+    point is to isolate the bare ``value`` from something like::
+
+        ("/x", consumes = MediaType.APPLICATION_JSON_VALUE)
+
+    so that a later ``value =`` lookup in a different argument does not
+    confuse the parser.
+    """
+    depth_paren = 0
+    depth_brace = 0
+    in_str = None
+    for i, c in enumerate(args):
+        if in_str is not None:
+            if c == "\\" and i + 1 < len(args):
+                continue
+            if c == in_str:
+                in_str = None
+            continue
+        if c == '"' or c == "'":
+            in_str = c
+            continue
+        if c == "(":
+            depth_paren += 1
+        elif c == ")":
+            depth_paren -= 1
+        elif c == "{":
+            depth_brace += 1
+        elif c == "}":
+            depth_brace -= 1
+        elif c == "," and depth_paren == 0 and depth_brace == 0:
+            return args[:i]
+    return args
 
 
 def _http_method_from_args(args: str, annotation: str) -> str:
@@ -544,16 +611,80 @@ def _extract_autowired_fields(content: str, class_info: dict) -> list[dict]:
     return fields
 
 
+def _strip_annotations_balanced(text: str) -> str:
+    """Remove ``@Name(...)`` annotations respecting nested parentheses.
+
+    The simple ``@\\w+\\s*\\([^)]*\\)`` regex fails when annotation
+    arguments contain parentheses of their own — e.g. Spring Security's
+    ``@PreAuthorize("hasRole('ADMIN') or (hasRole('USER') and ...)")`` —
+    because ``[^)]*`` stops at the first ``)``. That leaves stray
+    tokens (``or``, ``hasRole``) behind which the method-name finder
+    then picks up as false positives.
+
+    We walk the text manually and consume matched ``(`` / ``)`` pairs,
+    ignoring parentheses that appear inside string / char literals.
+    Replaced ranges are filled with spaces so that byte offsets stay
+    aligned (handy if any caller reports line numbers later).
+    """
+    out = []
+    i = 0
+    n = len(text)
+    while i < n:
+        if text[i] == '@':
+            start = i
+            j = i + 1
+            while j < n and (text[j].isalnum() or text[j] == '_'):
+                j += 1
+            # Optional ``.`` for fully-qualified annotations
+            while j < n and text[j] == '.':
+                j += 1
+                while j < n and (text[j].isalnum() or text[j] == '_'):
+                    j += 1
+            # Allow whitespace between annotation name and `(`
+            k = j
+            while k < n and text[k].isspace():
+                k += 1
+            if k < n and text[k] == '(':
+                depth = 0
+                in_str = None
+                j = k
+                while j < n:
+                    c = text[j]
+                    if in_str is not None:
+                        if c == '\\' and j + 1 < n:
+                            j += 2
+                            continue
+                        if c == in_str:
+                            in_str = None
+                    elif c == '"' or c == "'":
+                        in_str = c
+                    elif c == '(':
+                        depth += 1
+                    elif c == ')':
+                        depth -= 1
+                        if depth == 0:
+                            j += 1
+                            break
+                    j += 1
+            out.append(' ' * (j - start))
+            i = j
+            continue
+        out.append(text[i])
+        i += 1
+    return ''.join(out)
+
+
 def _find_method_name_after(content: str, start: int) -> str:
     """Scan forward from ``start`` for the first Java method signature.
 
-    Walks token-by-token, skipping annotations, modifiers, and return-type
-    tokens until it finds ``word(`` where ``word`` isn't a keyword. Gives up
-    after 300 characters (one long method signature).
+    Strips any stacked annotations (even ones whose arguments contain
+    nested parentheses or quoted parens) and then searches for the
+    first ``word(`` token that isn't a Java keyword. The search window
+    is 600 chars — long enough to cover a multi-annotation method
+    header and short enough to avoid crossing into the next method.
     """
-    window = content[start:start + 400]
-    # Strip any other stacked annotations (e.g. @ResponseBody, @Override)
-    window = re.sub(r"@\w+\s*(?:\([^)]*\))?", " ", window)
+    window = content[start:start + 600]
+    window = _strip_annotations_balanced(window)
     for m in _JAVA_METHOD_SIG_RE.finditer(window):
         name = m.group("name")
         if name in _METHOD_KEYWORDS:
