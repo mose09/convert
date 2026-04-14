@@ -270,26 +270,42 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
 
 
 def _build_mybatis_indexes(mybatis_result: dict) -> dict:
-    """Build namespace-keyed indexes used for the Mapper → XML/Tables hop.
+    """Build namespace- and statement-keyed indexes for Mapper → XML/Tables.
 
     Returns:
       * namespace_to_xml_files — ``{namespace: sorted list[str]}``
       * namespace_to_tables    — ``{namespace: sorted list[str]}``
+      * statement_to_tables    — ``{"ns.id": sorted list[str]}`` — tables
+        touched by a *single* SQL statement. This is what lets the
+        analyzer report ``TB_ORDER`` for ``order.save`` separately
+        from ``TB_ORDER, TB_CUSTOMER`` for ``order.findAll``.
+      * statement_to_xml_file  — ``{"ns.id": str}`` — the XML file path
+        that contains the statement.
     """
     namespace_to_xml_files = {}
     namespace_to_tables = {}
+    statement_to_tables = {}
+    statement_to_xml_file = {}
     for stmt in mybatis_result.get("statements", []):
         ns = stmt.get("namespace") or ""
-        if not ns:
-            continue
-        if "mapper_path" in stmt:
-            namespace_to_xml_files.setdefault(ns, set()).add(stmt["mapper_path"])
-        for tbl in _tables_for_statement(stmt):
-            namespace_to_tables.setdefault(ns, set()).add(tbl)
+        stmt_id = stmt.get("id") or ""
+        tables_for_stmt = _tables_for_statement(stmt)
+        if ns:
+            if "mapper_path" in stmt:
+                namespace_to_xml_files.setdefault(ns, set()).add(stmt["mapper_path"])
+            for tbl in tables_for_stmt:
+                namespace_to_tables.setdefault(ns, set()).add(tbl)
+            if stmt_id:
+                key = f"{ns}.{stmt_id}"
+                statement_to_tables.setdefault(key, set()).update(tables_for_stmt)
+                if "mapper_path" in stmt:
+                    statement_to_xml_file.setdefault(key, stmt["mapper_path"])
 
     return {
         "namespace_to_xml_files": {k: sorted(v) for k, v in namespace_to_xml_files.items()},
         "namespace_to_tables": {k: sorted(v) for k, v in namespace_to_tables.items()},
+        "statement_to_tables": {k: sorted(v) for k, v in statement_to_tables.items()},
+        "statement_to_xml_file": statement_to_xml_file,
     }
 
 
@@ -583,6 +599,229 @@ def _collect_rfc_transitive(root_fqcns: list[str], indexes: dict,
     return sorted(rfc_names)
 
 
+def _resolve_field_type_fqcn(receiver: str, controller: dict,
+                             indexes: dict) -> str:
+    """Map a field name (``orderService``) back to its FQCN.
+
+    Consults the controller's ``autowired_fields`` first. Falls back to
+    a simple-name lookup in ``by_simple`` (``OrderService`` →
+    ``com.example.service.OrderService``) if the field wasn't captured
+    as an autowired field.
+    """
+    svc_index = indexes["services_by_fqcn"]
+    by_simple = indexes["by_simple"]
+    for f in controller.get("autowired_fields", []):
+        if f.get("name") == receiver:
+            fqcn = f.get("type_fqcn") or ""
+            if fqcn in svc_index:
+                return fqcn
+            # Try simple-name fallback
+            for cand in by_simple.get(f.get("type_simple", ""), []):
+                if cand["fqcn"] in svc_index:
+                    return cand["fqcn"]
+            return ""
+    # Name-based fallback — receiver could itself be a type name
+    # (static call) or the field name happens to match a simple type.
+    for cand in by_simple.get(receiver, []):
+        if cand["fqcn"] in svc_index:
+            return cand["fqcn"]
+    # Try capitalising the receiver (common Java convention)
+    simple_candidate = receiver[:1].upper() + receiver[1:] if receiver else ""
+    for cand in by_simple.get(simple_candidate, []):
+        if cand["fqcn"] in svc_index:
+            return cand["fqcn"]
+    return ""
+
+
+def _find_method_in_class(cls: dict, method_name: str) -> dict | None:
+    """Return the method dict in ``cls`` whose ``name`` matches, or None."""
+    for m in cls.get("methods") or []:
+        if m.get("name") == method_name:
+            return m
+    return None
+
+
+def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set]:
+    """Translate a method's ``body_*_calls`` into (xml_files, tables, rfc).
+
+    SQL calls are resolved first to a specific statement (``ns.id``)
+    via :func:`_match_namespace`; this lets us read
+    ``statement_to_tables`` and ``statement_to_xml_file`` directly so
+    each row only reports the tables that its SQL actually touches.
+    """
+    xml_files = set()
+    tables = set()
+    rfcs = set()
+    ns_to_xml = mybatis_idx["namespace_to_xml_files"]
+    ns_to_tbl = mybatis_idx["namespace_to_tables"]
+    stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
+    stmt_to_xml = mybatis_idx.get("statement_to_xml_file", {})
+
+    for sql in method.get("body_sql_calls") or []:
+        ns = sql.get("namespace") or ""
+        sql_id = sql.get("sql_id") or ""
+        # Try exact statement match first (namespace.id)
+        matched_ns = _match_namespace(ns, ns_to_xml)
+        if matched_ns:
+            stmt_key = f"{matched_ns}.{sql_id}"
+            if stmt_key in stmt_to_tbl:
+                tables.update(stmt_to_tbl[stmt_key])
+                xml_file = stmt_to_xml.get(stmt_key)
+                if xml_file:
+                    xml_files.add(xml_file)
+                continue
+            # Statement id not recognized — fall back to all tables
+            # registered under the namespace.
+            tables.update(ns_to_tbl.get(matched_ns, []))
+            xml_files.update(ns_to_xml.get(matched_ns, []))
+
+    for rfc in method.get("body_rfc_calls") or []:
+        name = rfc.get("name")
+        if name:
+            rfcs.add(name)
+
+    return xml_files, tables, rfcs
+
+
+def _resolve_endpoint_chain(endpoint: dict, controller: dict,
+                            indexes: dict, mybatis_idx: dict,
+                            rfc_depth: int = 2) -> dict:
+    """Walk the controller method body and resolve the call graph.
+
+    Returns a dict with:
+      * services   — list of service FQCNs actually invoked by this
+        endpoint's method body (depth-limited through transitive
+        service-to-service calls)
+      * xml_files  — MyBatis XML paths touched by the resolved chain
+      * tables     — DB tables touched by the resolved chain
+      * rfcs       — RFC function names invoked by the resolved chain
+      * mapper_fqcns — mapper interface FQCNs (best-effort)
+      * resolved_via — 'method-scope' | 'class-scope-fallback'
+
+    If the endpoint's controller method cannot be located (or produces
+    an empty call graph) the function falls back to the legacy
+    class-wide aggregation so existing mocks keep working.
+    """
+    svc_index = indexes["services_by_fqcn"]
+    iface_to_impl = indexes["iface_to_impl"]
+
+    services: set[str] = set()
+    xml_files: set[str] = set()
+    tables: set[str] = set()
+    rfcs: set[str] = set()
+    mapper_fqcns: list[str] = []
+
+    # Prefer the explicit method index set by the parser (works even
+    # when the endpoint's ``method_name`` doesn't match a Java method
+    # name — e.g. @RestVerticle where method_name == class name).
+    methods_list = controller.get("methods") or []
+    root_method = None
+    mname = endpoint.get("method_name") or ""
+    idx = endpoint.get("_method_idx")
+    if idx is not None and 0 <= idx < len(methods_list):
+        root_method = methods_list[idx]
+    elif mname:
+        root_method = _find_method_in_class(controller, mname)
+
+    if root_method is not None:
+        visited: set[tuple] = set()
+        # Queue of (method, owner_class_dict, depth)
+        queue = [(root_method, controller, 0)]
+        while queue:
+            method, owner, depth = queue.pop()
+            key = (owner.get("fqcn"), method.get("name"))
+            if key in visited:
+                continue
+            visited.add(key)
+
+            # Direct calls in this method's body
+            xf, tb, rf = _collect_body_calls(method, mybatis_idx)
+            xml_files.update(xf)
+            tables.update(tb)
+            rfcs.update(rf)
+
+            if depth >= rfc_depth:
+                continue
+
+            # Follow field.method() calls into their service classes.
+            for fc in method.get("body_field_calls") or []:
+                receiver = fc.get("receiver") or ""
+                target_method_name = fc.get("method") or ""
+                svc_fqcn = _resolve_field_type_fqcn(receiver, owner, indexes)
+                if not svc_fqcn:
+                    continue
+                services.add(svc_fqcn)
+                # Walk into the interface's impl if we have one
+                impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)
+                impl_cls = svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
+                if not impl_cls:
+                    continue
+                target_method = _find_method_in_class(impl_cls, target_method_name)
+                if target_method is not None:
+                    queue.append((target_method, impl_cls, depth + 1))
+                else:
+                    # Method not found inside the impl body — fall back
+                    # to class-level aggregation for THIS service only,
+                    # so we still capture something sensible.
+                    for sql in impl_cls.get("sql_calls", []) or []:
+                        ns = sql.get("namespace") or ""
+                        sql_id = sql.get("sql_id") or ""
+                        matched_ns = _match_namespace(
+                            ns, mybatis_idx["namespace_to_xml_files"]
+                        )
+                        if not matched_ns:
+                            continue
+                        stmt_key = f"{matched_ns}.{sql_id}"
+                        stbl = mybatis_idx.get("statement_to_tables", {})
+                        sxml = mybatis_idx.get("statement_to_xml_file", {})
+                        if stmt_key in stbl:
+                            tables.update(stbl[stmt_key])
+                            if stmt_key in sxml:
+                                xml_files.add(sxml[stmt_key])
+                        else:
+                            tables.update(
+                                mybatis_idx["namespace_to_tables"].get(matched_ns, [])
+                            )
+                            xml_files.update(
+                                mybatis_idx["namespace_to_xml_files"].get(matched_ns, [])
+                            )
+                    for rfc in impl_cls.get("rfc_calls", []) or []:
+                        if rfc.get("name"):
+                            rfcs.add(rfc["name"])
+
+        # Include mapper interface FQCNs injected transitively so the
+        # "Mappers" column still has something meaningful where
+        # interfaces exist.
+        mapper_fqcns = sorted(
+            fqcn for fqcn in services if fqcn in indexes["mappers_by_fqcn"]
+        )
+        return {
+            "services": sorted(services),
+            "xml_files": sorted(xml_files),
+            "tables": sorted(tables),
+            "rfcs": sorted(rfcs),
+            "mapper_fqcns": mapper_fqcns,
+            "resolved_via": "method-scope",
+        }
+
+    # --- Fallback: legacy class-wide aggregation (no method match) ----
+    service_fqcns = _find_service_fqcns(controller, indexes)
+    xml_files_l, tables_l, mapper_fqcns = _resolve_mapper_chain(
+        service_fqcns, indexes, mybatis_idx
+    )
+    rfc_names = _collect_rfc_transitive(
+        service_fqcns, indexes, controller.get("rfc_calls", []), depth=rfc_depth
+    )
+    return {
+        "services": service_fqcns,
+        "xml_files": xml_files_l,
+        "tables": tables_l,
+        "rfcs": rfc_names,
+        "mapper_fqcns": mapper_fqcns,
+        "resolved_via": "class-scope-fallback",
+    }
+
+
 def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[str]:
     """If a controller has no class-level mapping but extends another
     controller, inherit the parent's class-level path. Recursive to cover
@@ -607,12 +846,20 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                mybatis_idx: dict, menu_entry: dict | None,
                react_file: str | None, base_dirs: dict,
                rfc_depth: int = 2) -> dict:
-    """Assemble a single program-row dict for one controller endpoint."""
-    service_fqcns = _find_service_fqcns(controller, indexes)
-    xml_files, tables, mapper_fqcns = _resolve_mapper_chain(service_fqcns, indexes, mybatis_idx)
-    rfc_names = _collect_rfc_transitive(
-        service_fqcns, indexes, controller.get("rfc_calls", []), depth=rfc_depth
+    """Assemble a single program-row dict for one controller endpoint.
+
+    Resolution runs against the **controller method's own body** when
+    possible (precise, per-endpoint) and falls back to class-scope
+    aggregation when the method can't be located in the parsed data.
+    """
+    chain = _resolve_endpoint_chain(
+        endpoint, controller, indexes, mybatis_idx, rfc_depth=rfc_depth
     )
+    service_fqcns = chain["services"]
+    xml_files = chain["xml_files"]
+    tables = chain["tables"]
+    mapper_fqcns = chain["mapper_fqcns"]
+    rfc_names = chain["rfcs"]
 
     # Relative file paths for readability. Both Java sources and MyBatis
     # XMLs live under ``backend_dir`` now, so we resolve both against it.
@@ -644,6 +891,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "related_tables": ", ".join(tables),
         "rfc": ", ".join(rfc_names),
         "matched": menu_entry is not None,
+        "resolved_via": chain.get("resolved_via", "method-scope"),
     }
     return row
 
@@ -827,6 +1075,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 "url": m.get("url", ""),
             })
 
+    resolved_method_scope = sum(
+        1 for r in rows if r.get("resolved_via") == "method-scope"
+    )
+    resolved_class_scope = sum(
+        1 for r in rows if r.get("resolved_via") == "class-scope-fallback"
+    )
     stats = {
         "backend_framework": framework,
         "controllers": len(indexes["controllers_by_fqcn"]),
@@ -840,7 +1094,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "orphan_menus": len(orphan_menus),
         "with_react": sum(1 for r in rows if r["presentation_layer"]),
         "with_rfc": sum(1 for r in rows if r["rfc"]),
+        "resolved_method_scope": resolved_method_scope,
+        "resolved_class_scope": resolved_class_scope,
     }
+    print(f"  Method-scope resolution: {resolved_method_scope}/{len(rows)} "
+          f"endpoints (fallback: {resolved_class_scope})")
 
     return {
         "rows": rows,

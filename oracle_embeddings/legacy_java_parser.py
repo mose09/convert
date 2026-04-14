@@ -868,6 +868,228 @@ def _extract_rfc_calls(content: str) -> list[dict]:
     return calls
 
 
+# Method body extraction — we walk the class body with balanced-brace
+# awareness, collecting each top-level method's ``(start, end)`` offsets.
+# String/char literals and line/block comments are skipped so braces
+# inside them don't confuse depth counting.
+_METHOD_SIG_RE = re.compile(
+    r"""(?:public|protected|private|static|final|abstract|synchronized|native|default)\s+
+        (?:<[^{}>]*>\s+)?
+        [\w.<>?,\[\]\s&]+?
+        \s+(?P<name>\w+)\s*
+        \(
+    """,
+    re.VERBOSE,
+)
+
+# Field call pattern inside method bodies. The analyzer filters by the
+# class's autowired_fields so false positives on utility calls are safe.
+_FIELD_CALL_RE = re.compile(r"\b(?P<receiver>\w+)\s*\.\s*(?P<method>\w+)\s*\(")
+
+_METHOD_NAME_RESERVED = {
+    "if", "while", "for", "switch", "catch", "return", "new", "throw",
+    "synchronized", "try", "else", "do",
+}
+
+
+def _scan_balanced_braces(text: str, start: int) -> int:
+    """Given ``text`` and an index ``start`` pointing at a ``{``, return
+    the index just past the matching ``}``.
+
+    Handles Java string literals (``"..."``) and char literals (``'.'``)
+    plus line (``//``) and block (``/* */``) comments so that braces
+    inside them do not affect depth.
+    """
+    n = len(text)
+    if start >= n or text[start] != "{":
+        return start
+    depth = 0
+    i = start
+    in_str = None
+    while i < n:
+        c = text[i]
+        if in_str is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c == '"' or c == "'":
+            in_str = c
+            i += 1
+            continue
+        if c == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                nl = text.find("\n", i + 2)
+                i = n if nl == -1 else nl + 1
+                continue
+            if nxt == "*":
+                end = text.find("*/", i + 2)
+                i = n if end == -1 else end + 2
+                continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _extract_method_bodies(content: str, class_info: dict) -> list[dict]:
+    """Walk the class body and return one entry per top-level method.
+
+    Each entry has:
+      * ``name``, ``signature``, ``line``
+      * ``sig_start``, ``body_start``, ``body_end``
+      * ``body`` — the body text
+
+    Nested classes / inner classes / anonymous class methods are not
+    promoted to top-level entries (the balanced-brace walker skips
+    over any nested ``{...}`` encountered inside a method body).
+    """
+    if not class_info:
+        return []
+    header_end = class_info.get("header_end", 0)
+    if header_end <= 0 or header_end > len(content):
+        return []
+    # Find the class's opening '{' (header_end points just past it).
+    open_brace = header_end - 1
+    if open_brace >= len(content) or content[open_brace] != "{":
+        # Best effort: search forward for the first unescaped '{'
+        open_brace = content.find("{", header_end - 1)
+        if open_brace == -1:
+            return []
+    class_body_end = _scan_balanced_braces(content, open_brace)
+
+    methods = []
+    cursor = open_brace + 1
+    while cursor < class_body_end:
+        m = _METHOD_SIG_RE.search(content, cursor, class_body_end)
+        if not m:
+            break
+        name = m.group("name")
+        if name in _METHOD_NAME_RESERVED or name in _METHOD_KEYWORDS:
+            cursor = m.end()
+            continue
+        # Walk past the parameter list, respecting string literals and
+        # nested parens.
+        paren_depth = 1
+        i = m.end()
+        in_str = None
+        found_close = False
+        while i < class_body_end:
+            c = content[i]
+            if in_str is not None:
+                if c == "\\" and i + 1 < class_body_end:
+                    i += 2
+                    continue
+                if c == in_str:
+                    in_str = None
+            elif c == '"' or c == "'":
+                in_str = c
+            elif c == "(":
+                paren_depth += 1
+            elif c == ")":
+                paren_depth -= 1
+                if paren_depth == 0:
+                    i += 1
+                    found_close = True
+                    break
+            i += 1
+        if not found_close:
+            cursor = m.end()
+            continue
+        # Find the first '{' or ';' after the parameter list
+        j = i
+        while j < class_body_end and content[j] not in "{;":
+            j += 1
+        if j >= class_body_end or content[j] == ";":
+            # Abstract method or interface signature — no body
+            cursor = j + 1 if j < class_body_end else class_body_end
+            continue
+        b_end = _scan_balanced_braces(content, j)
+        sig_text = content[m.start():j].strip()
+        methods.append({
+            "name": name,
+            "signature": sig_text,
+            "sig_start": m.start(),
+            "body_start": j + 1,
+            "body_end": b_end - 1,
+            "body": content[j + 1:b_end - 1],
+            "line": content.count("\n", 0, m.start()) + 1,
+        })
+        cursor = b_end
+    return methods
+
+
+def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
+    """RFC calls inside a single method body (uses file-level constants)."""
+    calls = []
+    seen = set()
+    for m in _RFC_GETFUNCTION_STR_RE.finditer(body):
+        name = m.group(1)
+        if name and name not in seen:
+            seen.add(name)
+            calls.append({"name": name, "resolved_from": "literal"})
+    for m in _RFC_GETFUNCTION_VAR_RE.finditer(body):
+        ident = m.group(1)
+        if ident in constants:
+            name = constants[ident]
+            if name not in seen:
+                seen.add(name)
+                calls.append({"name": name, "resolved_from": f"const:{ident}"})
+    return calls
+
+
+def _collect_body_sql_calls(body: str) -> list[dict]:
+    """SQL helper calls (``commonSQL.selectList("ns.id", ...)``) in a body."""
+    results = []
+    seen = set()
+    for m in _SQL_CALL_RE.finditer(body):
+        sqlid = m.group("sqlid")
+        namespace, _, sql_id = sqlid.rpartition(".")
+        if not namespace:
+            continue
+        key = (m.group("op"), sqlid)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "op": m.group("op"),
+            "sqlid": sqlid,
+            "namespace": namespace,
+            "sql_id": sql_id,
+        })
+    return results
+
+
+def _collect_body_field_calls(body: str) -> list[dict]:
+    """Collect ``receiver.method(`` patterns inside a method body.
+
+    The analyzer filters receiver names against the class's
+    ``autowired_fields`` so static/utility calls that happen to match
+    this pattern are ignored downstream.
+    """
+    results = []
+    seen = set()
+    for m in _FIELD_CALL_RE.finditer(body):
+        recv = m.group("receiver")
+        meth = m.group("method")
+        if recv in _METHOD_NAME_RESERVED:
+            continue
+        key = (recv, meth)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({"receiver": recv, "method": meth})
+    return results
+
+
 def resolve_type_fqcn(type_simple: str, imports: dict, package: str) -> str:
     """Resolve a simple type name to a fully-qualified class name.
 
@@ -973,6 +1195,47 @@ def parse_java_file(filepath: str) -> dict:
     rfc_hint_count = _count_rfc_hints(raw)
     sql_calls = _extract_sql_calls(raw)
 
+    # Per-method body extraction for precise call-graph resolution.
+    # We run the scan on the raw content (so string literals inside
+    # bodies stay intact for RFC / SQL detection) but use offsets from
+    # ``content_nc`` indirectly via ``class_info['header_end']`` — both
+    # variants preserve absolute offsets because _strip_comments replaces
+    # comment spans with spaces of equal length.
+    rfc_constants = {n: v for n, v in _RFC_CONST_RE.findall(raw)}
+    methods = _extract_method_bodies(raw, class_info)
+    for meth in methods:
+        body = meth["body"]
+        meth["body_sql_calls"] = _collect_body_sql_calls(body)
+        meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
+        meth["body_field_calls"] = _collect_body_field_calls(body)
+        meth["is_endpoint"] = False
+
+    # Link endpoint entries to the matching method (if any) so the
+    # analyzer can find the correct method body at resolution time.
+    method_by_name = {}
+    for meth in methods:
+        method_by_name.setdefault(meth["name"], []).append(meth)
+
+    def _pick_handler_method():
+        """Pick the most likely handler body for @RestVerticle-style
+        one-class-per-endpoint patterns where ``method_name`` is the
+        class name instead of the actual Java method."""
+        for preferred in ("handle", "execute", "run", "process"):
+            if preferred in method_by_name:
+                return method_by_name[preferred][0]
+        return methods[0] if methods else None
+
+    for ep in endpoints:
+        mname = ep.get("method_name")
+        candidates = method_by_name.get(mname) if mname else None
+        if not candidates and ep.get("annotation") == "RestVerticle":
+            pick = _pick_handler_method()
+            if pick is not None:
+                candidates = [pick]
+        if candidates:
+            candidates[0]["is_endpoint"] = True
+            ep["_method_idx"] = methods.index(candidates[0])
+
     # Resolve extends to FQCN too (may need this for abstract controller chain)
     extends_fqcn = ""
     if class_info.get("extends"):
@@ -992,6 +1255,7 @@ def parse_java_file(filepath: str) -> dict:
         "class_request_mapping": class_paths,
         "autowired_fields": autowired,
         "endpoints": endpoints,
+        "methods": methods,
         "rfc_calls": rfc_calls,
         "rfc_hint_count": rfc_hint_count,
         "sql_calls": sql_calls,
