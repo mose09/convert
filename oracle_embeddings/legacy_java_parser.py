@@ -67,24 +67,35 @@ _MAPPING_PATH_RE = re.compile(
     re.VERBOSE,
 )
 
+# Class / interface declarations. The ``extends`` and ``implements``
+# clauses can contain nested generics (``Map<String, List<User>>``), FQCNs
+# (``io.vertx.core.AbstractVerticle``), and line breaks. We allow one
+# level of nested ``<...>`` and accept any characters that are plausibly
+# part of a type list up to the opening ``{``.
+#
+# We also allow generics on the class name itself
+# (``public class Foo<T extends BaseEntity>``).
+_TYPE_LIST = r"[\w.][\w.\s,<>\?\&]*?"
 _CLASS_DECL_RE = re.compile(
     r"""(?:public\s+|protected\s+|private\s+)?
         (?P<mod>abstract\s+|final\s+)?
         class\s+(?P<name>\w+)
-        (?:\s+extends\s+(?P<parent>[\w.<>,\s]+?))?
-        (?:\s+implements\s+(?P<impls>[\w.<>,\s]+?))?
+        (?:\s*<[^{]*?>)?                                 # class-name generics
+        (?:\s+extends\s+(?P<parent>""" + _TYPE_LIST + r"""))?
+        (?:\s+implements\s+(?P<impls>""" + _TYPE_LIST + r"""))?
         \s*\{
     """,
-    re.VERBOSE | re.MULTILINE,
+    re.VERBOSE | re.MULTILINE | re.DOTALL,
 )
 
 _INTERFACE_DECL_RE = re.compile(
     r"""(?:public\s+|protected\s+|private\s+)?
         interface\s+(?P<name>\w+)
-        (?:\s+extends\s+(?P<parent>[\w.<>,\s]+?))?
+        (?:\s*<[^{]*?>)?
+        (?:\s+extends\s+(?P<parent>""" + _TYPE_LIST + r"""))?
         \s*\{
     """,
-    re.VERBOSE | re.MULTILINE,
+    re.VERBOSE | re.MULTILINE | re.DOTALL,
 )
 
 # Stereotype annotations (searched for independently in the pre-class window)
@@ -171,8 +182,22 @@ _VERTX_ROUTE_CHAIN_RE = re.compile(
 _VERTX_CHAIN_PATH_RE = re.compile(r'\.path\s*\(\s*"([^"]+)"\s*\)')
 _VERTX_CHAIN_METHOD_RE = re.compile(r"\.method\s*\(\s*HttpMethod\.(\w+)\s*\)")
 
-# Vert.x stereotypes detected via inheritance rather than annotation.
-_VERTX_BASE_CLASSES = {"AbstractVerticle", "Verticle", "Routable"}
+# Vert.x stereotype is detected by class inheritance rather than annotation.
+# The direct Vert.x base is ``AbstractVerticle``, but real projects often
+# wrap this in a project-local base (``BaseVerticle``, ``ReactiveVerticle``,
+# ``RouterVerticle`` etc.). Matching any simple type ending in ``Verticle``
+# covers the common 90% without pulling in a type-resolution phase.
+_VERTX_KNOWN_BASES = {"AbstractVerticle", "Verticle", "Routable"}
+
+
+def _is_verticle_base(name: str) -> bool:
+    """Return True if ``name`` looks like a Verticle base class name."""
+    if not name:
+        return False
+    simple = name.rsplit(".", 1)[-1]
+    if simple in _VERTX_KNOWN_BASES:
+        return True
+    return simple.endswith("Verticle")
 
 
 # RFC patterns. Supports both forms:
@@ -625,20 +650,22 @@ def parse_java_file(filepath: str) -> dict:
     class_name = class_info["name"]
     fqcn = f"{package}.{class_name}" if package else class_name
 
-    # Stereotype: annotation (Spring) wins; Vert.x ``extends AbstractVerticle``
-    # is detected as a fallback so plain-Java projects work without any
-    # framework annotation.
+    # Stereotype: annotation (Spring) wins; if no annotation, check whether
+    # the class extends/implements a Verticle-like base (direct
+    # AbstractVerticle, a project-local ``*Verticle`` wrapper, or
+    # ``implements Verticle``). This keeps plain-Java Vert.x projects
+    # working without any framework annotation.
     stereotype = class_info.get("stereotype", "")
     if not stereotype:
-        extends_simple = re.sub(
-            r"<.*$", "", class_info.get("extends", "")
-        ).strip().rsplit(".", 1)[-1]
-        impls_simple = {
-            re.sub(r"<.*$", "", i).strip().rsplit(".", 1)[-1]
-            for i in class_info.get("implements", [])
-        }
-        if extends_simple in _VERTX_BASE_CLASSES or impls_simple & _VERTX_BASE_CLASSES:
+        extends_clean = re.sub(r"<.*$", "", class_info.get("extends", "")).strip()
+        if _is_verticle_base(extends_clean):
             stereotype = "Verticle"
+        else:
+            for impl in class_info.get("implements", []):
+                impl_clean = re.sub(r"<.*$", "", impl).strip()
+                if _is_verticle_base(impl_clean):
+                    stereotype = "Verticle"
+                    break
 
     class_paths = [""]
     if stereotype in ("Controller", "RestController"):

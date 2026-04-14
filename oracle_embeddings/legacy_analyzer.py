@@ -154,7 +154,8 @@ def _tables_for_statement(stmt: dict) -> set:
     return set(usage.keys())
 
 
-def _build_indexes(classes: list[dict], framework: str = "mixed") -> dict:
+def _build_indexes(classes: list[dict], framework: str = "mixed",
+                   mybatis_namespaces: set | None = None) -> dict:
     """Partition parsed Java classes into role-specific indexes.
 
     ``framework`` gates which classes are eligible as HTTP entry points:
@@ -163,10 +164,17 @@ def _build_indexes(classes: list[dict], framework: str = "mixed") -> dict:
     * ``vertx``  — only Verticle subclasses
     * ``mixed`` / ``unknown`` — both are accepted (backward-compatible)
 
+    ``mybatis_namespaces`` (optional) enables a namespace-based reverse
+    lookup: any class or interface whose FQCN matches a MyBatis
+    ``<mapper namespace="...">`` is promoted to a mapper even if its name
+    doesn't end in ``Mapper``/``Dao``. This rescues legacy projects that
+    name their interfaces ``OrderRepository`` or ``FooBar`` but still wire
+    them to MyBatis via the namespace convention.
+
     Returns a dict with:
       * controllers_by_fqcn
       * services_by_fqcn  (includes ``*ServiceImpl`` + ``@Service``/``@Component``)
-      * mappers_by_fqcn   (``@Mapper``/``@Repository`` interfaces + ``*Mapper`` / ``*Dao``)
+      * mappers_by_fqcn   (``@Mapper``/``@Repository`` + ``*Mapper``/``*Dao`` + namespace-matched)
       * by_simple         — ``{SimpleName: [class, ...]}`` for name fallback
     """
     if framework == "spring":
@@ -175,6 +183,8 @@ def _build_indexes(classes: list[dict], framework: str = "mixed") -> dict:
         controller_stereos = {"Verticle"}
     else:
         controller_stereos = {"Controller", "RestController", "Verticle"}
+
+    namespaces = mybatis_namespaces or set()
 
     controllers = {}
     services = {}
@@ -192,6 +202,11 @@ def _build_indexes(classes: list[dict], framework: str = "mixed") -> dict:
         if stereo in ("Service", "Component") or name.endswith("ServiceImpl") or name.endswith("Service"):
             services[fqcn] = c
         if stereo in ("Mapper", "Repository") or name.endswith("Mapper") or name.endswith("Dao"):
+            mappers[fqcn] = c
+        elif fqcn in namespaces:
+            # Namespace-based rescue: the interface FQCN matches a MyBatis
+            # XML namespace, so it's clearly a mapper even without a
+            # ``Mapper``/``Dao`` suffix or ``@Mapper`` annotation.
             mappers[fqcn] = c
 
     return {
@@ -486,22 +501,35 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "spring": "Spring (detected via pom/gradle or @Controller annotations)",
         "vertx": "Vert.x (detected via pom/gradle or AbstractVerticle usage)",
         "mixed": "mixed (both Spring and Vert.x signals present)",
-        "unknown": "unknown (no framework signal detected — accepting both)",
+        "unknown": "unknown (no framework signal detected - accepting both)",
     }
     print(f"  Backend framework: {_FRAMEWORK_LABEL[framework]}")
 
     classes = parse_all_java(backend_dir)
-    indexes = _build_indexes(classes, framework=framework)
-    indexes["iface_to_impl"] = _resolve_service_impls(
-        indexes["services_by_fqcn"], indexes["by_simple"]
-    )
-    print(f"  Classes parsed: {len(classes)} "
-          f"(controllers={len(indexes['controllers_by_fqcn'])} "
-          f"services={len(indexes['services_by_fqcn'])} "
-          f"mappers={len(indexes['mappers_by_fqcn'])})")
+
+    # Diagnostic: stereotype + endpoint distribution so users can self-
+    # diagnose why a project might parse to zero controllers/mappers.
+    from collections import Counter
+    stereo_dist = Counter(c.get("stereotype") or "(none)" for c in classes)
+    dist_str = ", ".join(f"{k}={v}" for k, v in sorted(stereo_dist.items()))
+    ep_total = sum(len(c.get("endpoints") or []) for c in classes)
+    print(f"  Classes parsed: {len(classes)}")
+    print(f"  Stereotype distribution: {dist_str}")
+    print(f"  Endpoints discovered in parser: {ep_total}")
 
     mybatis_result = parse_all_mappers(backend_dir)
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
+
+    indexes = _build_indexes(
+        classes, framework=framework,
+        mybatis_namespaces=set(mybatis_idx["namespace_to_xml_files"].keys()),
+    )
+    indexes["iface_to_impl"] = _resolve_service_impls(
+        indexes["services_by_fqcn"], indexes["by_simple"]
+    )
+    print(f"  Role index: controllers={len(indexes['controllers_by_fqcn'])} "
+          f"services={len(indexes['services_by_fqcn'])} "
+          f"mappers={len(indexes['mappers_by_fqcn'])}")
 
     react_url_map = {}
     if frontend_dir:
