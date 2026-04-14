@@ -40,10 +40,63 @@ _COMMENT_LINE = re.compile(r"//[^\n]*")
 _COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.DOTALL)
 
 
+# Strip single-line // comments and block /* */ comments but keep strings
+# (RFC detection relies on string literals, so we only strip comments).
+# IMPORTANT: we replace comments with whitespace of the SAME LENGTH so
+# that byte offsets stay stable between ``raw`` and ``content_nc``.
+# Without this, class_info offsets (computed against content_nc) would
+# drift relative to raw, and any downstream pass that uses raw with
+# class_info offsets (e.g. method-body extraction) would start reading
+# from the wrong position in the file.
 def _strip_comments(src: str) -> str:
-    src = _COMMENT_BLOCK.sub(" ", src)
-    src = _COMMENT_LINE.sub(" ", src)
-    return src
+    """Replace comments with equal-length whitespace, preserving offsets.
+
+    String / char literals are left untouched so that SQL IDs, RFC names,
+    and class-path strings survive intact. Newlines inside block comments
+    are preserved so line numbers stay correct.
+    """
+    out = []
+    i = 0
+    n = len(src)
+    in_str = None
+    while i < n:
+        c = src[i]
+        # Inside a string / char literal — copy verbatim
+        if in_str is not None:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c == '"' or c == "'":
+            in_str = c
+            out.append(c)
+            i += 1
+            continue
+        # Block comment
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            end = src.find("*/", i + 2)
+            end = n if end == -1 else end + 2
+            for j in range(i, end):
+                out.append("\n" if src[j] == "\n" else " ")
+            i = end
+            continue
+        # Line comment
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            end = src.find("\n", i + 2)
+            if end == -1:
+                end = n
+            for _ in range(i, end):
+                out.append(" ")
+            i = end
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
 
 
 _PACKAGE_RE = re.compile(r"^\s*package\s+([\w.]+)\s*;", re.MULTILINE)
@@ -1225,13 +1278,14 @@ def parse_java_file(filepath: str) -> dict:
     sql_calls = _extract_sql_calls(raw)
 
     # Per-method body extraction for precise call-graph resolution.
-    # We run the scan on the raw content (so string literals inside
-    # bodies stay intact for RFC / SQL detection) but use offsets from
-    # ``content_nc`` indirectly via ``class_info['header_end']`` — both
-    # variants preserve absolute offsets because _strip_comments replaces
-    # comment spans with spaces of equal length.
+    # Both ``class_info`` and the body scan operate on ``content_nc``:
+    # ``_strip_comments`` is offset-preserving so class_info.header_end
+    # is a valid offset into content_nc, and comment content (which
+    # could otherwise contain stray ``{`` like Javadoc ``{@link X}``)
+    # has been blanked out — this matters for method body brace
+    # balancing.
     rfc_constants = {n: v for n, v in _RFC_CONST_RE.findall(raw)}
-    methods = _extract_method_bodies(raw, class_info)
+    methods = _extract_method_bodies(content_nc, class_info)
     for meth in methods:
         body = meth["body"]
         meth["body_sql_calls"] = _collect_body_sql_calls(body)
