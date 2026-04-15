@@ -240,10 +240,62 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
         if table not in SQL_KEYWORDS and table not in known_aliases:
             alias_map[table] = table
 
-    # Parse ON conditions: a.col = b.col
-    on_pattern = r'(\w+)\.(\w+)\s*=\s*(\w+)\.(\w+)'
+    # Step 1d: Oracle comma-style FROM clause:
+    #     FROM TB_A a, TB_B b, TB_C c
+    # The patterns above only capture the FIRST entry (``FROM TB_A a``).
+    # We have to walk the full FROM clause, strip parenthesised
+    # subqueries, split on commas, and register each ``table [alias]``
+    # pair in the alias map. This is what makes Oracle ``(+)`` outer-join
+    # style queries resolvable.
+    from_clause_re = re.compile(
+        r'\bFROM\b(.*?)(?=\bWHERE\b|\bJOIN\b|\bGROUP\b|\bHAVING\b|\bORDER\b|\bCONNECT\b|\bSTART\b|$)',
+        re.IGNORECASE | re.DOTALL,
+    )
+    for fm in from_clause_re.finditer(sql):
+        body = fm.group(1)
+        # Remove nested parenthesised subqueries — leave their content
+        # out of the split so we don't mistake subquery columns for
+        # tables.
+        prev = None
+        while prev != body:
+            prev = body
+            body = re.sub(r'\([^()]*\)', ' ', body)
+        if "," not in body:
+            continue
+        for part in body.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            tokens = part.split()
+            if not tokens:
+                continue
+            table = tokens[0].upper()
+            if table in SQL_KEYWORDS:
+                continue
+            alias = table  # default alias = table itself (no-alias form)
+            if len(tokens) >= 2:
+                # ``TB_X AS t`` or ``TB_X t``
+                cand = tokens[-1].upper()
+                if cand not in SQL_KEYWORDS:
+                    alias = cand
+            known_aliases.add(alias)
+            if alias not in alias_map:
+                alias_map[alias] = table
+            if table not in alias_map:
+                alias_map[table] = table
+
+    # Parse join conditions: a.col = b.col
+    # Allow the Oracle legacy outer-join marker ``(+)`` on either side,
+    # e.g. ``a.col = b.col(+)``. We capture whether the marker is
+    # present so _detect_join_type can report LEFT/RIGHT OUTER JOIN.
+    on_pattern = (
+        r'(\w+)\.(\w+)(?P<l_outer>\s*\(\+\))?\s*=\s*'
+        r'(\w+)\.(\w+)(?P<r_outer>\s*\(\+\))?'
+    )
     for match in re.finditer(on_pattern, sql):
-        alias1, col1, alias2, col2 = match.groups()
+        alias1, col1, alias2, col2 = match.group(1), match.group(2), match.group(4), match.group(5)
+        left_outer = bool(match.group("l_outer"))
+        right_outer = bool(match.group("r_outer"))
         table1 = alias_map.get(alias1.upper())
         table2 = alias_map.get(alias2.upper())
 
@@ -252,19 +304,31 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
             continue
         if col1.isdigit() or col2.isdigit():
             continue
+        # Oracle ``(+)`` wins over positional detection. ``a.col(+) =
+        # b.col`` means ``a`` is the optional side → RIGHT OUTER,
+        # ``a.col = b.col(+)`` means ``b`` is the optional side →
+        # LEFT OUTER (relative to the first column in our record).
+        if left_outer and right_outer:
+            join_type = "FULL OUTER JOIN"
+        elif left_outer:
+            join_type = "RIGHT OUTER JOIN (Oracle +)"
+        elif right_outer:
+            join_type = "LEFT OUTER JOIN (Oracle +)"
+        else:
+            join_type = _detect_join_type(sql, match.start())
         results.append({
             "table1": table1,
             "column1": col1.upper(),
             "table2": table2,
             "column2": col2.upper(),
-            "join_type": _detect_join_type(sql, match.start()),
+            "join_type": join_type,
         })
 
     return results
 
 
 def _detect_join_type(sql: str, pos: int) -> str:
-    """Detect the type of JOIN from context."""
+    """Detect the type of JOIN from context (ANSI keywords only)."""
     prefix = sql[:pos].rstrip()
     if "LEFT" in prefix[-30:]:
         return "LEFT JOIN"
