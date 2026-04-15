@@ -925,7 +925,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
 
 def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
-                   rfc_depth: int = 2) -> dict:
+                   rfc_depth: int = 2,
+                   frontend_framework: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1043,14 +1044,18 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
           f"mappers={len(indexes['mappers_by_fqcn'])}")
 
     react_url_map = {}
+    detected_frontend = "unknown"
     if frontend_dir:
         try:
-            from .legacy_react_router import build_url_to_component_map
+            from .legacy_frontend import build_frontend_url_map
             print(f"  Frontend dir: {frontend_dir}")
-            react_url_map = build_url_to_component_map(frontend_dir)
-            print(f"  React routes indexed: {len(react_url_map)}")
+            react_url_map, detected_frontend = build_frontend_url_map(
+                frontend_dir, framework=frontend_framework
+            )
+            print(f"  Frontend framework: {detected_frontend}")
+            print(f"  Frontend routes indexed: {len(react_url_map)}")
         except Exception as e:
-            logger.warning("React scan skipped: %s", e)
+            logger.warning("Frontend scan skipped: %s", e)
 
     # Menu URL index
     menu_url_index = {}
@@ -1113,6 +1118,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     )
     stats = {
         "backend_framework": framework,
+        "frontend_framework": detected_frontend,
         "controllers": len(indexes["controllers_by_fqcn"]),
         "services": len(indexes["services_by_fqcn"]),
         "mappers": len(indexes["mappers_by_fqcn"]),
@@ -1136,6 +1142,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "orphan_menus": orphan_menus,
         "stats": stats,
         "backend_framework": framework,
+        "frontend_framework": detected_frontend,
         "backend_dir": backend_dir,
         "backend_project": backend_project,
         "frontend_dir": frontend_dir or "",
@@ -1183,7 +1190,8 @@ def analyze_legacy_batch(backends_root: str,
                         frontend_dir: str | None = None,
                         menu_rows: list[dict] | None = None,
                         rfc_depth: int = 2,
-                        include_all: bool = False) -> dict:
+                        include_all: bool = False,
+                        frontend_framework: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1211,6 +1219,7 @@ def analyze_legacy_batch(backends_root: str,
             frontend_dir=frontend_dir,
             menu_rows=menu_rows,
             rfc_depth=rfc_depth,
+            frontend_framework=frontend_framework,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.
@@ -1230,8 +1239,16 @@ def analyze_legacy_batch(backends_root: str,
     def _sum(key):
         return sum(s.get(key, 0) or 0 for s in per_project_stats.values())
 
+    # Frontend framework is per-run, not per-project (one frontend dir for batch)
+    detected_frontend_fw = ""
+    for s in per_project_stats.values():
+        if s.get("frontend_framework"):
+            detected_frontend_fw = s["frontend_framework"]
+            break
+
     aggregated = {
         "projects": len(projects),
+        "frontend_framework": detected_frontend_fw,
         "controllers": _sum("controllers"),
         "services": _sum("services"),
         "mappers": _sum("mappers"),

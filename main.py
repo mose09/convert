@@ -987,6 +987,10 @@ def cmd_analyze_legacy(args):
     if rfc_depth is None:
         rfc_depth = config.get("legacy", {}).get("rfc_depth", 2)
 
+    frontend_framework = args.frontend_framework
+    if frontend_framework == "auto":
+        frontend_framework = None  # let analyzer auto-detect
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -994,6 +998,7 @@ def cmd_analyze_legacy(args):
             menu_rows=menu_programs,
             rfc_depth=rfc_depth,
             include_all=args.include_all,
+            frontend_framework=frontend_framework,
         )
     else:
         result = analyze_legacy(
@@ -1001,6 +1006,7 @@ def cmd_analyze_legacy(args):
             frontend_dir=args.frontend_dir,
             menu_rows=menu_programs,
             rfc_depth=rfc_depth,
+            frontend_framework=frontend_framework,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1157,7 +1163,13 @@ def main():
                            help="With --backends-root: include every direct child "
                                 "directory regardless of build-file detection")
     al_parser.add_argument("--frontend-dir",
-                           help="Frontend project root (React .js/.jsx/.ts/.tsx, optional)")
+                           help="Frontend project root (React .js/.jsx/.ts/.tsx 또는 "
+                                "Polymer .html/.js, optional). 프레임워크는 자동 감지됩니다.")
+    al_parser.add_argument("--frontend-framework", choices=["auto", "react", "polymer"],
+                           default="auto",
+                           help="Frontend framework override. 기본 'auto' = package.json 의존성 + "
+                                "파일 콘텐츠 샘플링으로 React vs Polymer 자동 감지. 강제하려면 "
+                                "'react' 또는 'polymer' 지정.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
     al_parser.add_argument("--menu-xlsx",
                            help="Path to a project-specific menu Excel file. "

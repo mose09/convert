@@ -302,6 +302,7 @@ OrderController.delete()  → orderService.deleteById() → order.delete   → T
 - **Javadoc `{@link Class#method(Type)}`** 같은 stray brace 가 메서드 body 추출을 방해하지 않도록 offset-preserving comment stripping
 - **Inner class / nested interface / enum** 안의 메서드가 outer class 의 top-level 메서드로 흡수되지 않음
 - **진단 로그**: stereotype 분포, 파서가 감지한 endpoint / SQL / RFC 수, **method-scope 해상도 성공률** (`N/M endpoints, fallback: K`), RFC hint 와 실제 매칭률을 모두 출력해 사용자가 자가 진단 가능
+- **프론트엔드 자동 감지** (React / Polymer): `--frontend-dir` 만 지정하면 `package.json` 의존성 (`react` vs `@polymer/*` / `@vaadin/router` / `lit-element`) + 파일 콘텐츠 샘플링 (`import React` vs `customElements.define` / `Polymer({` / `extends LitElement`) 으로 SPA 스택을 자동 식별. React 면 React Router (v5/v6/lazy import), Polymer 면 Vaadin Router `setRoutes([...])` / `<dom-module id>` / `Polymer({is: ...})` / `customElements.define` 패턴을 인식해 `presentation_layer` 컬럼을 채움. 강제하려면 `--frontend-framework {react,polymer}`
 
 **산출물 (Markdown + Excel)**:
 

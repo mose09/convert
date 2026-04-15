@@ -1,3 +1,16 @@
+# TODO: Frontend Polymer 자동 감지 + 파서 (완료)
+
+- [x] `legacy_polymer_router.py` 신규: custom-element 인덱스 (customElements.define / Polymer({is}) / static get is() / dom-module / 파일명 규칙) + 라우트 패턴 (vaadin-router / page.js + iron-pages / app-route)
+- [x] `legacy_frontend.py` 신규: package.json 의존성 + 콘텐츠 샘플링 기반 React vs Polymer 자동 감지 + 디스패처
+- [x] `legacy_analyzer.analyze_legacy` / `analyze_legacy_batch` 가 디스패처 사용 + `frontend_framework` 통과 + stats 에 기록
+- [x] `main.py` 에 `--frontend-framework {auto,react,polymer}` CLI 플래그
+- [x] mock Polymer 프론트 (`/tmp/mock_polymer`) 구축 + 단위 라우트 매칭 검증
+- [x] mock React (`/tmp/mock_react`) 회귀 검증 + 6 기존 backend mock 회귀 검증
+- [x] BLOG.md 업데이트
+- [x] 커밋 & 푸시
+
+---
+
 # TODO: 메뉴 매핑을 Excel 파일 기반으로 전환 (완료)
 
 - [x] `legacy_menu_loader.py` 에 `load_menu_from_excel` + `_LEVEL_KEYWORDS` (1~5레벨) + `_URL_KEYWORDS` 추가
