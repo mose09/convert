@@ -907,16 +907,44 @@ def cmd_all(args):
 
 
 def cmd_analyze_legacy(args):
-    """Analyze AS-IS legacy sources (backend + frontend + DB menu)."""
-    from oracle_embeddings.legacy_analyzer import analyze_legacy
-    from oracle_embeddings.legacy_report import save_legacy_excel, save_legacy_markdown
+    """Analyze AS-IS legacy sources (backend + frontend + DB menu).
+
+    Supports two modes:
+
+      * Single project — ``--backend-dir /path/to/one-backend``
+      * Batch (monorepo) — ``--backends-root /path/containing/many-backends``
+        scans each direct child directory and emits a single combined
+        Markdown + Excel.
+    """
+    from oracle_embeddings.legacy_analyzer import (
+        analyze_legacy,
+        analyze_legacy_batch,
+    )
+    from oracle_embeddings.legacy_report import (
+        save_legacy_batch_excel,
+        save_legacy_batch_markdown,
+        save_legacy_excel,
+        save_legacy_markdown,
+    )
 
     load_dotenv()
     config = load_config(args.config) if os.path.exists(args.config) else {}
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
-    if not os.path.isdir(args.backend_dir):
-        print(f"Error: Backend dir not found: {args.backend_dir}")
+    backends_root = args.backends_root
+    backend_dir = args.backend_dir
+
+    if not backends_root and not backend_dir:
+        print("Error: either --backend-dir or --backends-root is required.")
+        return
+    if backends_root and backend_dir:
+        print("Error: --backend-dir and --backends-root are mutually exclusive.")
+        return
+    if backends_root and not os.path.isdir(backends_root):
+        print(f"Error: Backends root not found: {backends_root}")
+        return
+    if backend_dir and not os.path.isdir(backend_dir):
+        print(f"Error: Backend dir not found: {backend_dir}")
         return
     if args.frontend_dir and not os.path.isdir(args.frontend_dir):
         print(f"Error: Frontend dir not found: {args.frontend_dir}")
@@ -940,30 +968,48 @@ def cmd_analyze_legacy(args):
     if rfc_depth is None:
         rfc_depth = config.get("legacy", {}).get("rfc_depth", 2)
 
-    result = analyze_legacy(
-        backend_dir=args.backend_dir,
-        frontend_dir=args.frontend_dir,
-        menu_rows=menu_programs,
-        rfc_depth=rfc_depth,
-    )
+    if backends_root:
+        result = analyze_legacy_batch(
+            backends_root=backends_root,
+            frontend_dir=args.frontend_dir,
+            menu_rows=menu_programs,
+            rfc_depth=rfc_depth,
+            include_all=args.include_all,
+        )
+    else:
+        result = analyze_legacy(
+            backend_dir=backend_dir,
+            frontend_dir=args.frontend_dir,
+            menu_rows=menu_programs,
+            rfc_depth=rfc_depth,
+        )
 
     print("\n=== Step 3: Writing report ===")
     fmt = args.format
     md_path = None
     xlsx_path = None
-    if fmt in ("markdown", "both"):
-        md_path = save_legacy_markdown(result, output_dir)
-        print(f"  Markdown: {os.path.abspath(md_path)}")
-    if fmt in ("excel", "both"):
-        xlsx_path = save_legacy_excel(result, output_dir)
-        print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+    if result.get("is_batch"):
+        if fmt in ("markdown", "both"):
+            md_path = save_legacy_batch_markdown(result, output_dir)
+            print(f"  Markdown: {os.path.abspath(md_path)}")
+        if fmt in ("excel", "both"):
+            xlsx_path = save_legacy_batch_excel(result, output_dir)
+            print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+    else:
+        if fmt in ("markdown", "both"):
+            md_path = save_legacy_markdown(result, output_dir)
+            print(f"  Markdown: {os.path.abspath(md_path)}")
+        if fmt in ("excel", "both"):
+            xlsx_path = save_legacy_excel(result, output_dir)
+            print(f"  Excel:    {os.path.abspath(xlsx_path)}")
 
     s = result["stats"]
     print()
+    if result.get("is_batch"):
+        print(f"  Projects: {s.get('projects', 0)}")
     print(f"  Endpoints: {s['endpoints']} "
-          f"(matched: {s['matched']}, unmatched: {s['unmatched']}, "
-          f"orphan menus: {s['orphan_menus']})")
-    print(f"  With React file: {s['with_react']}, With RFC: {s['with_rfc']}")
+          f"(matched: {s['matched']}, unmatched: {s['unmatched']})")
+    print(f"  With React file: {s.get('with_react', 0)}, With RFC: {s.get('with_rfc', 0)}")
 
 
 def main():
@@ -1079,9 +1125,18 @@ def main():
     al_parser = subparsers.add_parser(
         "analyze-legacy",
         help="Analyze AS-IS legacy sources (backend + frontend + DB menu)")
-    al_parser.add_argument("--backend-dir", required=True,
-                           help="Backend project root (recursively scans .java + MyBatis XML; "
-                                "target/build/.git 등 자동 제외)")
+    al_group = al_parser.add_mutually_exclusive_group(required=True)
+    al_group.add_argument("--backend-dir",
+                          help="Single backend project root (recursively scans .java "
+                               "+ MyBatis XML; target/build/.git 등 자동 제외)")
+    al_group.add_argument("--backends-root",
+                          help="Monorepo root containing multiple backend projects. "
+                               "각 직계 하위 폴더 중 pom.xml / build.gradle 또는 "
+                               "src/main/java 를 가진 것을 backend project 로 인식하여 "
+                               "일괄 분석. 결과는 단일 통합 Markdown + Excel 로 생성.")
+    al_parser.add_argument("--include-all", action="store_true",
+                           help="With --backends-root: include every direct child "
+                                "directory regardless of build-file detection")
     al_parser.add_argument("--frontend-dir",
                            help="Frontend project root (React .js/.jsx/.ts/.tsx, optional)")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")

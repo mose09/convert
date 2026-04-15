@@ -374,3 +374,245 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
     wb.save(filepath)
     logger.info("Legacy excel saved: %s", filepath)
     return filepath
+
+
+# ---------------------------------------------------------------------------
+# Batch reports — multi-project monorepo output
+# ---------------------------------------------------------------------------
+
+# User-requested column order for the batch report. Each tuple is
+# ``(header label, row dict key)``. Keep this in one place so the
+# Markdown and Excel writers stay in sync.
+BATCH_COLUMNS = [
+    ("Backend project",   "backend_project"),
+    ("Backend framework", "backend_framework"),
+    ("File",              "file_name"),
+    ("Controller",        "controller_class"),
+    ("URL",               "url"),
+    ("HTTP",              "http_method"),
+    ("Program",           "program_name"),
+    ("Service",           "service_class"),
+    ("Service method",    "service_methods"),
+    ("XML",               "query_xml"),
+    ("XML method",        "sql_ids"),
+    ("Table",             "related_tables"),
+    ("RFC",               "rfc"),
+]
+
+
+def _build_batch_filename(output_dir: str, ts: str, ext: str) -> str:
+    """``<output>/legacy_analysis/as_is_analysis_batch_<ts>.<ext>``."""
+    return os.path.join(_legacy_output_dir(output_dir), f"as_is_analysis_batch_{ts}.{ext}")
+
+
+def save_legacy_batch_markdown(result: dict, output_dir: str) -> str:
+    """Render a batch (multi-project) analysis result as Markdown."""
+    os.makedirs(output_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = _build_batch_filename(output_dir, ts, "md")
+
+    rows = result.get("rows", [])
+    stats = result.get("stats", {})
+    per_project = result.get("per_project_stats", {}) or {}
+    project_frameworks = result.get("project_frameworks", {}) or {}
+
+    with open(filepath, "w", encoding="utf-8") as f:
+        f.write("# AS-IS Legacy Source Analysis (Batch)\n\n")
+        f.write(f"- Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+        f.write(f"- Backends root: `{result.get('backends_root', '')}`\n")
+        if result.get("frontend_dir"):
+            f.write(f"- Frontend dir: `{result.get('frontend_dir', '')}`\n")
+        f.write(f"- Projects analyzed: {stats.get('projects', 0)}\n")
+        f.write("\n")
+
+        f.write("## Summary\n\n")
+        f.write("| Category | Value |\n|---|---|\n")
+        for label, key in [
+            ("Projects", "projects"),
+            ("Controllers scanned", "controllers"),
+            ("Services scanned", "services"),
+            ("Java Mapper classes", "mappers"),
+            ("MyBatis XML files", "mapper_xml_files"),
+            ("MyBatis XML namespaces", "mapper_xml_namespaces"),
+            ("Endpoints total", "endpoints"),
+            ("Matched to menu", "matched"),
+            ("Unmatched controllers", "unmatched"),
+            ("Endpoints with React file", "with_react"),
+            ("Endpoints with RFC", "with_rfc"),
+            ("Resolved via method-scope", "resolved_method_scope"),
+            ("Resolved via class-scope fallback", "resolved_class_scope"),
+        ]:
+            f.write(f"| {label} | {stats.get(key, 0)} |\n")
+        f.write("\n")
+
+        if per_project:
+            f.write("## Per-project breakdown\n\n")
+            f.write("| Project | Framework | Controllers | Endpoints | Method-scope | Fallback | With RFC |\n")
+            f.write("|---|---|---|---|---|---|---|\n")
+            for name in sorted(per_project.keys()):
+                ps = per_project[name]
+                f.write(
+                    f"| {name} "
+                    f"| {project_frameworks.get(name, '') or ps.get('backend_framework', '')} "
+                    f"| {ps.get('controllers', 0)} "
+                    f"| {ps.get('endpoints', 0)} "
+                    f"| {ps.get('resolved_method_scope', 0)} "
+                    f"| {ps.get('resolved_class_scope', 0)} "
+                    f"| {ps.get('with_rfc', 0)} |\n"
+                )
+            f.write("\n")
+
+        f.write("## Program Detail\n\n")
+        f.write("| " + " | ".join(label for label, _ in BATCH_COLUMNS) + " |\n")
+        f.write("|" + "|".join(["---"] * len(BATCH_COLUMNS)) + "|\n")
+        for r in rows:
+            f.write(
+                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in BATCH_COLUMNS) + " |\n"
+            )
+        f.write("\n")
+
+        unmatched = result.get("unmatched_controllers", [])
+        if unmatched:
+            f.write(f"## Unmatched Controllers ({len(unmatched)})\n\n")
+            f.write("| Project | HTTP | URL | Controller | Method | File |\n")
+            f.write("|---|---|---|---|---|---|\n")
+            for u in unmatched:
+                f.write(
+                    f"| {_md_escape(u.get('backend_project', ''))} "
+                    f"| {u.get('http_method', '')} | {_md_escape(u.get('url', ''))} "
+                    f"| {_md_escape(u.get('controller_class', ''))} "
+                    f"| {_md_escape(u.get('program_name', ''))} "
+                    f"| {_md_escape(u.get('file_name', ''))} |\n"
+                )
+            f.write("\n")
+
+    logger.info("Legacy batch markdown saved: %s", filepath)
+    return filepath
+
+
+def save_legacy_batch_excel(result: dict, output_dir: str) -> str:
+    """Render a batch (multi-project) analysis result as a multi-sheet workbook."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    os.makedirs(output_dir, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filepath = _build_batch_filename(output_dir, ts, "xlsx")
+
+    rows = result.get("rows", [])
+    unmatched = result.get("unmatched_controllers", [])
+    stats = result.get("stats", {})
+    per_project = result.get("per_project_stats", {}) or {}
+    project_frameworks = result.get("project_frameworks", {}) or {}
+
+    wb = Workbook()
+
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(start_color="0F3460", end_color="0F3460", fill_type="solid")
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
+    gray_fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
+
+    def _write_header(ws, headers):
+        for col, h in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=h)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_align
+            cell.border = thin_border
+
+    def _write_row(ws, row_num, values, fill=None):
+        for col, v in enumerate(values, 1):
+            cell = ws.cell(row=row_num, column=col, value=v)
+            cell.border = thin_border
+            if fill is not None:
+                cell.fill = fill
+
+    def _auto_width(ws):
+        for col in ws.columns:
+            max_len = 0
+            col_letter = col[0].column_letter
+            for cell in col:
+                if cell.value is not None:
+                    max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
+
+    # Sheet 1: Summary (aggregate + per-project breakdown)
+    ws = wb.active
+    ws.title = "Summary"
+    _write_header(ws, ["Category", "Value"])
+    summary_rows = [
+        ("Projects", stats.get("projects", 0)),
+        ("Controllers scanned", stats.get("controllers", 0)),
+        ("Services scanned", stats.get("services", 0)),
+        ("Java Mapper classes", stats.get("mappers", 0)),
+        ("MyBatis XML files", stats.get("mapper_xml_files", 0)),
+        ("MyBatis XML namespaces", stats.get("mapper_xml_namespaces", 0)),
+        ("Endpoints total", stats.get("endpoints", 0)),
+        ("Matched to menu", stats.get("matched", 0)),
+        ("Unmatched controllers", stats.get("unmatched", 0)),
+        ("Endpoints with React file", stats.get("with_react", 0)),
+        ("Endpoints with RFC", stats.get("with_rfc", 0)),
+        ("Resolved via method-scope", stats.get("resolved_method_scope", 0)),
+        ("Resolved via class-scope fallback", stats.get("resolved_class_scope", 0)),
+    ]
+    for i, (k, v) in enumerate(summary_rows, 2):
+        _write_row(ws, i, [k, v])
+    _auto_width(ws)
+
+    # Sheet 2: Per-project breakdown
+    ws = wb.create_sheet("Per Project")
+    _write_header(ws, ["Project", "Framework", "Controllers", "Services",
+                        "Mappers", "Endpoints", "Method-scope",
+                        "Fallback", "With RFC"])
+    for i, name in enumerate(sorted(per_project.keys()), 2):
+        ps = per_project[name]
+        _write_row(ws, i, [
+            name,
+            project_frameworks.get(name, "") or ps.get("backend_framework", ""),
+            ps.get("controllers", 0),
+            ps.get("services", 0),
+            ps.get("mappers", 0),
+            ps.get("endpoints", 0),
+            ps.get("resolved_method_scope", 0),
+            ps.get("resolved_class_scope", 0),
+            ps.get("with_rfc", 0),
+        ])
+    _auto_width(ws)
+
+    # Sheet 3: Programs (the requested column order)
+    ws = wb.create_sheet("Programs")
+    headers = ["No"] + [label for label, _ in BATCH_COLUMNS]
+    _write_header(ws, headers)
+    for i, r in enumerate(rows, 2):
+        fill = None
+        if not r.get("matched"):
+            fill = yellow_fill
+        elif not r.get("query_xml") and not r.get("related_tables"):
+            fill = gray_fill
+        values = [i - 1] + [r.get(key, "") for _, key in BATCH_COLUMNS]
+        _write_row(ws, i, values, fill=fill)
+    ws.freeze_panes = "A2"
+    _auto_width(ws)
+
+    # Sheet 4: Unmatched Controllers
+    ws = wb.create_sheet("Unmatched Controllers")
+    _write_header(ws, ["Backend project", "HTTP", "URL", "Controller", "Method", "File"])
+    for i, u in enumerate(unmatched, 2):
+        _write_row(ws, i, [
+            u.get("backend_project", ""),
+            u.get("http_method", ""),
+            u.get("url", ""),
+            u.get("controller_class", ""),
+            u.get("program_name", ""),
+            u.get("file_name", ""),
+        ])
+    _auto_width(ws)
+
+    wb.save(filepath)
+    logger.info("Legacy batch excel saved: %s", filepath)
+    return filepath

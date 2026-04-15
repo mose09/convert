@@ -645,17 +645,21 @@ def _find_method_in_class(cls: dict, method_name: str) -> dict | None:
     return None
 
 
-def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set]:
-    """Translate a method's ``body_*_calls`` into (xml_files, tables, rfc).
+def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set, set]:
+    """Translate a method's ``body_*_calls`` into
+    ``(xml_files, tables, rfcs, sql_ids)``.
 
     SQL calls are resolved first to a specific statement (``ns.id``)
     via :func:`_match_namespace`; this lets us read
     ``statement_to_tables`` and ``statement_to_xml_file`` directly so
     each row only reports the tables that its SQL actually touches.
+    The set of matched ``namespace.id`` keys is returned as ``sql_ids``
+    so callers can list the exact XML statements used by the endpoint.
     """
     xml_files = set()
     tables = set()
     rfcs = set()
+    sql_ids = set()
     ns_to_xml = mybatis_idx["namespace_to_xml_files"]
     ns_to_tbl = mybatis_idx["namespace_to_tables"]
     stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
@@ -664,18 +668,20 @@ def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set]
     for sql in method.get("body_sql_calls") or []:
         ns = sql.get("namespace") or ""
         sql_id = sql.get("sql_id") or ""
-        # Try exact statement match first (namespace.id)
         matched_ns = _match_namespace(ns, ns_to_xml)
         if matched_ns:
             stmt_key = f"{matched_ns}.{sql_id}"
             if stmt_key in stmt_to_tbl:
+                sql_ids.add(stmt_key)
                 tables.update(stmt_to_tbl[stmt_key])
                 xml_file = stmt_to_xml.get(stmt_key)
                 if xml_file:
                     xml_files.add(xml_file)
                 continue
             # Statement id not recognized — fall back to all tables
-            # registered under the namespace.
+            # registered under the namespace. Record the raw call id so
+            # operators know which SQL key the resolver could not find.
+            sql_ids.add(f"{matched_ns}.{sql_id}" if sql_id else matched_ns)
             tables.update(ns_to_tbl.get(matched_ns, []))
             xml_files.update(ns_to_xml.get(matched_ns, []))
 
@@ -684,7 +690,7 @@ def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set]
         if name:
             rfcs.add(name)
 
-    return xml_files, tables, rfcs
+    return xml_files, tables, rfcs, sql_ids
 
 
 def _resolve_endpoint_chain(endpoint: dict, controller: dict,
@@ -710,9 +716,12 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
     iface_to_impl = indexes["iface_to_impl"]
 
     services: set[str] = set()
+    service_methods: list[str] = []  # preserves call order, "FQCN#method"
+    seen_service_methods: set[tuple] = set()
     xml_files: set[str] = set()
     tables: set[str] = set()
     rfcs: set[str] = set()
+    sql_ids: set[str] = set()
     mapper_fqcns: list[str] = []
 
     # Prefer the explicit method index set by the parser (works even
@@ -739,10 +748,11 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             visited.add(key)
 
             # Direct calls in this method's body
-            xf, tb, rf = _collect_body_calls(method, mybatis_idx)
+            xf, tb, rf, sids = _collect_body_calls(method, mybatis_idx)
             xml_files.update(xf)
             tables.update(tb)
             rfcs.update(rf)
+            sql_ids.update(sids)
 
             if depth >= rfc_depth:
                 continue
@@ -755,6 +765,10 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                 if not svc_fqcn:
                     continue
                 services.add(svc_fqcn)
+                sm_key = (svc_fqcn, target_method_name)
+                if target_method_name and sm_key not in seen_service_methods:
+                    seen_service_methods.add(sm_key)
+                    service_methods.append(f"{svc_fqcn}#{target_method_name}")
                 # Walk into the interface's impl if we have one
                 impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)
                 impl_cls = svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
@@ -778,6 +792,7 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                         stmt_key = f"{matched_ns}.{sql_id}"
                         stbl = mybatis_idx.get("statement_to_tables", {})
                         sxml = mybatis_idx.get("statement_to_xml_file", {})
+                        sql_ids.add(stmt_key)
                         if stmt_key in stbl:
                             tables.update(stbl[stmt_key])
                             if stmt_key in sxml:
@@ -793,17 +808,16 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                         if rfc.get("name"):
                             rfcs.add(rfc["name"])
 
-        # Include mapper interface FQCNs injected transitively so the
-        # "Mappers" column still has something meaningful where
-        # interfaces exist.
         mapper_fqcns = sorted(
             fqcn for fqcn in services if fqcn in indexes["mappers_by_fqcn"]
         )
         return {
             "services": sorted(services),
+            "service_methods": service_methods,
             "xml_files": sorted(xml_files),
             "tables": sorted(tables),
             "rfcs": sorted(rfcs),
+            "sql_ids": sorted(sql_ids),
             "mapper_fqcns": mapper_fqcns,
             "resolved_via": "method-scope",
         }
@@ -818,9 +832,11 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
     )
     return {
         "services": service_fqcns,
+        "service_methods": [],
         "xml_files": xml_files_l,
         "tables": tables_l,
         "rfcs": rfc_names,
+        "sql_ids": [],
         "mapper_fqcns": mapper_fqcns,
         "resolved_via": "class-scope-fallback",
     }
@@ -860,10 +876,12 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         endpoint, controller, indexes, mybatis_idx, rfc_depth=rfc_depth
     )
     service_fqcns = chain["services"]
+    service_methods = chain.get("service_methods", [])
     xml_files = chain["xml_files"]
     tables = chain["tables"]
     mapper_fqcns = chain["mapper_fqcns"]
     rfc_names = chain["rfcs"]
+    sql_ids = chain.get("sql_ids", [])
 
     # Relative file paths for readability. Both Java sources and MyBatis
     # XMLs live under ``backend_dir`` now, so we resolve both against it.
@@ -880,6 +898,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
             return path
 
     row = {
+        "backend_project": base_dirs.get("backend_project", ""),
+        "backend_framework": base_dirs.get("backend_framework", ""),
         "main_menu": (menu_entry or {}).get("main_menu", ""),
         "sub_menu": (menu_entry or {}).get("sub_menu", ""),
         "tab": (menu_entry or {}).get("tab", ""),
@@ -891,7 +911,9 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "presentation_layer": _rel(react_file or "", frontend_dir),
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
+        "service_methods": "; ".join(service_methods),
         "query_xml": "; ".join(_rel(p, backend_dir) for p in xml_files),
+        "sql_ids": "; ".join(sql_ids),
         "related_tables": ", ".join(tables),
         "rfc": ", ".join(rfc_names),
         "matched": menu_entry is not None,
@@ -1036,9 +1058,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         if key:
             menu_url_index[key] = r
 
+    backend_project = os.path.basename(os.path.normpath(backend_dir or ""))
     base_dirs = {
         "backend_dir": backend_dir,
         "frontend_dir": frontend_dir or "",
+        "backend_project": backend_project,
+        "backend_framework": framework,
     }
 
     rows = []
@@ -1111,5 +1136,128 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "stats": stats,
         "backend_framework": framework,
         "backend_dir": backend_dir,
+        "backend_project": backend_project,
         "frontend_dir": frontend_dir or "",
+    }
+
+
+def _looks_like_backend(path: str) -> bool:
+    """Heuristic: does ``path`` contain the markers of a backend project?
+
+    Accepts any directory that has a build descriptor (``pom.xml`` /
+    ``build.gradle`` / ``build.gradle.kts`` / ``settings.gradle``) or a
+    standard Java source layout (``src/main/java``).
+    """
+    for marker in ("pom.xml", "build.gradle", "build.gradle.kts",
+                   "settings.gradle", "settings.gradle.kts"):
+        if os.path.isfile(os.path.join(path, marker)):
+            return True
+    if os.path.isdir(os.path.join(path, "src", "main", "java")):
+        return True
+    return False
+
+
+def discover_backend_projects(backends_root: str,
+                              include_all: bool = False) -> list[tuple]:
+    """Return ``[(project_name, project_path), ...]`` for direct children
+    of ``backends_root`` that look like backend projects.
+
+    ``include_all=True`` skips the heuristic and returns every direct
+    subdirectory regardless of structure.
+    """
+    if not backends_root or not os.path.isdir(backends_root):
+        return []
+    projects = []
+    for entry in sorted(os.listdir(backends_root)):
+        path = os.path.join(backends_root, entry)
+        if not os.path.isdir(path):
+            continue
+        if not include_all and not _looks_like_backend(path):
+            continue
+        projects.append((entry, path))
+    return projects
+
+
+def analyze_legacy_batch(backends_root: str,
+                        frontend_dir: str | None = None,
+                        menu_rows: list[dict] | None = None,
+                        rfc_depth: int = 2,
+                        include_all: bool = False) -> dict:
+    """Run :func:`analyze_legacy` against every backend project under
+    ``backends_root`` and merge the resulting rows.
+
+    Each output row carries ``backend_project`` and ``backend_framework``
+    so that downstream reporters can filter / pivot by service.
+    Per-project stats are kept in ``per_project_stats`` for the Summary
+    sheet.
+    """
+    projects = discover_backend_projects(backends_root, include_all=include_all)
+    print(f"  Backends root: {backends_root}")
+    print(f"  Discovered backend projects: {len(projects)}")
+    for name, path in projects:
+        print(f"    - {name}  ({path})")
+
+    all_rows = []
+    all_unmatched = []
+    all_orphans = []
+    per_project_stats = {}
+    project_frameworks = {}
+
+    for name, path in projects:
+        print(f"\n--- Analyzing {name} ---")
+        result = analyze_legacy(
+            backend_dir=path,
+            frontend_dir=frontend_dir,
+            menu_rows=menu_rows,
+            rfc_depth=rfc_depth,
+        )
+        # Make sure every row carries the project name even if downstream
+        # consumers iterate the merged rows directly.
+        for r in result.get("rows", []):
+            r.setdefault("backend_project", name)
+            r.setdefault("backend_framework", result.get("backend_framework", ""))
+        for u in result.get("unmatched_controllers", []):
+            u.setdefault("backend_project", name)
+            u.setdefault("backend_framework", result.get("backend_framework", ""))
+        all_rows.extend(result.get("rows", []))
+        all_unmatched.extend(result.get("unmatched_controllers", []))
+        all_orphans.extend(result.get("orphan_menus", []))
+        per_project_stats[name] = result.get("stats", {})
+        project_frameworks[name] = result.get("backend_framework", "")
+
+    # Aggregate stats across projects
+    def _sum(key):
+        return sum(s.get(key, 0) or 0 for s in per_project_stats.values())
+
+    aggregated = {
+        "projects": len(projects),
+        "controllers": _sum("controllers"),
+        "services": _sum("services"),
+        "mappers": _sum("mappers"),
+        "mapper_xml_files": _sum("mapper_xml_files"),
+        "mapper_xml_namespaces": _sum("mapper_xml_namespaces"),
+        "endpoints": len(all_rows),
+        "matched": sum(1 for r in all_rows if r.get("matched")),
+        "unmatched": sum(1 for r in all_rows if not r.get("matched")),
+        "orphan_menus": len(all_orphans),
+        "with_react": sum(1 for r in all_rows if r.get("presentation_layer")),
+        "with_rfc": sum(1 for r in all_rows if r.get("rfc")),
+        "resolved_method_scope": sum(
+            1 for r in all_rows if r.get("resolved_via") == "method-scope"
+        ),
+        "resolved_class_scope": sum(
+            1 for r in all_rows if r.get("resolved_via") == "class-scope-fallback"
+        ),
+    }
+
+    return {
+        "rows": all_rows,
+        "unmatched_controllers": all_unmatched,
+        "orphan_menus": all_orphans,
+        "stats": aggregated,
+        "per_project_stats": per_project_stats,
+        "project_frameworks": project_frameworks,
+        "backends_root": backends_root,
+        "frontend_dir": frontend_dir or "",
+        "is_batch": True,
     }
