@@ -1,15 +1,19 @@
-# 레거시 Oracle DB를 위한 스키마 분석 & ERD 자동 생성 도구
+# 레거시 Oracle DB + 레거시 Java 소스를 위한 현행 분석 & ERD 자동화 도구
 
 ## 배경
 
-차세대 시스템 전환을 앞두고 현행 시스템의 데이터 구조를 파악해야 하는데, Oracle 11g 레거시 환경에서 흔히 겪는 문제들이 있습니다.
+차세대 시스템 전환을 앞두고 현행 시스템의 **데이터 구조** 와 **애플리케이션 구조** 를 모두 파악해야 합니다. Oracle 11g 레거시 환경에서 흔히 겪는 문제들:
 
-- Foreign Key constraint가 거의 없음
-- 테이블/컬럼 Description(코멘트)이 비어있음
+- Foreign Key constraint 가 거의 없음 → 테이블 간 관계 파악 불가
+- 테이블/컬럼 Description(코멘트) 이 비어있음
 - ERD 문서가 없거나 현행화되지 않음
-- 테이블 간 관계를 파악하려면 소스코드를 일일이 뒤져야 함
+- Oracle 구식 `(+)` outer join 문법으로 된 SQL 이 대부분
+- **API 목록 / 각 API 가 쓰는 테이블·RFC 목록 문서** 가 없어서 영향 범위 산정 불가
+- MyBatis Mapper interface 없이 `CommonSQL.selectList("namespace.id", ...)` 같은 **문자열 기반 SQL 호출** 이 많은 레거시 코드 관습
+- Spring 뿐 아니라 **Vert.x** 같은 비-Spring 백엔드, 프로젝트 로컬 `@RestVerticle` 같은 **커스텀 어노테이션** 사용
+- 모노레포 안 여러 backend project 를 따로 따로 분석하기 번거로움
 
-이 도구는 **Oracle 스키마 + MyBatis/iBatis 쿼리 XML**을 분석하여, FK가 없어도 **JOIN 패턴에서 테이블 관계를 자동 추론**하고, 로컬 LLM을 활용해 **코멘트 보강, ERD 생성, 표준화 리포트**까지 한번에 처리합니다.
+이 도구는 **Oracle 스키마 + MyBatis/iBatis 쿼리 XML + Java 백엔드 소스 + React 프론트 소스 + DB 메뉴 테이블** 을 통합 분석하여, FK 가 없어도 **JOIN 패턴에서 테이블 관계를 자동 추론** 하고, **Controller 의 각 메서드가 실제로 호출하는 서비스 메서드 → SQL statement → 테이블 → RFC 체인을 정밀 추적** 하며, 로컬 LLM 을 활용해 **코멘트 보강, ERD 생성, 용어사전 생성, 표준화 리포트** 까지 한번에 처리합니다. 폐쇄망 환경에서 완전 로컬 동작합니다.
 
 ---
 
@@ -42,6 +46,25 @@ python main.py query /path/to/mapper --schema-md ./output/스키마.md
 - 테이블 사용 통계
 - 서브쿼리/CTE/alias 자동 필터링
 - MyBatis, iBatis 모두 지원
+
+**지원하는 JOIN 문법:**
+- ANSI `JOIN ... ON a.x = b.x AND a.y = b.y` (composite JOIN 전부 수집)
+- ANSI `LEFT/RIGHT/FULL/INNER/CROSS JOIN`
+- **Oracle 구식 outer join** `WHERE a.col = b.col(+)` (comma-style FROM + `(+)` 마커 자동 해석)
+- **Oracle 구식 equi-join** `FROM a, b, c WHERE a.x = b.x AND a.y = c.y` (comma-list FROM 모든 테이블의 alias 를 인식)
+- MyBatis dynamic SQL (`<if>` / `<choose>` / `<when>` / `<trim>` / `<foreach>`) 내부 조건도 조인으로 수집
+- CDATA 블록 (`<![CDATA[...]]>`)
+- MyBatis 파라미터 (`#{...}` / `${...}`) 자동 정규화
+
+**Composite JOIN 표시 개선** — 같은 테이블 쌍이 여러 컬럼으로 조인되면 Relationship Details 표에서 **한 row 에 여러 컬럼 쌍을** 모아서 표시합니다:
+
+```
+| Table A         | Columns A              | <-> | Table B          | Columns B              | JOIN Type                  | Sources |
+|-----------------|------------------------|-----|------------------|------------------------|----------------------------|---------|
+| FAB_SVID_MODELING | SVID, EQ_MST_ID, EQ_ID | <-> | FAB_CBM_MODELING | SVID, EQ_MST_ID, EQ_ID | LEFT OUTER JOIN (Oracle +) | xxx.xml#getList |
+```
+
+**`Sources` 컬럼** 은 이 조인이 실제로 등장하는 **모든 statement 를 `;` 로 나열** 합니다. 같은 관계가 여러 쿼리에서 재사용되는 경우 한눈에 확인 가능하고, "엉뚱한 statement 가 source 로 찍히는" 혼선이 생기지 않습니다.
 
 `--schema-md` 옵션으로 스키마에 실제 존재하는 테이블만 필터링할 수 있습니다.
 
@@ -83,6 +106,14 @@ JOIN 관계로 연결된 테이블 그룹을 자동으로 찾아 주제영역별
 ```bash
 python main.py erd-group --schema-md ./output/스키마.md --query-md ./output/query.md
 ```
+
+**Composite JOIN 시각화**: Mermaid 는 한 테이블 쌍당 관계선 1개만 그릴 수 있으므로, **모든 컬럼 쌍을 label 에 합쳐서** 한번에 표시합니다:
+
+```
+TB_ORDER ||--o{ TB_ORDER_ITEM : "ORDER_ID=ORDER_ID, SITE_CD=SITE_CD, LANG_CD=LANG_CD"
+```
+
+인터랙티브 HTML ERD 도 같은 방식으로 `sourceCol` / `targetCol` 에 여러 컬럼을 `, ` 로 합쳐 보여주어 3-컬럼 composite PK join 이 한눈에 파악됩니다.
 
 **출력:**
 ```
@@ -180,16 +211,133 @@ python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 
 대량 테이블(1,000개+)에서는 `erd-md`/`erd-group`이 더 정확하고 빠릅니다.
 
+### 7. 용어사전 자동 생성 (약어/영문명/한글명/**정의**)
+
+Oracle 스키마 컬럼명 + React 소스 변수명에서 단어를 수집하고, 로컬 LLM 이 **표준 약어 / 영문 Full Name / 한글명 / 한글 정의(업무 설명 1~2문장)** 를 자동 생성합니다.
+
+```bash
+# 스키마 + React 소스 양쪽에서 수집
+python main.py terms --schema-md ./output/스키마.md --react-dir /path/to/react/src
+
+# LLM 없이 단어 수집만
+python main.py terms --schema-md ./output/스키마.md --skip-llm
+```
+
+**출력 Excel 5 시트**:
+- **용어사전**: 전체 (Abbreviation / English Full / Korean / **Definition** / DB 빈도 / FE 빈도)
+- **DB+FE공통**: 양쪽에서 쓰이는 단어 — 표준화 최우선 대상
+- **DB전용 / FE전용**: 한쪽에서만 쓰는 단어
+- **미식별**: LLM이 해석 못한 단어
+
+비개발자 검토용 "한글 정의" 필드 덕분에 업무 담당자도 용어사전 검수가 가능합니다.
+
+### 8. AS-IS 레거시 소스 코드 분석 (analyze-legacy)
+
+**차세대 전환의 가장 큰 난제** — "현행 시스템에 어떤 API 가 있고, 각 API 가 어떤 테이블 / RFC / 서비스 메서드를 쓰는지" 를 소스에서 직접 추출해 **프로그램 단위 메타데이터 시트** 로 뽑습니다. Spring, Vert.x, MyBatis, React, SAP JCo, DB 메뉴 테이블을 **한 번에 통합 분석** 합니다.
+
+```bash
+# 단일 프로젝트
+python main.py analyze-legacy \
+  --backend-dir /path/to/backend \
+  --frontend-dir /path/to/frontend
+
+# 모노레포 배치 (여러 backend project 를 한 번에)
+python main.py analyze-legacy \
+  --backends-root /path/to/monorepo/backend \
+  --frontend-dir /path/to/frontend
+```
+
+**자동 감지**:
+- 백엔드 프레임워크 — `pom.xml` / `build.gradle` 의존성 또는 소스 휴리스틱으로 **Spring / Vert.x 자동 판별**
+- Spring: `@RestController` / `@RequestMapping` / `@PostMapping(value="/x")` / `@Autowired` / Lombok `@RequiredArgsConstructor`
+- **Vert.x** (표준이 아닌 레거시 관습까지):
+  - `extends AbstractVerticle` / `BaseVerticle` / `ReactiveVerticle` 같은 **프로젝트 로컬 wrapper**
+  - `@RestVerticle(url = "/api/x", method = HttpMethod.POST, isAuth = true)` 같은 **커스텀 어노테이션**
+  - `router.get("/x").handler(this::foo)` DSL
+  - `router.route().path("/x").method(HttpMethod.GET).handler(...)` 체인
+- MyBatis XML 은 파일명 규칙 상관 없이 내용 기반으로 판별 (`*Mapper.xml`, `*_sql.xml` 등 모두 지원)
+
+**추출 메타데이터 (한 row = 한 endpoint)**:
+- Backend project / Framework (모노레포에서 어느 서비스인지)
+- File / Controller / URL / HTTP / Program
+- **Service → Service method** (메서드 단위 정밀 추적)
+- **XML → XML method (SQL ID)** (해당 statement 만)
+- **Table** (그 SQL 이 실제로 쓰는 테이블만)
+- **RFC** (그 메서드 body 안에서만 호출하는 SAP JCo 함수)
+
+**메서드 단위 call-graph 해상도** — 이 기능의 핵심
+
+기존 도구들은 "Controller 하나에 연결된 Service 의 모든 SQL / RFC / 테이블" 을 union 해서 한 행에 모두 붙이는 방식입니다. 그래서 같은 서비스를 공유하는 10개의 API 가 모두 **똑같은 테이블/RFC 목록을** 가진 것처럼 보입니다. 이 도구는 다릅니다.
+
+```
+OrderController.list()    → orderService.findAll()    → order.findAll   → TB_ORDER, TB_CUSTOMER
+OrderController.save()    → orderService.createOrder() → order.save     → TB_ORDER + ZPM_ORDER_CREATE
+OrderController.delete()  → orderService.deleteById() → order.delete   → TB_ORDER_HISTORY + ZPM_ORDER_DELETE
+```
+
+같은 `OrderService` 를 쓰는 3개 API 가 각자 **정말로 호출하는 메서드 body 안의 SQL/RFC 만** 정확히 분리됩니다. 이것이 가능한 이유는 파서가 Java method body 단위로 `field.method()` 호출, `commonSQL.selectList("ns.id", ...)` SQL 호출, `JCoUtil.getJCoFunction("Z_NAME")` RFC 호출을 모두 body-scope 로 수집하고, analyzer 가 call-graph 를 따라 `body_sql_calls` → statement-level 테이블 인덱스로 resolve 하기 때문입니다.
+
+**DB 메뉴 테이블 ↔ Controller 양방향 매칭**:
+
+Oracle 의 메뉴 테이블 (TB_MENU 등) 과 파싱된 컨트롤러 URL 을 **정규화된 key** 로 교차 검증합니다:
+
+| 분류 | 의미 |
+|------|------|
+| **Matched** | 메뉴 + 컨트롤러 양쪽 존재 (정상 프로그램) |
+| **Unmatched Controller** | 코드는 있지만 메뉴 없음 (내부 API / 메뉴 누락) |
+| **Orphan Menu** | 메뉴는 있지만 코드 없음 (미구현 / 삭제된 기능) |
+
+메뉴 트리의 `PARENT_ID` / `LEVEL` 을 따라가 `main_menu / sub_menu / tab / program_name` 4 단계 ancestry 를 자동 평탄화합니다.
+
+**특수 패턴 지원 (실제 현업 코드에서 검증)**:
+- MyBatis **Mapper interface 없는 프로젝트** — `CommonSQL.selectList("namespace.id", params)` 같은 문자열 기반 호출을 인식해 XML namespace 로 직접 매칭
+- **Service interface + 하위 폴더 `service/impl/*ServiceImpl`** 자동 추적. Impl 네이밍이 `*Bo` / `*BoImpl` / `*Manager` / `*Facade` 등 레거시 관습이어도 인식
+- **Lombok `@RequiredArgsConstructor`** + `private final XxxService svc` 형태의 생성자 주입
+- **SAP JCo RFC**: `destination.getFunction("Z_...")`, `JCoUtil.getCoFunction(...)`, `getJCoFunction(...)` 등 **`get*Function` 계열 전부** + `String FN_XXX = "Z_..."` 상수 2-pass 해석 + local variable 해석 + **multi-arg 호출** (`getJCoFunction("Z_X", timeout, session)`)
+- **Javadoc `{@link Class#method(Type)}`** 같은 stray brace 가 메서드 body 추출을 방해하지 않도록 offset-preserving comment stripping
+- **Inner class / nested interface / enum** 안의 메서드가 outer class 의 top-level 메서드로 흡수되지 않음
+- **진단 로그**: stereotype 분포, 파서가 감지한 endpoint / SQL / RFC 수, **method-scope 해상도 성공률** (`N/M endpoints, fallback: K`), RFC hint 와 실제 매칭률을 모두 출력해 사용자가 자가 진단 가능
+
+**산출물 (Markdown + Excel)**:
+
+```
+output/legacy_analysis/
+├── as_is_analysis_<service_name>_TIMESTAMP.md      # 단일 프로젝트
+├── as_is_analysis_<service_name>_TIMESTAMP.xlsx
+└── as_is_analysis_batch_TIMESTAMP.{md,xlsx}        # 배치 (monorepo)
+```
+
+Excel 의 `Programs` 시트는 다음 컬럼 순서입니다:
+
+**Backend project / Backend framework / File / Controller / URL / HTTP / Program / Service / Service method / XML / XML method / Table / RFC**
+
+Monorepo 의 여러 서비스 분석 결과가 한 파일에 통합되어 **서비스 간 공유 테이블 / 공유 RFC** 를 한눈에 볼 수 있습니다. `Summary` 시트에는 전체 집계 + method-scope 해상도 성공률이, `Per Project` 시트에는 프로젝트별 breakdown 이 기록됩니다.
+
 ---
 
 ## 추천 워크플로우
 
 ```
-Step 1. python main.py schema                              # 스키마 추출
-Step 2. python main.py query /mapper --schema-md schema.md  # 쿼리 분석
-Step 3. python main.py enrich-schema --schema-md schema.md  # LLM 코멘트 보강
-Step 4. python main.py erd-group --schema-md enriched.md --query-md query.md  # ERD 생성
-Step 5. python main.py standardize --schema-md enriched.md --query-md query.md --validate-data  # 표준화 리포트
+# === 현행 데이터 구조 분석 ===
+Step 1. python main.py schema                                # 스키마 추출
+Step 2. python main.py query /mapper --schema-md schema.md    # 쿼리 분석 + JOIN 추론
+Step 3. python main.py enrich-schema --schema-md schema.md    # LLM 코멘트 보강
+Step 4. python main.py terms --schema-md enriched.md \
+                            --react-dir /path/to/react        # 용어사전 (한글 정의 포함)
+
+# === ERD 자동 생성 ===
+Step 5. python main.py erd-group --schema-md enriched.md \
+                                 --query-md query.md          # 주제영역별 ERD
+
+# === 표준화 진단 ===
+Step 6. python main.py standardize --schema-md enriched.md \
+                                   --query-md query.md \
+                                   --validate-data            # 표준화 리포트
+
+# === AS-IS 소스 분석 (차세대 전환 입력 자료) ===
+Step 7. python main.py analyze-legacy \
+          --backends-root /path/to/monorepo/backend \
+          --frontend-dir /path/to/frontend                    # 프로그램 단위 메타데이터
 ```
 
 ---
@@ -204,7 +352,10 @@ Step 5. python main.py standardize --schema-md enriched.md --query-md query.md -
 | 임베딩 | Qwen3-Embedding-8B (또는 nomic-embed-text, bge-m3) |
 | 벡터 DB | ChromaDB |
 | ERD 렌더링 | Mermaid + D3.js (인터랙티브 HTML) |
-| 쿼리 파싱 | MyBatis / iBatis XML |
+| 쿼리 파싱 | MyBatis / iBatis XML (CDATA / dynamic `<if>` / `<choose>` / `<foreach>` / `<trim>`) |
+| SQL 분석 | Oracle comma-FROM + `(+)` outer-join, multi-column JOIN, composite PK |
+| 소스 분석 | Java (Spring / Vert.x, Lombok, 어노테이션 기반 라우팅), MyBatis, SAP JCo RFC |
+| 리포트 | Markdown, Excel (openpyxl), HTML ERD (D3.js) |
 
 ---
 
@@ -250,8 +401,15 @@ EMBEDDING_MODEL=Qwen3-Embedding-8B
 
 | 기존 | 도구 적용 후 |
 |------|-------------|
-| FK 없어서 테이블 관계 파악 불가 | JOIN 분석으로 관계 자동 추론 |
+| FK 없어서 테이블 관계 파악 불가 | JOIN 분석으로 관계 자동 추론 (Oracle `(+)` outer join 포함) |
 | ERD 없음 / 현행화 안 됨 | 주제영역별 ERD 자동 생성 (Mermaid + 인터랙티브 HTML) |
+| Composite JOIN 의 여러 컬럼 쌍이 한 눈에 안 보임 | Relationship Details 표를 **테이블 쌍 단위** 로 그룹핑해 모든 컬럼 쌍을 한 row 에 통합 표시 |
 | 컬럼 코멘트 비어있음 | LLM이 약어 해석하여 코멘트 자동 추천 |
+| 용어사전 수작업 작성 | LLM이 약어 / 영문명 / 한글명 / **한글 정의 (업무 설명)** 자동 생성 |
 | 표준화 현황 파악에 수작업 소요 | 용어/타입 불일치, 이상 데이터 자동 분석 |
-| 소스코드 일일이 분석 | MyBatis/iBatis XML 자동 파싱 |
+| 소스코드 일일이 분석 | MyBatis/iBatis XML 자동 파싱 + Java 소스 call-graph 추적 |
+| 차세대 전환 시 API 목록 / 영향 범위 수작업 | `analyze-legacy` 로 **프로그램 단위 메타데이터 시트** (Controller → Service → SQL → Table → RFC) 자동 추출 |
+| 같은 서비스를 공유하는 여러 API 가 모두 동일한 테이블/RFC 로 합쳐짐 | **메서드 단위 call-graph 해상도** 로 각 API 가 실제로 호출하는 메서드 body 안의 SQL/RFC 만 정확히 분리 |
+| Spring 만 지원하는 도구 | **Spring + Vert.x** 모두 지원 (프로젝트 구조 자동 감지) |
+| 모노레포에서 여러 backend project 를 따로 분석 | `--backends-root` 배치 모드로 한 번에 통합 분석 + 프로젝트별 breakdown |
+| `@RestVerticle`, `CommonSQL.selectList("ns.id", ...)` 같은 **레거시 관습** 인식 불가 | 어노테이션 / 문자열 기반 SQL 호출 / field 주입을 **regex 휴리스틱** 으로 인식 + namespace 역매칭 |
