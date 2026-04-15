@@ -145,12 +145,19 @@ def _write_join_relationships(f, joins: list[dict]):
         return
 
     f.write("## Inferred Relationships (from JOIN)\n\n")
-    f.write("FK가 없는 테이블 간의 관계를 쿼리의 JOIN 조건에서 추론한 결과입니다.\n\n")
-    f.write("| Table A | Column | JOIN | Table B | Column | Type | Source |\n")
-    f.write("|---------|--------|------|---------|--------|------|--------|\n")
+    f.write("FK가 없는 테이블 간의 관계를 쿼리의 JOIN 조건에서 추론한 결과입니다.\n")
+    f.write("`Sources` 컬럼은 **이 조인이 실제로 나타나는 모든 statement** 를 보여줍니다 —\n")
+    f.write("하나의 관계가 여러 쿼리에서 재사용되는 경우를 투명하게 확인할 수 있습니다.\n\n")
+    f.write("| Table A | Column | JOIN | Table B | Column | Type | Sources |\n")
+    f.write("|---------|--------|------|---------|--------|------|---------|\n")
     for j in joins:
+        sources = j.get("sources")
+        if sources:
+            src_text = "; ".join(sources)
+        else:
+            src_text = f"{j.get('source_mapper', '')}#{j.get('source_id', '')}"
         f.write(f"| {j['table1']} | {j['column1']} | <-> | {j['table2']} | {j['column2']} "
-                f"| {j['join_type']} | {j['source_mapper']}#{j['source_id']} |\n")
+                f"| {j['join_type']} | {src_text} |\n")
     f.write("\n---\n\n")
 
 

@@ -112,7 +112,14 @@ def _parse_table_section(section: str, table_name: str) -> dict:
 
 
 def parse_query_md(md_path: str) -> list[dict]:
-    """Parse query analysis .md file to extract JOIN relationships."""
+    """Parse query analysis .md file to extract JOIN relationships.
+
+    The ``Sources`` column may contain a single ``mapper#id`` or a list
+    separated by ``;`` (when the same join appears in multiple
+    statements). Both formats are preserved: the first entry populates
+    ``source_mapper`` / ``source_id`` for back-compat and the full
+    list is kept in ``sources``.
+    """
     with open(md_path, "r", encoding="utf-8") as f:
         content = f.read()
     content = content.replace("\r\n", "\n")
@@ -120,7 +127,7 @@ def parse_query_md(md_path: str) -> list[dict]:
     joins = []
 
     # Find relationship table rows
-    # | TABLE_A | COL1 | <-> | TABLE_B | COL2 | TYPE | SOURCE |
+    # | TABLE_A | COL1 | <-> | TABLE_B | COL2 | TYPE | SOURCE(s) |
     for match in re.finditer(
         r'^\|\s*(\w+)\s*\|\s*(\w+)\s*\|\s*<->\s*\|\s*(\w+)\s*\|\s*(\w+)\s*\|\s*(.+?)\s*\|\s*(.+?)\s*\|$',
         content, re.MULTILINE
@@ -128,14 +135,22 @@ def parse_query_md(md_path: str) -> list[dict]:
         t1, c1, t2, c2 = match.group(1), match.group(2), match.group(3), match.group(4)
         if t1 in ("Table", "--------", "-----", "Source"):
             continue
+        sources_raw = match.group(6).strip()
+        sources = [s.strip() for s in sources_raw.split(";") if s.strip()]
+        first = sources[0] if sources else ""
+        if "#" in first:
+            mapper, _, sid = first.partition("#")
+        else:
+            mapper, sid = first, ""
         joins.append({
             "table1": t1,
             "column1": c1,
             "table2": t2,
             "column2": c2,
             "join_type": match.group(5).strip(),
-            "source_mapper": match.group(6).strip(),
-            "source_id": "",
+            "source_mapper": mapper,
+            "source_id": sid,
+            "sources": sources,
         })
 
     logger.info("Parsed query analysis: %d joins from %s", len(joins), md_path)

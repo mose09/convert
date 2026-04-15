@@ -165,22 +165,37 @@ def _clean_sql(sql: str) -> str:
 
 
 def extract_joins(statements: list[dict]) -> list[dict]:
-    """Extract JOIN relationships from SQL statements."""
+    """Extract JOIN relationships from SQL statements.
+
+    Joins are de-duplicated by ``(table1, column1, table2, column2)``
+    but **all** contributing statements are recorded: the first hit
+    populates ``source_mapper`` / ``source_id`` (back-compat) and every
+    subsequent hit is appended to ``sources`` (``mapper#id`` list) and
+    ``source_stmts`` (full dicts). This lets downstream reports tell
+    the user WHICH statement the relationship actually came from even
+    when several queries share the same column pair.
+    """
     joins = []
-    seen = set()
+    seen = {}
 
     for stmt in statements:
         sql = stmt["sql"].upper()
         found = _parse_joins_from_sql(sql)
+        src_key = f"{stmt['mapper']}#{stmt['id']}"
         for join in found:
             key = (join["table1"], join["column1"], join["table2"], join["column2"])
             reverse_key = (join["table2"], join["column2"], join["table1"], join["column1"])
-            if key not in seen and reverse_key not in seen:
-                seen.add(key)
+            existing = seen.get(key) or seen.get(reverse_key)
+            if existing is None:
                 join["source_mapper"] = stmt["mapper"]
                 join["source_id"] = stmt["id"]
                 join["source_type"] = stmt["type"]
+                join["sources"] = [src_key]
+                seen[key] = join
                 joins.append(join)
+            else:
+                if src_key not in existing["sources"]:
+                    existing["sources"].append(src_key)
 
     logger.info("Extracted %d unique join relationships", len(joins))
     return joins
