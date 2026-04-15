@@ -173,3 +173,177 @@ def load_menu_hierarchy(config: dict, table_override: str | None = None) -> list
     """Convenience: load + flatten into program entries in one call."""
     rows = load_menu_rows(config, table_override=table_override)
     return build_menu_tree(rows)
+
+
+# ---------------------------------------------------------------------------
+# Excel-based menu loader
+# ---------------------------------------------------------------------------
+
+# Header keywords we accept for each level. We try Korean first since most
+# legacy projects ship Korean-labelled menus, then fall back to English.
+_LEVEL_KEYWORDS = {
+    1: ("1레벨", "level1", "lv1", "lvl1", "대분류"),
+    2: ("2레벨", "level2", "lv2", "lvl2", "중분류"),
+    3: ("3레벨", "level3", "lv3", "lvl3", "소분류"),
+    4: ("4레벨", "level4", "lv4", "lvl4", "세분류"),
+    5: ("5레벨", "level5", "lv5", "lvl5", "최하위"),
+}
+_URL_KEYWORDS = ("url", "uri", "경로", "path", "link", "endpoint")
+
+
+def _norm_header(value) -> str:
+    if value is None:
+        return ""
+    return str(value).strip().lower().replace(" ", "")
+
+
+def _find_header_indexes(header_row) -> dict:
+    """Return ``{slot: column_index}`` for level1..5 and url, by header text.
+
+    ``slot`` is one of ``"l1"`` .. ``"l5"`` and ``"url"``. Headers are
+    matched case-insensitively against the synonym lists above. If a
+    header is not present, the slot is omitted.
+    """
+    norm = [_norm_header(c) for c in header_row]
+    result = {}
+    for level, keywords in _LEVEL_KEYWORDS.items():
+        for i, h in enumerate(norm):
+            if not h:
+                continue
+            if any(k in h for k in keywords):
+                result[f"l{level}"] = i
+                break
+    for i, h in enumerate(norm):
+        if not h:
+            continue
+        if any(k == h or h.endswith(k) for k in _URL_KEYWORDS):
+            result["url"] = i
+            break
+    return result
+
+
+def _row_to_entry(row, header_idx: dict, row_num: int) -> dict | None:
+    """Convert one Excel row into a program entry.
+
+    Empty rows (no level / no url) are skipped. The deepest non-empty
+    level becomes ``program_name``; the first three non-empty levels are
+    placed in ``main_menu`` / ``sub_menu`` / ``tab`` (the legacy slots).
+    Every non-empty level is preserved in ``menu_path`` joined with
+    `` > `` so 4th and 5th-level information is not lost.
+    """
+    levels = []
+    for n in range(1, 6):
+        idx = header_idx.get(f"l{n}")
+        if idx is None or idx >= len(row):
+            continue
+        cell = row[idx]
+        if cell is None:
+            continue
+        text = str(cell).strip()
+        if text:
+            levels.append(text)
+
+    url_idx = header_idx.get("url")
+    url = ""
+    if url_idx is not None and url_idx < len(row) and row[url_idx] is not None:
+        url = str(row[url_idx]).strip()
+
+    if not levels and not url:
+        return None
+    if not url:
+        # Pure container row — keep the ancestry but no callable URL,
+        # so it never matches a controller. Return None to skip; the
+        # leaf rows above already hold the full ancestry path.
+        return None
+    if not levels:
+        # URL present but no level labels — synthesise a placeholder.
+        levels = [f"(menu row {row_num})"]
+
+    program_name = levels[-1]
+    main_menu = levels[0] if len(levels) >= 1 else ""
+    sub_menu = levels[1] if len(levels) >= 2 else ""
+    tab = levels[2] if len(levels) >= 3 else ""
+    if len(levels) == 1:
+        # Single-level menu — leaf is itself the main_menu; clear sub/tab.
+        main_menu = levels[0]
+        sub_menu = ""
+        tab = ""
+
+    return {
+        "program_id": "",
+        "program_name": program_name,
+        "main_menu": main_menu,
+        "sub_menu": sub_menu,
+        "tab": tab,
+        "menu_path": " > ".join(levels),
+        "url": url,
+    }
+
+
+def load_menu_from_excel(xlsx_path: str, sheet_name: str | None = None) -> list[dict]:
+    """Load a project-specific menu Excel and return program entries.
+
+    Expected sheet layout::
+
+        | 1레벨 | 2레벨 | 3레벨 | 4레벨 | 5레벨 | URL |
+        | 주문 | 주문조회 |        |        |        | /api/order/list |
+        | 주문 | 주문등록 |        |        |        | /api/order/save |
+        | 설비 | 설비관리 | 모델링 | SVID 코드 |   | /api/svid/list |
+
+    * Header text matches a small set of Korean / English synonyms (see
+      ``_LEVEL_KEYWORDS`` and ``_URL_KEYWORDS``).
+    * Rows whose ``URL`` is empty are treated as pure container nodes
+      and skipped — only callable pages (rows with a URL) become
+      program entries.
+    * The deepest non-empty level becomes ``program_name``. The first
+      three are mapped onto the legacy ``main_menu`` / ``sub_menu`` /
+      ``tab`` slots; **all** non-empty levels are also preserved in a
+      new ``menu_path`` field (e.g. ``설비 > 설비관리 > 모델링 >
+      SVID 코드``) so 4th / 5th-level information is not lost.
+
+    Raises FileNotFoundError if the path is missing and ImportError if
+    openpyxl is unavailable.
+    """
+    if not xlsx_path:
+        return []
+    try:
+        from openpyxl import load_workbook
+    except ImportError as e:  # pragma: no cover
+        raise ImportError(
+            "openpyxl is required to read --menu-xlsx. Install with `pip install openpyxl`."
+        ) from e
+
+    wb = load_workbook(xlsx_path, data_only=True)
+    ws = wb[sheet_name] if sheet_name and sheet_name in wb.sheetnames else wb.active
+
+    rows_iter = ws.iter_rows(values_only=True)
+    try:
+        header_row = next(rows_iter)
+    except StopIteration:
+        logger.warning("Menu Excel %s is empty", xlsx_path)
+        return []
+
+    header_idx = _find_header_indexes(header_row)
+    if "url" not in header_idx:
+        logger.warning(
+            "Menu Excel %s has no URL column (looked for: %s) — every row will be skipped",
+            xlsx_path, ", ".join(_URL_KEYWORDS),
+        )
+        return []
+    if not any(k.startswith("l") for k in header_idx):
+        logger.warning(
+            "Menu Excel %s has no level columns (looked for 1레벨..5레벨)",
+            xlsx_path,
+        )
+
+    programs = []
+    for line_no, row in enumerate(rows_iter, start=2):
+        entry = _row_to_entry(row, header_idx, line_no)
+        if entry is not None:
+            programs.append(entry)
+
+    logger.info(
+        "Loaded %d menu programs from Excel: %s (sheet=%s)",
+        len(programs), xlsx_path, ws.title,
+    )
+    return programs

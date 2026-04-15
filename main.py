@@ -950,9 +950,28 @@ def cmd_analyze_legacy(args):
         print(f"Error: Frontend dir not found: {args.frontend_dir}")
         return
 
-    # Load menu rows from DB unless --skip-menu
+    # Resolve menu source priority:
+    #   1. --skip-menu            → no menu lookup
+    #   2. --menu-xlsx PATH       → read from a project-specific Excel
+    #   3. (default)              → query the DB menu table
     menu_programs = None
-    if not args.skip_menu:
+    if args.skip_menu:
+        pass
+    elif args.menu_xlsx:
+        try:
+            from oracle_embeddings.legacy_menu_loader import load_menu_from_excel
+            print("=== Step 1: Loading menu Excel ===")
+            print(f"  Menu xlsx: {args.menu_xlsx}")
+            menu_programs = load_menu_from_excel(args.menu_xlsx)
+            print(f"  Menu programs: {len(menu_programs)}")
+        except FileNotFoundError:
+            print(f"  Error: menu xlsx not found: {args.menu_xlsx}")
+            return
+        except Exception as e:
+            print(f"  Warning: Menu Excel load failed - {e}")
+            print("  Continuing without menu hierarchy (use --skip-menu to suppress).")
+            menu_programs = None
+    else:
         try:
             from oracle_embeddings.legacy_menu_loader import load_menu_hierarchy
             print("=== Step 1: Loading menu table ===")
@@ -1140,8 +1159,13 @@ def main():
     al_parser.add_argument("--frontend-dir",
                            help="Frontend project root (React .js/.jsx/.ts/.tsx, optional)")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
+    al_parser.add_argument("--menu-xlsx",
+                           help="Path to a project-specific menu Excel file. "
+                                "Expected columns: 1레벨 / 2레벨 / 3레벨 / 4레벨 / 5레벨 / URL "
+                                "(case-insensitive Korean or English headers, URL row 만 메인 페이지로 인정). "
+                                "지정되면 DB 메뉴 테이블 대신 이 파일을 사용합니다.")
     al_parser.add_argument("--skip-menu", action="store_true",
-                           help="Skip DB menu load (menu columns left blank)")
+                           help="Skip menu load entirely (menu columns left blank)")
     al_parser.add_argument("--rfc-depth", type=int, default=None,
                            help="Service-of-service walk depth for RFC collection (default 2)")
     al_parser.add_argument("--format", choices=["markdown", "excel", "both"], default="both",

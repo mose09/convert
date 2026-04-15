@@ -147,12 +147,12 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
 
         # Program detail table
         f.write("## Program Detail\n\n")
-        f.write("| Main | Sub | Tab | Program | HTTP | URL | File | React | Controller | Service | Query XML | Tables | RFC |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("| Menu path | Main | Sub | Tab | Program | HTTP | URL | File | React | Controller | Service | Query XML | Tables | RFC |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in rows:
             f.write(
                 "| " + " | ".join(_md_escape(r.get(k, "")) for k in [
-                    "main_menu", "sub_menu", "tab", "program_name", "http_method",
+                    "menu_path", "main_menu", "sub_menu", "tab", "program_name", "http_method",
                     "url", "file_name", "presentation_layer", "controller_class",
                     "service_class", "query_xml", "related_tables", "rfc",
                 ]) + " |\n"
@@ -265,7 +265,7 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
 
     # Sheet 2: Programs (main deliverable)
     ws = wb.create_sheet("Programs")
-    headers = ["No", "Main", "Sub", "Tab", "Program", "HTTP", "URL",
+    headers = ["No", "Menu path", "Main", "Sub", "Tab", "Program", "HTTP", "URL",
                "File", "React", "Controller", "Service",
                "Query XML", "Tables", "RFC"]
     _write_header(ws, headers)
@@ -277,6 +277,7 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
             fill = gray_fill
         _write_row(ws, i, [
             i - 1,
+            r.get("menu_path", ""),
             r.get("main_menu", ""), r.get("sub_menu", ""), r.get("tab", ""),
             r.get("program_name", ""), r.get("http_method", ""), r.get("url", ""),
             r.get("file_name", ""), r.get("presentation_layer", ""),
@@ -386,6 +387,7 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
 BATCH_COLUMNS = [
     ("Backend project",   "backend_project"),
     ("Backend framework", "backend_framework"),
+    ("Menu path",         "menu_path"),
     ("File",              "file_name"),
     ("Controller",        "controller_class"),
     ("URL",               "url"),

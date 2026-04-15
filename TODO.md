@@ -1,3 +1,16 @@
+# TODO: 메뉴 매핑을 Excel 파일 기반으로 전환 (완료)
+
+- [x] `legacy_menu_loader.py` 에 `load_menu_from_excel` + `_LEVEL_KEYWORDS` (1~5레벨) + `_URL_KEYWORDS` 추가
+- [x] `_row_to_entry` 가 가장 깊은 레벨을 `program_name` 으로, 첫 3개를 main/sub/tab 슬롯으로, 전체 레벨을 `menu_path` 로 보존
+- [x] `main.py cmd_analyze_legacy` 에 `--menu-xlsx` 옵션 + skip > xlsx > DB 우선순위
+- [x] `legacy_analyzer._build_row` row dict 에 `menu_path` 필드 추가
+- [x] `legacy_report.py` Markdown / Excel 단일·배치 모드 모두 `Menu path` 컬럼 추가
+- [x] `/tmp/menu.xlsx` mock 으로 단위 + end-to-end 검증
+- [x] BLOG.md 업데이트 (Excel 옵션 + menu_path 컬럼 설명)
+- [x] 커밋 & 푸시
+
+---
+
 # TODO: AS-IS Legacy Source Code Analyzer (완료)
 
 ## Phase 1 - 코어 파서
