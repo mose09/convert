@@ -3,18 +3,49 @@
 Consumes the result dict produced by ``legacy_analyzer.analyze_legacy`` and
 emits:
 
-* ``as_is_analysis_<ts>.md`` — sections: header, summary, menu hierarchy,
-  program detail table, unmatched controllers, orphan menus.
-* ``as_is_analysis_<ts>.xlsx`` — 7 sheets: Summary, Programs, Menu
-  Hierarchy, Unmatched Controllers, Orphan Menu Entries, RFC Calls,
+* ``as_is_analysis_<backend>_<ts>.md`` — sections: header, summary, menu
+  hierarchy, program detail table, unmatched controllers, orphan menus.
+* ``as_is_analysis_<backend>_<ts>.xlsx`` — 7 sheets: Summary, Programs,
+  Menu Hierarchy, Unmatched Controllers, Orphan Menu Entries, RFC Calls,
   Tables Cross-Reference.
+
+``<backend>`` is the basename of the ``backend_dir`` argument (e.g.
+``/path/to/backend/gipms-api-common`` → ``gipms-api-common``) so that
+running the analyzer on multiple services of a monorepo produces
+distinct, easily-identifiable output files.
 """
 
 import logging
 import os
+import re
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+
+def _backend_slug(backend_dir: str) -> str:
+    """Derive a filename-safe slug from the backend directory path.
+
+    Only the leaf directory name is used so running on
+    ``/home/me/projects/monorepo/backend/gipms-api-common`` produces
+    ``gipms-api-common``. Characters that could cause issues on
+    Windows / macOS filesystems are replaced with ``_``.
+    """
+    if not backend_dir:
+        return ""
+    base = os.path.basename(os.path.normpath(backend_dir))
+    if not base:
+        return ""
+    # Allow alphanumerics plus a small set of safe punctuation.
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
+    return slug.strip("_.")
+
+
+def _build_filename(output_dir: str, result: dict, ts: str, ext: str) -> str:
+    """Return ``<output>/as_is_analysis_<slug>_<ts>.<ext>``."""
+    slug = _backend_slug(result.get("backend_dir", ""))
+    prefix = f"as_is_analysis_{slug}_" if slug else "as_is_analysis_"
+    return os.path.join(output_dir, f"{prefix}{ts}.{ext}")
 
 
 def _md_escape(text) -> str:
@@ -39,7 +70,7 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
     """Render the analysis result as a Markdown document."""
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(output_dir, f"as_is_analysis_{ts}.md")
+    filepath = _build_filename(output_dir, result, ts, "md")
 
     rows = result.get("rows", [])
     unmatched = result.get("unmatched_controllers", [])
@@ -149,7 +180,7 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
 
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filepath = os.path.join(output_dir, f"as_is_analysis_{ts}.xlsx")
+    filepath = _build_filename(output_dir, result, ts, "xlsx")
 
     rows = result.get("rows", [])
     unmatched = result.get("unmatched_controllers", [])
