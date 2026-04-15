@@ -45,22 +45,47 @@ def generate_html_erd(schema: dict, joins: list[dict], output_path: str) -> str:
             "column_count": len(columns),
         })
 
-    # Build links (relationships) - only between tables in schema
+    # Build links (relationships) — only between tables in schema. We
+    # group by (table1, table2) so that composite JOINs (multiple
+    # column pairs between the same two tables) appear as one link
+    # whose sourceCol / targetCol list every column joined, instead
+    # of silently dropping every column after the first.
     links = []
-    seen = set()
+    pair_bucket: dict[tuple, dict] = {}
     for j in joins:
         if j["table1"] not in schema_table_map or j["table2"] not in schema_table_map:
             continue
         key = tuple(sorted([j["table1"], j["table2"]]))
-        if key in seen:
+        # Normalise direction so ``source`` is always key[0].
+        if j["table1"] == key[0]:
+            c_src, c_tgt = j["column1"], j["column2"]
+        else:
+            c_src, c_tgt = j["column2"], j["column1"]
+        entry = pair_bucket.get(key)
+        if entry is None:
+            entry = {
+                "source": key[0],
+                "target": key[1],
+                "source_cols": [],
+                "target_cols": [],
+                "seen": set(),
+                "joinType": j.get("join_type", ""),
+            }
+            pair_bucket[key] = entry
+        col_pair = (c_src, c_tgt)
+        if col_pair in entry["seen"]:
             continue
-        seen.add(key)
+        entry["seen"].add(col_pair)
+        entry["source_cols"].append(c_src)
+        entry["target_cols"].append(c_tgt)
+
+    for entry in pair_bucket.values():
         links.append({
-            "source": j["table1"],
-            "target": j["table2"],
-            "sourceCol": j["column1"],
-            "targetCol": j["column2"],
-            "joinType": j.get("join_type", ""),
+            "source": entry["source"],
+            "target": entry["target"],
+            "sourceCol": ", ".join(entry["source_cols"]),
+            "targetCol": ", ".join(entry["target_cols"]),
+            "joinType": entry["joinType"],
         })
 
     erd_data = json.dumps({"nodes": nodes, "links": links}, ensure_ascii=False)

@@ -78,25 +78,44 @@ def generate_mermaid_erd(schema: dict, joins: list[dict],
 
     lines.append("")
 
-    # Write relationships from JOINs (only if both tables are in schema)
-    seen_rels = set()
+    # Write relationships from JOINs (only if both tables are in schema).
+    # Mermaid can only draw ONE relationship line per table pair, so we
+    # group every JOIN entry that connects the same pair of tables and
+    # render a single line whose label contains **every** column pair.
+    # Without this, a composite JOIN (``ON a.col1 = b.col1 AND a.col2 =
+    # b.col2``) would show only its first column pair.
     all_joins = joins + extra_relations
+    pair_bucket: dict[tuple, list[dict]] = {}
+    pair_inferred: set[tuple] = set()
     for j in all_joins:
         t1, t2 = j["table1"], j["table2"]
         if t1 not in schema_table_map or t2 not in schema_table_map:
             continue
         key = tuple(sorted([t1, t2]))
-        if key in seen_rels:
-            continue
-        seen_rels.add(key)
+        pair_bucket.setdefault(key, []).append(j)
+        if j in extra_relations:
+            pair_inferred.add(key)
 
-        cardinality = _infer_cardinality(j, schema_table_map)
-        label = f"{j['column1']} = {j['column2']}"
-        is_inferred = j in extra_relations
-        if is_inferred:
+    for key, bucket in pair_bucket.items():
+        # Normalise column-pair direction so ``column1`` always belongs
+        # to the first table in ``key``.
+        col_pairs: list[tuple[str, str]] = []
+        seen_col_pairs: set[tuple[str, str]] = set()
+        for j in bucket:
+            if j["table1"] == key[0]:
+                pair = (j["column1"], j["column2"])
+            else:
+                pair = (j["column2"], j["column1"])
+            if pair in seen_col_pairs:
+                continue
+            seen_col_pairs.add(pair)
+            col_pairs.append(pair)
+
+        cardinality = _infer_cardinality(bucket[0], schema_table_map)
+        label = ", ".join(f"{c1}={c2}" for c1, c2 in col_pairs)
+        if key in pair_inferred:
             label += " [LLM inferred]"
-
-        lines.append(f'    {t1} {cardinality} {t2} : "{label}"')
+        lines.append(f'    {key[0]} {cardinality} {key[1]} : "{label}"')
 
     return "\n".join(lines)
 
