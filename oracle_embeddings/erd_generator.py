@@ -194,15 +194,79 @@ def build_erd_markdown(mermaid_code: str, schema: dict, joins: list[dict],
     lines.append(mermaid_code)
     lines.append("```\n")
 
-    # Relationship detail
+    # Relationship detail — one row per **table pair** with all column
+    # pairs combined. Composite JOINs (Oracle ``(+)`` style or ANSI
+    # ``ON a.x = b.x AND a.y = b.y``) would otherwise scatter across
+    # multiple rows and the Mermaid diagram / this table would look
+    # inconsistent.
     lines.append("## Relationship Details\n")
-    lines.append("| Table A | Column | <-> | Table B | Column | Source |")
-    lines.append("|---------|--------|-----|---------|--------|--------|")
-    for j in joins:
-        lines.append(f"| {j['table1']} | {j['column1']} | <-> | {j['table2']} | {j['column2']} | JOIN ({j.get('source_mapper', '')}) |")
-    if llm_result:
-        for j in llm_result.get("inferred_relations", []):
-            lines.append(f"| {j['table1']} | {j['column1']} | <-> | {j['table2']} | {j['column2']} | LLM inferred |")
+    lines.append("| Table A | Columns A | <-> | Table B | Columns B | JOIN Type | Source |")
+    lines.append("|---------|-----------|-----|---------|-----------|-----------|--------|")
+
+    extra = (llm_result or {}).get("inferred_relations", []) or []
+    grouped = _group_joins_by_pair(joins)
+    grouped_extra = _group_joins_by_pair(extra, source_label="LLM inferred")
+    for entry in grouped + grouped_extra:
+        lines.append(
+            f"| {entry['table1']} | {', '.join(entry['cols1'])} "
+            f"| <-> | {entry['table2']} | {', '.join(entry['cols2'])} "
+            f"| {entry['join_type']} | {entry['source']} |"
+        )
     lines.append("")
 
     return "\n".join(lines)
+
+
+def _group_joins_by_pair(joins: list[dict],
+                         source_label: str | None = None) -> list[dict]:
+    """Collapse a list of joins into one entry per (tableA, tableB) pair.
+
+    The column lists preserve insertion order (so the report shows the
+    key pair first, then the secondary columns) while de-duplicating
+    identical column pairs. JOIN type and source labels are aggregated
+    with ``/`` — if the caller supplies ``source_label`` it overrides
+    per-join sources (used to tag LLM-inferred rows).
+    """
+    buckets: dict[tuple, dict] = {}
+    for j in joins:
+        key = tuple(sorted([j["table1"], j["table2"]]))
+        if j["table1"] == key[0]:
+            c1, c2 = j["column1"], j["column2"]
+        else:
+            c1, c2 = j["column2"], j["column1"]
+        bucket = buckets.get(key)
+        if bucket is None:
+            bucket = {
+                "table1": key[0],
+                "table2": key[1],
+                "cols1": [],
+                "cols2": [],
+                "seen_cols": set(),
+                "join_types": [],
+                "sources": [],
+            }
+            buckets[key] = bucket
+        if (c1, c2) not in bucket["seen_cols"]:
+            bucket["seen_cols"].add((c1, c2))
+            bucket["cols1"].append(c1)
+            bucket["cols2"].append(c2)
+        jt = j.get("join_type") or ""
+        if jt and jt not in bucket["join_types"]:
+            bucket["join_types"].append(jt)
+        src = source_label or (
+            f"JOIN ({j.get('source_mapper', '')})" if j.get("source_mapper") else "JOIN"
+        )
+        if src not in bucket["sources"]:
+            bucket["sources"].append(src)
+
+    result = []
+    for b in buckets.values():
+        result.append({
+            "table1": b["table1"],
+            "table2": b["table2"],
+            "cols1": b["cols1"],
+            "cols2": b["cols2"],
+            "join_type": " / ".join(b["join_types"]) if b["join_types"] else "",
+            "source": " / ".join(b["sources"]),
+        })
+    return result
