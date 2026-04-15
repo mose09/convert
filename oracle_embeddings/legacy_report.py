@@ -1,13 +1,16 @@
 """Markdown + Excel output for the AS-IS legacy analyzer.
 
 Consumes the result dict produced by ``legacy_analyzer.analyze_legacy`` and
-emits:
+emits everything under a dedicated ``legacy_analysis/`` subfolder of the
+configured output directory so that AS-IS artifacts do not pollute the
+shared ``output/`` root used by other commands:
 
-* ``as_is_analysis_<backend>_<ts>.md`` — sections: header, summary, menu
-  hierarchy, program detail table, unmatched controllers, orphan menus.
-* ``as_is_analysis_<backend>_<ts>.xlsx`` — 7 sheets: Summary, Programs,
-  Menu Hierarchy, Unmatched Controllers, Orphan Menu Entries, RFC Calls,
-  Tables Cross-Reference.
+* ``<output>/legacy_analysis/as_is_analysis_<backend>_<ts>.md``
+  sections: header, summary, menu hierarchy, program detail table,
+  unmatched controllers, orphan menus.
+* ``<output>/legacy_analysis/as_is_analysis_<backend>_<ts>.xlsx``
+  7 sheets: Summary, Programs, Menu Hierarchy, Unmatched Controllers,
+  Orphan Menu Entries, RFC Calls, Tables Cross-Reference.
 
 ``<backend>`` is the basename of the ``backend_dir`` argument (e.g.
 ``/path/to/backend/gipms-api-common`` → ``gipms-api-common``) so that
@@ -21,6 +24,8 @@ import re
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
+
+LEGACY_SUBDIR = "legacy_analysis"
 
 
 def _backend_slug(backend_dir: str) -> str:
@@ -41,11 +46,24 @@ def _backend_slug(backend_dir: str) -> str:
     return slug.strip("_.")
 
 
+def _legacy_output_dir(output_dir: str) -> str:
+    """Return the dedicated subfolder for AS-IS legacy outputs.
+
+    Ensures the directory exists on disk. All analyze-legacy artifacts
+    (Markdown + Excel) are written under this path instead of the
+    top-level ``output/`` so they do not mingle with files produced by
+    ``schema`` / ``query`` / ``terms`` / etc.
+    """
+    target = os.path.join(output_dir or ".", LEGACY_SUBDIR)
+    os.makedirs(target, exist_ok=True)
+    return target
+
+
 def _build_filename(output_dir: str, result: dict, ts: str, ext: str) -> str:
-    """Return ``<output>/as_is_analysis_<slug>_<ts>.<ext>``."""
+    """Return ``<output>/legacy_analysis/as_is_analysis_<slug>_<ts>.<ext>``."""
     slug = _backend_slug(result.get("backend_dir", ""))
     prefix = f"as_is_analysis_{slug}_" if slug else "as_is_analysis_"
-    return os.path.join(output_dir, f"{prefix}{ts}.{ext}")
+    return os.path.join(_legacy_output_dir(output_dir), f"{prefix}{ts}.{ext}")
 
 
 def _md_escape(text) -> str:
