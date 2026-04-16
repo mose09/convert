@@ -201,6 +201,75 @@ _METHOD_ANNOTATION_RE = re.compile(
 
 _JAVA_METHOD_SIG_RE = re.compile(r"\b(?P<name>\w+)\s*\(")
 
+# ---------------------------------------------------------------------------
+# Nexcore (SK C&C framework) support
+# ---------------------------------------------------------------------------
+# Nexcore controllers extend ``Abstract*BizController`` and expose endpoints
+# via method-name convention (no @RequestMapping on methods). Every public
+# method whose parameters include Nexcore service-context types is an
+# endpoint: the method name becomes the URL path segment.
+_NEXCORE_BASE_CLASSES = {
+    "AbstractMultiActionBizController",
+    "AbstractSingleActionBizController",
+    "AbstractBizController",
+    "AbstractCommonBizController",
+}
+
+# Public method with Nexcore parameter types:
+#   public Object getList(IDataSet ds, IBizServiceContext ctx) throws Exception {
+# We match on parameter types that are clearly Nexcore service context.
+_NEXCORE_PARAM_TYPES = {"IDataSet", "IBizServiceContext", "IOnlineContext",
+                        "IDataSetHelper", "HttpServletRequest"}
+
+_NEXCORE_METHOD_RE = re.compile(
+    r"""(?:public)\s+
+        (?P<ret>[\w.<>,\[\]\s]+?)\s+
+        (?P<name>\w+)\s*
+        \(\s*(?P<params>[^)]*)\)
+    """,
+    re.VERBOSE,
+)
+
+def _is_nexcore_controller(class_info: dict) -> bool:
+    """Return True if the class extends a known Nexcore base controller."""
+    extends = class_info.get("extends", "")
+    # Strip generics and package prefix
+    simple = re.sub(r"<.*$", "", extends).strip().rsplit(".", 1)[-1]
+    return simple in _NEXCORE_BASE_CLASSES
+
+def _extract_nexcore_endpoints(content: str, class_paths: list[str]) -> list[dict]:
+    """Extract endpoints from Nexcore controllers by method-name convention.
+
+    In Nexcore, ``Abstract*BizController`` dispatches HTTP requests to
+    public methods whose parameters include ``IDataSet`` /
+    ``IBizServiceContext`` / ``IOnlineContext``. The method name itself
+    becomes the URL path segment (e.g. ``getInformNoteList`` →
+    ``/getInformNoteList.do``).
+    """
+    endpoints = []
+    for m in _NEXCORE_METHOD_RE.finditer(content):
+        name = m.group("name")
+        params = m.group("params")
+        # Check if ANY parameter type is a Nexcore context type
+        param_types = {p.strip().split()[-2] if len(p.strip().split()) >= 2
+                       else p.strip().split()[0]
+                       for p in params.split(",") if p.strip()}
+        if not (param_types & _NEXCORE_PARAM_TYPES):
+            continue
+        if name in _METHOD_KEYWORDS:
+            continue
+        line_number = content.count("\n", 0, m.start()) + 1
+        for cp in class_paths:
+            endpoints.append({
+                "annotation": "Nexcore",
+                "http_method": "POST",  # Nexcore typically uses POST
+                "path": f"/{name}.do",
+                "full_url": _combine_paths(cp, f"/{name}.do"),
+                "method_name": name,
+                "line_number": line_number,
+            })
+    return endpoints
+
 _METHOD_KEYWORDS = {
     "public", "protected", "private", "static", "final", "abstract",
     "synchronized", "native", "transient", "volatile", "strictfp",
@@ -1259,6 +1328,9 @@ def parse_java_file(filepath: str) -> dict:
     endpoints = _extract_endpoints(body, class_paths)
     # Vert.x routes have no class-level prefix concept
     endpoints += _extract_vertx_endpoints(body, [""])
+    # Nexcore (SK C&C framework): method-name convention endpoints
+    if _is_nexcore_controller(class_info) and not endpoints:
+        endpoints += _extract_nexcore_endpoints(body, class_paths)
 
     # @RestVerticle annotation — emit a single endpoint synthesized from
     # the annotation attributes. The handler method name defaults to the

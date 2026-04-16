@@ -48,7 +48,7 @@
 
 ## 지원 매트릭스 (변경 시 회귀 확인 필수)
 
-- **Backend framework**: Spring `@Controller`/`@RestController` / Vert.x `AbstractVerticle` / 사용자 정의 `@RestVerticle`. `pom.xml`/`build.gradle` 의존성 + 소스 휴리스틱으로 자동 감지.
+- **Backend framework**: Spring `@Controller`/`@RestController` / Vert.x `AbstractVerticle` / 사용자 정의 `@RestVerticle` / **Nexcore (SK C&C)** `Abstract*BizController`. `pom.xml`/`build.gradle` 의존성 + 소스 휴리스틱으로 자동 감지. Nexcore 는 `@RequestMapping` 없이 메서드명 컨벤션으로 endpoint 매핑 (`getList` → `/getList.do`).
 - **Frontend framework**: React (Router v5/v6/lazy) / Polymer (vaadin-router, page.js + iron-pages, Polymer 1/2/3, LitElement). `package.json` 의존성 + 콘텐츠 샘플링으로 자동 감지. `--frontend-framework {auto,react,polymer}` 로 override.
 - **MyBatis**: namespace-level + statement-level 테이블 인덱스, CDATA / dynamic `<if>` / `<choose>` / `<foreach>` / `<trim>` / iBatis 포함. Oracle comma-FROM + `(+)` outer join, multi-column composite JOIN.
 - **SAP JCo RFC**: `destination.getFunction("Z_...")`, `JCoUtil.getCoFunction(...)`, `String FN_XXX = "..."` 상수 2-pass 해석, multi-arg 호출.
