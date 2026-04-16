@@ -416,9 +416,12 @@ _SQL_CALL_RE = re.compile(
     r"""\b(?:commonSQL|CommonSQL|sqlSession|SqlSession|sqlClient|SqlClient
              |sqlExec|SqlExec|sqlHelper|SqlHelper|sqlMap|SqlMap
              |commonDao|CommonDao|sqlTemplate|SqlTemplate
-             |\w*[Dd]ao|\w*SQL|\w*Sql|queryRunner)
+             |sqlMapClientTemplate|SqlMapClientTemplate
+             |sqlMapClient|SqlMapClient
+             |\w*[Dd]ao|\w*SQL|\w*Sql|\w*[Tt]emplate|queryRunner)
         (?:\.\w+)?
         \.\s*(?P<op>selectList|selectOne|selectMap|selectPage|selectCount
+                    |queryForList|queryForObject|queryForMap
                     |insert|update|delete|save|execute|call|query)
         \s*\(\s*"(?P<sqlid>[^"]+\.[^"]+)"
     """,

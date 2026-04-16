@@ -611,28 +611,38 @@ def _resolve_field_type_fqcn(receiver: str, controller: dict,
     a simple-name lookup in ``by_simple`` (``OrderService`` →
     ``com.example.service.OrderService``) if the field wasn't captured
     as an autowired field.
+
+    Searches services, mappers (DAO/Repository), AND controllers so
+    that Nexcore-style chains (Controller → Service → DAO → SQL) and
+    controller-to-controller delegation both resolve.
     """
-    svc_index = indexes["services_by_fqcn"]
+    walkable = indexes["services_by_fqcn"]
+    walkable2 = indexes["mappers_by_fqcn"]
+    walkable3 = indexes["controllers_by_fqcn"]
     by_simple = indexes["by_simple"]
+
+    def _in_any(fqcn):
+        return fqcn in walkable or fqcn in walkable2 or fqcn in walkable3
+
     for f in controller.get("autowired_fields", []):
         if f.get("name") == receiver:
             fqcn = f.get("type_fqcn") or ""
-            if fqcn in svc_index:
+            if _in_any(fqcn):
                 return fqcn
             # Try simple-name fallback
             for cand in by_simple.get(f.get("type_simple", ""), []):
-                if cand["fqcn"] in svc_index:
+                if _in_any(cand["fqcn"]):
                     return cand["fqcn"]
             return ""
     # Name-based fallback — receiver could itself be a type name
     # (static call) or the field name happens to match a simple type.
     for cand in by_simple.get(receiver, []):
-        if cand["fqcn"] in svc_index:
+        if _in_any(cand["fqcn"]):
             return cand["fqcn"]
     # Try capitalising the receiver (common Java convention)
     simple_candidate = receiver[:1].upper() + receiver[1:] if receiver else ""
     for cand in by_simple.get(simple_candidate, []):
-        if cand["fqcn"] in svc_index:
+        if _in_any(cand["fqcn"]):
             return cand["fqcn"]
     return ""
 
@@ -769,9 +779,15 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                 if target_method_name and sm_key not in seen_service_methods:
                     seen_service_methods.add(sm_key)
                     service_methods.append(f"{svc_fqcn}#{target_method_name}")
-                # Walk into the interface's impl if we have one
+                # Walk into the interface's impl if we have one.
+                # Search services, mappers (DAO/Repository), and
+                # controllers so Nexcore chains (Svc→DAO) resolve.
+                mapper_index = indexes["mappers_by_fqcn"]
+                ctrl_index = indexes["controllers_by_fqcn"]
                 impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)
-                impl_cls = svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
+                impl_cls = (svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
+                            or mapper_index.get(impl_fqcn) or mapper_index.get(svc_fqcn)
+                            or ctrl_index.get(impl_fqcn) or ctrl_index.get(svc_fqcn))
                 if not impl_cls:
                     continue
                 target_method = _find_method_in_class(impl_cls, target_method_name)
