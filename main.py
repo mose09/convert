@@ -894,6 +894,30 @@ def cmd_erd_md(args):
     print(f"Tables: {len(schema['tables'])}, Relationships: {len(joins)}")
 
 
+def cmd_discover_patterns(args):
+    """Discover project-specific patterns using LLM."""
+    from oracle_embeddings.legacy_pattern_discovery import discover_patterns, save_patterns
+
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+    output_dir = config.get("storage", {}).get("output_dir", "./output")
+
+    if not os.path.isdir(args.backend_dir):
+        print(f"Error: Backend dir not found: {args.backend_dir}")
+        return
+
+    patterns = discover_patterns(args.backend_dir, config)
+
+    if args.output:
+        output_path = args.output
+    else:
+        os.makedirs(os.path.join(output_dir, "legacy_analysis"), exist_ok=True)
+        output_path = os.path.join(output_dir, "legacy_analysis", "patterns.yaml")
+
+    save_patterns(patterns, output_path)
+    print(f"\nPatterns saved: {os.path.abspath(output_path)}")
+    print(f"Usage: python main.py analyze-legacy --backend-dir {args.backend_dir} --patterns {output_path}")
+
+
 def cmd_all(args):
     """Run schema, query, and erd generation."""
     print("=== Schema Extraction ===")
@@ -1005,6 +1029,13 @@ def cmd_analyze_legacy(args):
     if frontend_framework == "auto":
         frontend_framework = None  # let analyzer auto-detect
 
+    # Load patterns file if provided
+    loaded_patterns = None
+    if getattr(args, "patterns", None):
+        from oracle_embeddings.legacy_pattern_discovery import load_patterns
+        print(f"  Loading patterns: {args.patterns}")
+        loaded_patterns = load_patterns(args.patterns)
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -1013,6 +1044,7 @@ def cmd_analyze_legacy(args):
             rfc_depth=rfc_depth,
             include_all=args.include_all,
             frontend_framework=frontend_framework,
+            patterns=loaded_patterns,
         )
     else:
         result = analyze_legacy(
@@ -1021,6 +1053,7 @@ def cmd_analyze_legacy(args):
             menu_rows=menu_programs,
             rfc_depth=rfc_depth,
             frontend_framework=frontend_framework,
+            patterns=loaded_patterns,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1195,10 +1228,23 @@ def main():
                                 "지정되면 DB 메뉴 테이블 대신 이 파일을 사용합니다.")
     al_parser.add_argument("--skip-menu", action="store_true",
                            help="Skip menu load entirely (menu columns left blank)")
+    al_parser.add_argument("--patterns",
+                           help="Path to patterns.yaml (LLM 이 생성한 프로젝트 패턴 파일). "
+                                "discover-patterns 로 생성하거나 수동 작성. 지정하면 "
+                                "파서/분석기가 해당 패턴으로 커스텀 분석 수행.")
     al_parser.add_argument("--rfc-depth", type=int, default=None,
                            help="Service-of-service walk depth for RFC collection (default 2)")
     al_parser.add_argument("--format", choices=["markdown", "excel", "both"], default="both",
                            help="Output format (default both)")
+
+    # discover-patterns command
+    dp_parser = subparsers.add_parser(
+        "discover-patterns",
+        help="LLM 으로 프로젝트 패턴 자동 발견 (controller/service/DAO/SQL 패턴)")
+    dp_parser.add_argument("--backend-dir", required=True,
+                           help="Backend project root to analyze")
+    dp_parser.add_argument("--output",
+                           help="Output YAML path (default: output/legacy_analysis/patterns.yaml)")
 
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
@@ -1241,6 +1287,8 @@ def main():
         cmd_erd_rag(args)
     elif args.command == "analyze-legacy":
         cmd_analyze_legacy(args)
+    elif args.command == "discover-patterns":
+        cmd_discover_patterns(args)
     elif args.command == "all":
         cmd_all(args)
     else:

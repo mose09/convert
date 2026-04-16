@@ -178,7 +178,8 @@ def _filter_endpoints_by_framework(classes: list[dict], framework: str) -> None:
 
 
 def _build_indexes(classes: list[dict], framework: str = "mixed",
-                   mybatis_namespaces: set | None = None) -> dict:
+                   mybatis_namespaces: set | None = None,
+                   patterns: dict | None = None) -> dict:
     """Partition parsed Java classes into role-specific indexes.
 
     ``framework`` gates which classes are eligible as HTTP entry points:
@@ -227,6 +228,15 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
         "Manager", "ManagerImpl",
         "Facade", "FacadeImpl",
     )
+    # Extend with pattern overrides
+    if patterns:
+        extra_svc = patterns.get("service_suffixes") or []
+        if extra_svc:
+            service_suffixes = tuple(dict.fromkeys(list(service_suffixes) + extra_svc))
+
+    dao_suffixes_extra = []
+    if patterns:
+        dao_suffixes_extra = patterns.get("dao_suffixes") or []
 
     controllers = {}
     services = {}
@@ -253,7 +263,11 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
             controllers[fqcn] = c
         if stereo in ("Service", "Component") or _is_service_name(name):
             services[fqcn] = c
-        if stereo in ("Mapper", "Repository") or name.endswith("Mapper") or name.endswith("Dao"):
+        is_mapper = (stereo in ("Mapper", "Repository")
+                     or name.endswith("Mapper") or name.endswith("Dao"))
+        if not is_mapper and dao_suffixes_extra:
+            is_mapper = any(name.endswith(sfx) for sfx in dao_suffixes_extra)
+        if is_mapper:
             mappers[fqcn] = c
         elif fqcn in namespaces:
             # Namespace-based rescue: the interface FQCN matches a MyBatis
@@ -942,7 +956,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
 def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
                    rfc_depth: int = 2,
-                   frontend_framework: str | None = None) -> dict:
+                   frontend_framework: str | None = None,
+                   patterns: dict | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -977,6 +992,14 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "unknown": "unknown (no framework signal detected - accepting both)",
     }
     print(f"  Backend framework: {_FRAMEWORK_LABEL[framework]}")
+
+    # Apply discovered patterns to the parser before scanning
+    if patterns:
+        from .legacy_java_parser import apply_patterns
+        apply_patterns(patterns)
+        print(f"  Patterns applied: {patterns.get('framework_type', 'custom')} "
+              f"({len(patterns.get('controller_base_classes', []))} base classes, "
+              f"{len(patterns.get('sql_receivers', []))} sql receivers)")
 
     classes = parse_all_java(backend_dir)
 
@@ -1044,6 +1067,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     indexes = _build_indexes(
         classes, framework=framework,
         mybatis_namespaces=xml_namespaces,
+        patterns=patterns,
     )
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
@@ -1207,7 +1231,8 @@ def analyze_legacy_batch(backends_root: str,
                         menu_rows: list[dict] | None = None,
                         rfc_depth: int = 2,
                         include_all: bool = False,
-                        frontend_framework: str | None = None) -> dict:
+                        frontend_framework: str | None = None,
+                        patterns: dict | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1236,6 +1261,7 @@ def analyze_legacy_batch(backends_root: str,
             menu_rows=menu_rows,
             rfc_depth=rfc_depth,
             frontend_framework=frontend_framework,
+            patterns=patterns,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

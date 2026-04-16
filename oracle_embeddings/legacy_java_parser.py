@@ -221,6 +221,37 @@ _NEXCORE_BASE_CLASSES = {
 _NEXCORE_PARAM_TYPES = {"IDataSet", "IBizServiceContext", "IOnlineContext",
                         "IDataSetHelper", "HttpServletRequest"}
 
+# Module-level patterns dict, overridable via apply_patterns().
+# When set, these extend/replace the hardcoded defaults above.
+_active_patterns = None
+
+
+def apply_patterns(patterns: dict | None) -> None:
+    """Inject discovered patterns into the parser's detection logic.
+
+    Called once before ``parse_all_java`` when ``--patterns`` is used.
+    Extends the hardcoded base-class / param-type / SQL-call sets so
+    that project-specific conventions are recognised.
+    """
+    global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE
+    _active_patterns = patterns or {}
+
+    # Extend controller base classes
+    extra_bases = _active_patterns.get("controller_base_classes") or []
+    if extra_bases:
+        _NEXCORE_BASE_CLASSES = _NEXCORE_BASE_CLASSES | set(extra_bases)
+
+    # Extend endpoint param types
+    extra_params = _active_patterns.get("endpoint_param_types") or []
+    if extra_params:
+        _NEXCORE_PARAM_TYPES = _NEXCORE_PARAM_TYPES | set(extra_params)
+
+    # Rebuild SQL call regex if custom receivers / operations provided
+    extra_receivers = _active_patterns.get("sql_receivers") or []
+    extra_ops = _active_patterns.get("sql_operations") or []
+    if extra_receivers or extra_ops:
+        _SQL_CALL_RE = _build_sql_call_re(extra_receivers, extra_ops)
+
 _NEXCORE_METHOD_RE = re.compile(
     r"""(?:public)\s+
         (?P<ret>[\w.<>,\[\]\s]+?)\s+
@@ -259,12 +290,14 @@ def _extract_nexcore_endpoints(content: str, class_paths: list[str]) -> list[dic
         if name in _METHOD_KEYWORDS:
             continue
         line_number = content.count("\n", 0, m.start()) + 1
+        suffix = get_url_suffix() or ".do"
+        http = get_http_method_default()
         for cp in class_paths:
             endpoints.append({
                 "annotation": "Nexcore",
-                "http_method": "POST",  # Nexcore typically uses POST
-                "path": f"/{name}.do",
-                "full_url": _combine_paths(cp, f"/{name}.do"),
+                "http_method": http,
+                "path": f"/{name}{suffix}",
+                "full_url": _combine_paths(cp, f"/{name}{suffix}"),
                 "method_name": name,
                 "line_number": line_number,
             })
@@ -412,21 +445,57 @@ _RFC_CONST_RE = re.compile(
 # carries a clear hint AND the first argument is a string containing at
 # least one ``.`` (namespace separator). This keeps false positives off
 # ordinary ``map.update(k,v)`` / ``list.insert(0,x)`` style calls.
-_SQL_CALL_RE = re.compile(
-    r"""\b(?:commonSQL|CommonSQL|sqlSession|SqlSession|sqlClient|SqlClient
-             |sqlExec|SqlExec|sqlHelper|SqlHelper|sqlMap|SqlMap
-             |commonDao|CommonDao|sqlTemplate|SqlTemplate
-             |sqlMapClientTemplate|SqlMapClientTemplate
-             |sqlMapClient|SqlMapClient
-             |\w*[Dd]ao|\w*SQL|\w*Sql|\w*[Tt]emplate|queryRunner)
-        (?:\.\w+)?
-        \.\s*(?P<op>selectList|selectOne|selectMap|selectPage|selectCount
-                    |queryForList|queryForObject|queryForMap
-                    |insert|update|delete|save|execute|call|query)
-        \s*\(\s*"(?P<sqlid>[^"]+\.[^"]+)"
-    """,
-    re.VERBOSE,
+_DEFAULT_SQL_RECEIVERS = (
+    "commonSQL|CommonSQL|sqlSession|SqlSession|sqlClient|SqlClient"
+    "|sqlExec|SqlExec|sqlHelper|SqlHelper|sqlMap|SqlMap"
+    "|commonDao|CommonDao|sqlTemplate|SqlTemplate"
+    "|sqlMapClientTemplate|SqlMapClientTemplate"
+    "|sqlMapClient|SqlMapClient"
+    r"|\w*[Dd]ao|\w*SQL|\w*Sql|\w*[Tt]emplate|queryRunner"
 )
+_DEFAULT_SQL_OPS = (
+    "selectList|selectOne|selectMap|selectPage|selectCount"
+    "|queryForList|queryForObject|queryForMap"
+    "|insert|update|delete|save|execute|call|query"
+)
+
+
+def _build_sql_call_re(extra_receivers: list[str] = None,
+                        extra_ops: list[str] = None) -> re.Pattern:
+    """Build _SQL_CALL_RE dynamically, merging defaults with pattern overrides."""
+    receivers = _DEFAULT_SQL_RECEIVERS
+    if extra_receivers:
+        extras = "|".join(re.escape(r) for r in extra_receivers)
+        receivers = f"{extras}|{receivers}"
+    ops = _DEFAULT_SQL_OPS
+    if extra_ops:
+        extras = "|".join(re.escape(o) for o in extra_ops)
+        ops = f"{extras}|{ops}"
+    return re.compile(
+        rf"""\b(?:{receivers})
+            (?:\.\w+)?
+            \.\s*(?P<op>{ops})
+            \s*\(\s*"(?P<sqlid>[^"]+\.[^"]+)"
+        """,
+        re.VERBOSE,
+    )
+
+
+_SQL_CALL_RE = _build_sql_call_re()
+
+
+def get_url_suffix() -> str:
+    """Return the URL suffix from active patterns (e.g. '.do')."""
+    if _active_patterns:
+        return _active_patterns.get("url_suffix", "") or ""
+    return ""
+
+
+def get_http_method_default() -> str:
+    """Return the default HTTP method from active patterns."""
+    if _active_patterns:
+        return _active_patterns.get("http_method_default", "POST") or "POST"
+    return "POST"
 
 
 def _extract_sql_calls(content: str) -> list[dict]:
