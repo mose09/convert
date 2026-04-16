@@ -999,6 +999,7 @@ def _extract_rfc_calls(content: str) -> list[dict]:
 # inside them don't confuse depth counting.
 _METHOD_SIG_RE = re.compile(
     r"""(?:public|protected|private|static|final|abstract|synchronized|native|default)\s+
+        (?:@\w+(?:\s*\([^)]*\))?\s+)*   # inline annotations: @ResponseBody, @Override, @SuppressWarnings("...")
         (?:<[^{}>]*>\s+)?
         [\w.<>?,\[\]\s&]+?
         \s+(?P<name>\w+)\s*
