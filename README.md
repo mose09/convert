@@ -19,7 +19,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
-| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x + MyBatis + React + Menu) | 선택 | X |
+| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -48,8 +48,10 @@ convert/
     ├── llm_assist.py             # LLM 보조 (컬럼 해석, 관계 추론)
     ├── storage.py                # Markdown 파일 생성
     ├── legacy_java_parser.py     # 레거시 Java 정규식 파서 (Controller/Service/Mapper/RFC)
+    ├── legacy_frontend.py        # 프론트엔드 React/Polymer 자동 감지 + 디스패처
     ├── legacy_react_router.py    # React Router v5/v6 + lazy import 스캐너
-    ├── legacy_menu_loader.py     # DB 메뉴 테이블 로드 + 계층 평탄화
+    ├── legacy_polymer_router.py  # Polymer (vaadin-router/page.js/dom-module) 파서
+    ├── legacy_menu_loader.py     # 메뉴 로더 (DB 테이블 / Excel / Markdown)
     ├── legacy_analyzer.py        # AS-IS 통합 오케스트레이터 (양방향 URL 매칭)
     ├── legacy_report.py          # AS-IS 리포트 Markdown + Excel (7시트)
     └── legacy_util.py            # URL 정규화 공유 헬퍼
@@ -318,33 +320,46 @@ output/std_report_TIMESTAMP/
 
 ### 11. AS-IS 레거시 소스 분석 (analyze-legacy)
 
-Java/Spring + MyBatis + React + DB 메뉴 테이블을 **통합 분석**하여
+Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴 (DB/Excel/Markdown)를 **통합 분석**하여
 차세대 전환 전 **프로그램 단위 메타데이터**를 일괄 추출합니다.
 한 행 = 한 Controller 엔드포인트이며 메뉴 계층 → Controller → Service
-→ Mapper XML → 관련 테이블 → RFC 호출까지 한 번에 매핑됩니다.
+→ DAO → Mapper XML → 관련 테이블 → RFC 호출까지 한 번에 매핑됩니다.
 
 경로는 **백엔드/프론트엔드 루트 한 개씩만** 지정하면 됩니다. 백엔드 루트
-하위를 재귀 탐색해서 `.java` 와 MyBatis `*.xml` 을 모두 찾아내며,
-`target` / `build` / `.git` / `.gradle` / `.idea` / `bin` / `out` /
-`node_modules` 등 빌드/VCS 폴더는 자동으로 제외됩니다.
+하위를 재귀 탐색해서 `.java` 와 MyBatis/iBatis `*.xml` 을 모두 찾아내며,
+`.git` / `.gradle` / `.idea` / `.svn` / `.hg` / `.next` / `node_modules`
+폴더는 자동으로 제외됩니다 (`target` / `build` / `bin` 등 빌드 산출물
+이름은 제외하지 않음 — 실제 프로젝트 폴더일 수 있어 `_is_sql_mapper` 가 별도로 필터링).
 
 ```bash
-# 전체 분석 (메뉴 테이블 접속 포함)
+# 전체 분석 (메뉴 Markdown + 프론트엔드 자동 감지)
 python main.py analyze-legacy \
   --backend-dir /path/to/legacy/backend \
-  --frontend-dir /path/to/legacy/frontend
+  --frontend-dir /path/to/legacy/frontend \
+  --menu-md input/menu.md
 
-# 메뉴 테이블 없이 (내부 테스트용)
+# 메뉴 Excel (DRM 없는 환경)
+python main.py analyze-legacy \
+  --backend-dir /path/to/legacy/backend \
+  --menu-xlsx input/menu.xlsx
+
+# 메뉴 없이 (내부 테스트용)
 python main.py analyze-legacy \
   --backend-dir /path/to/legacy/backend \
   --skip-menu
 
-# 메뉴 테이블 이름 오버라이드 + RFC 탐색 깊이 조절 + 포맷 지정
+# DB 메뉴 테이블 오버라이드 + RFC 탐색 깊이 + 포맷 + 프론트 강제 지정
 python main.py analyze-legacy \
   --backend-dir /path/to/legacy/backend \
   --frontend-dir /path/to/legacy/frontend \
-  --menu-table SYS_MENU --rfc-depth 3 --format excel
+  --menu-table SYS_MENU --rfc-depth 3 --format excel \
+  --frontend-framework polymer
 ```
+
+**메뉴 소스 우선순위**: `--skip-menu` > `--menu-md` > `--menu-xlsx` > DB (`config.yaml`)
+- `--menu-md`: Markdown 파이프 테이블 (DRM 환경 권장, `input/menu_template.md` 참조)
+- `--menu-xlsx`: Excel 파일 (`input/menu_template.xlsx` 참조)
+- 둘 다 1레벨~5레벨 + URL 헤더, URL 있는 행만 프로그램으로 인정
 
 **백엔드 프레임워크 자동 감지 + 분기**
 
@@ -356,7 +371,7 @@ python main.py analyze-legacy \
 
 | 감지 결과 | Controller 로 인정되는 클래스 |
 |-----------|-------------------------------|
-| `spring`  | `@Controller` / `@RestController` 어노테이션만 |
+| `spring`  | `@Controller` / `@RestController` 어노테이션 (**Nexcore 포함**) |
 | `vertx`   | `extends AbstractVerticle` 만 |
 | `mixed`   | 둘 다 (Spring 과 Vert.x 소스가 한 레포에 공존) |
 | `unknown` | 둘 다 (fallback — 어느 것도 명확히 감지되지 않음) |
@@ -366,6 +381,17 @@ python main.py analyze-legacy \
 AbstractVerticle` 클래스가 섞여 있어도 해당 클래스는 controller 로 취급
 되지 않고 서비스/유틸로만 취급됩니다(반대도 동일). 감지 결과가 의도와
 다르면 프로젝트 루트에 적절한 `pom.xml` / `build.gradle` 을 두면 됩니다.
+
+**프론트엔드 프레임워크 자동 감지**
+
+`--frontend-dir` 지정 시 `package.json` 의존성 + 파일 콘텐츠 샘플링으로
+**React** 인지 **Polymer** 인지 자동 판별합니다. 강제하려면
+`--frontend-framework {react,polymer}` 를 지정하세요.
+
+| 감지 신호 | React | Polymer |
+|-----------|-------|---------|
+| `package.json` | `react`, `react-dom`, `react-router-dom` | `@polymer/*`, `@vaadin/router`, `lit-element` |
+| 콘텐츠 | `import React`, `from 'react'` | `customElements.define`, `Polymer({`, `extends LitElement` |
 
 **핵심 설계 — Controller ↔ Menu 양방향 교차 검증**
 
@@ -404,6 +430,13 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
   `@Service` / `@Component` / `@Mapper` / `@Repository`, class + method
   레벨 `@RequestMapping` 계열 (배열 `{"/a","/b"}`, 동적 `/{id}`,
   `RequestMethod.GET` 포함)
+- **백엔드 프레임워크 — Nexcore (SK C&C)**: `extends AbstractMultiActionBizController`
+  / `AbstractSingleActionBizController` / `AbstractBizController` /
+  `AbstractCommonBizController`. `@RequestMapping` 없이 **메서드명 컨벤션**으로
+  endpoint 매핑 (`getList` → `/getList.do`). 파라미터에 `IDataSet` /
+  `IBizServiceContext` / `IOnlineContext` 포함된 public 메서드만 endpoint 로 인정.
+  Controller → Service → **DAO** (`@Repository`) → XML 체인 자동 추적.
+  iBatis `sqlMapClientTemplate.queryForList("ns.id")` 패턴 인식
 - **백엔드 프레임워크 — Vert.x**: 세 가지 패턴 지원:
   - **커스텀 어노테이션 (one-class-per-endpoint)**:
     `@RestVerticle(url = "/api/order/list", method = HttpMethod.POST, isAuth = true)`
@@ -439,14 +472,19 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
   - 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
 - **React Router** v5 `component={X}` / v6 `element={<X/>}` / 객체 라우트 /
   `React.lazy(() => import("./X"))` / 중첩 Route 의 부모 path 누적 결합
+- **Polymer**: vaadin-router `setRoutes([{path, component}])` / page.js + iron-pages
+  슬러그 페어링 / `<app-route pattern>` / `<dom-module id>` / `customElements.define` /
+  `Polymer({is})` / `static get is()` / 파일명 컨벤션 (`x-tag.html` → `x-tag`)
+- **메뉴 소스**: DB 테이블 (`config.yaml`), Excel (`--menu-xlsx`, 1~5레벨),
+  **Markdown** (`--menu-md`, DRM 환경 권장). 템플릿: `input/menu_template.md` / `.xlsx`
 - **인코딩**: UTF-8 / EUC-KR / CP949 / Latin-1 자동 fallback
 
 **산출물:**
 
 ```
-output/
-├── as_is_analysis_TIMESTAMP.md      # Markdown 리포트
-└── as_is_analysis_TIMESTAMP.xlsx    # Excel (7개 시트)
+output/legacy_analysis/
+├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
+└── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 시트)
     ├── Sheet: Summary                 (전체 집계)
     ├── Sheet: Programs                (메인 — 14개 컬럼)
     ├── Sheet: Menu Hierarchy          (메뉴 계층 + 매칭 여부)
@@ -496,7 +534,8 @@ python main.py standardize --schema-md ./output/스키마_enriched.md --query-md
 # 6. 차세대 전환 대비 - AS-IS 레거시 소스 통합 분석 (선택)
 python main.py analyze-legacy \
   --backend-dir /path/to/legacy/backend \
-  --frontend-dir /path/to/legacy/frontend
+  --frontend-dir /path/to/legacy/frontend \
+  --menu-md input/menu.md
 ```
 
 ## ERD 렌더링
