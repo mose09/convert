@@ -19,8 +19,15 @@ def _read_file_safe(filepath: str, limit: int = None) -> str:
         return f.read(limit) if limit else f.read()
 
 
-_MYBATIS_SKIP_DIRS = {"target", "build", ".git", ".gradle", ".idea", "bin", "out",
-                      "node_modules", "dist", ".next"}
+# Directories we always skip while scanning for mapper XML. We only prune
+# hidden tool/VCS directories and ``node_modules`` — **never** build-output
+# names like ``target`` / ``build`` / ``bin`` / ``out`` / ``dist``, because
+# real monorepo subprojects sometimes happen to have folders with those
+# exact names, and any XML that isn't a real mapper is already filtered
+# out later by ``_is_sql_mapper``. Keeping the skip list minimal avoids
+# the "내 하위 프로젝트 mapper 가 안 잡힘" regression.
+_MYBATIS_SKIP_DIRS = {".git", ".gradle", ".idea", ".svn", ".hg",
+                      ".next", "node_modules"}
 
 
 def scan_mybatis_dir(base_dir: str) -> list[str]:

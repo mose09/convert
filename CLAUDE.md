@@ -27,7 +27,7 @@
 | `oracle_embeddings/legacy_menu_loader.py` | 메뉴 소스 로더. DB 테이블 (`load_menu_hierarchy`) 또는 Excel 1~5레벨 (`load_menu_from_excel`) |
 | `oracle_embeddings/legacy_report.py` | Markdown + Excel 리포트 (단일 모드 + 배치 모드, 각 7시트) |
 | `oracle_embeddings/legacy_util.py` | 공유 유틸 (`normalize_url` 등) |
-| `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace 인덱스 + statement 인덱스, Oracle comma-FROM + `(+)` outer join 지원 |
+| `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace 인덱스 + statement 인덱스, Oracle comma-FROM + `(+)` outer join 지원. `scan_mybatis_dir` 는 `.git/.gradle/.idea/.svn/.hg/.next/node_modules` 만 스킵 (빌드 산출물 이름인 `target/build/bin/out/dist` 는 유저 monorepo 에서 실제 프로젝트 폴더일 수 있어 스킵하지 않음 — `_is_sql_mapper` 가 false positive 를 걸러줌) |
 
 ## 공유 유틸 (중복 구현 금지)
 
