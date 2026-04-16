@@ -174,16 +174,27 @@ def _build_prompt(classes: list[dict]) -> str:
 
 
 def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
-    """Send prompt to the LLM and parse the JSON response."""
+    """Send prompt to the LLM and parse the JSON response.
+
+    Uses ``PATTERN_LLM_*`` env vars first (coding-model recommended),
+    falls back to generic ``LLM_*`` / ``config.yaml`` ``llm`` section.
+    """
     from openai import OpenAI
 
     llm_config = config.get("llm", {})
-    api_key = os.environ.get("LLM_API_KEY") or llm_config.get("api_key", "ollama")
-    api_base = os.environ.get("LLM_API_BASE") or llm_config.get("api_base", "http://localhost:11434/v1")
-    model = os.environ.get("LLM_MODEL") or llm_config.get("model", "llama3")
+    # PATTERN_LLM_* > LLM_* > config.yaml
+    api_key = (os.environ.get("PATTERN_LLM_API_KEY")
+               or os.environ.get("LLM_API_KEY")
+               or llm_config.get("api_key", "ollama"))
+    api_base = (os.environ.get("PATTERN_LLM_API_BASE")
+                or os.environ.get("LLM_API_BASE")
+                or llm_config.get("api_base", "http://localhost:11434/v1"))
+    model = (os.environ.get("PATTERN_LLM_MODEL")
+             or os.environ.get("LLM_MODEL")
+             or llm_config.get("model", "llama3"))
     client = OpenAI(api_key=api_key, base_url=api_base)
 
-    print(f"  LLM model: {model}")
+    print(f"  LLM model: {model} (PATTERN_LLM_MODEL 또는 LLM_MODEL)")
     print(f"  LLM endpoint: {api_base}")
 
     for attempt in range(max_retries + 1):
