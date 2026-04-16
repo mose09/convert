@@ -147,14 +147,16 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
 
         # Program detail table
         f.write("## Program Detail\n\n")
-        f.write("| Menu path | Main | Sub | Tab | Program | HTTP | URL | File | React | Controller | Service | Query XML | Tables | RFC |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("| Menu path | Main | Sub | Tab | Program | HTTP | URL | File | React"
+                " | Controller | Service | Service method | XML | XML method | Tables | RFC |\n")
+        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
         for r in rows:
             f.write(
                 "| " + " | ".join(_md_escape(r.get(k, "")) for k in [
                     "menu_path", "main_menu", "sub_menu", "tab", "program_name", "http_method",
                     "url", "file_name", "presentation_layer", "controller_class",
-                    "service_class", "query_xml", "related_tables", "rfc",
+                    "service_class", "service_methods", "query_xml", "sql_ids",
+                    "related_tables", "rfc",
                 ]) + " |\n"
             )
         f.write("\n")
@@ -266,8 +268,8 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
     # Sheet 2: Programs (main deliverable)
     ws = wb.create_sheet("Programs")
     headers = ["No", "Menu path", "Main", "Sub", "Tab", "Program", "HTTP", "URL",
-               "File", "React", "Controller", "Service",
-               "Query XML", "Tables", "RFC"]
+               "File", "React", "Controller", "Service", "Service method",
+               "XML", "XML method", "Tables", "RFC"]
     _write_header(ws, headers)
     for i, r in enumerate(rows, 2):
         fill = None
@@ -282,7 +284,9 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
             r.get("program_name", ""), r.get("http_method", ""), r.get("url", ""),
             r.get("file_name", ""), r.get("presentation_layer", ""),
             r.get("controller_class", ""), r.get("service_class", ""),
-            r.get("query_xml", ""), r.get("related_tables", ""),
+            r.get("service_methods", ""),
+            r.get("query_xml", ""), r.get("sql_ids", ""),
+            r.get("related_tables", ""),
             r.get("rfc", ""),
         ], fill=fill)
     ws.freeze_panes = "A2"
