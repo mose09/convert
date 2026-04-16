@@ -952,11 +952,25 @@ def cmd_analyze_legacy(args):
 
     # Resolve menu source priority:
     #   1. --skip-menu            → no menu lookup
-    #   2. --menu-xlsx PATH       → read from a project-specific Excel
-    #   3. (default)              → query the DB menu table
+    #   2. --menu-md PATH         → read from a Markdown pipe table (DRM-free)
+    #   3. --menu-xlsx PATH       → read from a project-specific Excel
+    #   4. (default)              → query the DB menu table
     menu_programs = None
     if args.skip_menu:
         pass
+    elif args.menu_md:
+        try:
+            from oracle_embeddings.legacy_menu_loader import load_menu_from_markdown
+            print("=== Step 1: Loading menu Markdown ===")
+            print(f"  Menu md: {args.menu_md}")
+            menu_programs = load_menu_from_markdown(args.menu_md)
+            print(f"  Menu programs: {len(menu_programs)}")
+        except FileNotFoundError:
+            print(f"  Error: menu md not found: {args.menu_md}")
+            return
+        except Exception as e:
+            print(f"  Warning: Menu Markdown load failed - {e}")
+            menu_programs = None
     elif args.menu_xlsx:
         try:
             from oracle_embeddings.legacy_menu_loader import load_menu_from_excel
@@ -1171,6 +1185,9 @@ def main():
                                 "파일 콘텐츠 샘플링으로 React vs Polymer 자동 감지. 강제하려면 "
                                 "'react' 또는 'polymer' 지정.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
+    al_parser.add_argument("--menu-md",
+                           help="Path to a Markdown menu file (pipe table). DRM 환경에서 Excel 대신 사용. "
+                                "input/menu_template.md 참조. --menu-xlsx 보다 우선합니다.")
     al_parser.add_argument("--menu-xlsx",
                            help="Path to a project-specific menu Excel file. "
                                 "Expected columns: 1레벨 / 2레벨 / 3레벨 / 4레벨 / 5레벨 / URL "

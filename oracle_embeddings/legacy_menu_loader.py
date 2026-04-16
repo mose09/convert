@@ -347,3 +347,76 @@ def load_menu_from_excel(xlsx_path: str, sheet_name: str | None = None) -> list[
         len(programs), xlsx_path, ws.title,
     )
     return programs
+
+
+# ---------------------------------------------------------------------------
+# Markdown-based menu loader
+# ---------------------------------------------------------------------------
+
+def load_menu_from_markdown(md_path: str) -> list[dict]:
+    """Load a project-specific menu Markdown table and return program entries.
+
+    Expected format — a standard Markdown pipe table with the same header
+    synonyms accepted by the Excel loader::
+
+        | 1레벨 | 2레벨 | 3레벨 | 4레벨 | 5레벨 | URL |
+        |-------|-------|-------|-------|-------|-----|
+        | 주문관리 | 주문조회 | | | | /api/order/list |
+
+    * Separator rows (``|---|``) are skipped automatically.
+    * Cells are stripped of leading/trailing whitespace.
+    * Rows whose URL cell is empty are skipped (container nodes).
+    * DRM-free alternative to ``--menu-xlsx`` for restricted environments.
+
+    Raises ``FileNotFoundError`` if the path is missing.
+    """
+    if not md_path:
+        return []
+
+    with open(md_path, "r", encoding="utf-8") as f:
+        lines = f.readlines()
+
+    # Find the first pipe-table header row
+    header_row = None
+    header_line_idx = -1
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and "|" in stripped[1:]:
+            # Skip separator rows like |---|---|
+            cells = [c.strip() for c in stripped.strip("|").split("|")]
+            if all(c.replace("-", "").replace(":", "") == "" for c in cells):
+                continue
+            header_row = cells
+            header_line_idx = i
+            break
+
+    if header_row is None:
+        logger.warning("Menu Markdown %s has no pipe-table header", md_path)
+        return []
+
+    header_idx = _find_header_indexes(header_row)
+    if "url" not in header_idx:
+        logger.warning(
+            "Menu Markdown %s has no URL column (looked for: %s)",
+            md_path, ", ".join(_URL_KEYWORDS),
+        )
+        return []
+
+    programs = []
+    for line_no, line in enumerate(lines[header_line_idx + 1:], start=header_line_idx + 2):
+        stripped = line.strip()
+        if not stripped.startswith("|"):
+            continue
+        cells = [c.strip() for c in stripped.strip("|").split("|")]
+        # Skip separator rows
+        if all(c.replace("-", "").replace(":", "") == "" for c in cells):
+            continue
+        entry = _row_to_entry(cells, header_idx, line_no)
+        if entry is not None:
+            programs.append(entry)
+
+    logger.info(
+        "Loaded %d menu programs from Markdown: %s",
+        len(programs), md_path,
+    )
+    return programs
