@@ -233,7 +233,7 @@ def apply_patterns(patterns: dict | None) -> None:
     Extends the hardcoded base-class / param-type / SQL-call sets so
     that project-specific conventions are recognised.
     """
-    global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE
+    global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE, _rfc_custom_re
     _active_patterns = patterns or {}
 
     # Extend controller base classes
@@ -251,6 +251,11 @@ def apply_patterns(patterns: dict | None) -> None:
     extra_ops = _active_patterns.get("sql_operations") or []
     if extra_receivers or extra_ops:
         _SQL_CALL_RE = _build_sql_call_re(extra_receivers, extra_ops)
+
+    # Build custom RFC call regex if rfc_call_methods specified
+    rfc_methods = _active_patterns.get("rfc_call_methods") or []
+    if rfc_methods:
+        _rfc_custom_re = _build_rfc_custom_re(rfc_methods)
 
 _NEXCORE_METHOD_RE = re.compile(
     r"""(?:public)\s+
@@ -424,6 +429,27 @@ _RFC_GETFUNCTION_STR_RE = re.compile(
 _RFC_GETFUNCTION_VAR_RE = re.compile(
     r'\.get\w*Function\s*\(\s*(\w+)\b'
 )
+
+# Custom RFC call pattern: service.execute("IF-GERP-180", param, ZMM_FUNC.class)
+# Captures the interface ID (string arg) and optionally the SAP function name
+# from a ClassName.class argument. Active only when patterns.rfc_call_methods
+# is configured.
+_rfc_custom_re = None   # built dynamically via apply_patterns()
+
+
+def _build_rfc_custom_re(methods: list[str], id_prefixes: list[str] | None = None) -> re.Pattern | None:
+    """Build a regex for custom RFC call patterns like service.execute("IF-*", ..., Z*.class)."""
+    if not methods:
+        return None
+    method_alt = "|".join(re.escape(m) for m in methods)
+    # Capture: (1) string arg = interface ID, (2) optional ClassName before .class
+    return re.compile(
+        rf"""\b\w+\.(?:{method_alt})\s*\(
+            \s*"(?P<id>[^"]+)"              # first string arg (interface ID)
+            (?:[^)]*,\s*(?P<cls>\w+)\.class)?  # optional ClassName.class
+        """,
+        re.VERBOSE,
+    )
 
 # Overly-broad "candidate" pattern used only for the diagnostic hint
 # counter. Matches anything that looks like ``...Function(`` and is
@@ -1093,11 +1119,12 @@ def _count_rfc_hints(content: str) -> int:
 def _extract_rfc_calls(content: str) -> list[dict]:
     """Find SAP JCo RFC function calls.
 
-    Two-pass:
-      1) ``String FN_XXX = "Z_..."`` constants in the same file.
-      2) ``.getXxxFunction("LITERAL", ...)`` or ``.getXxxFunction(FN_XXX, ...)``
-         — constants resolved via the first pass. Extra arguments after
-         the first one are allowed.
+    Three sources:
+      1) ``.getXxxFunction("LITERAL")`` — standard JCo pattern
+      2) ``.getXxxFunction(FN_XXX)`` — constant resolved via 2-pass
+      3) ``service.execute("IF-GERP-180", ..., ZMM_FUNC.class)`` —
+         custom call pattern (active when ``rfc_call_methods`` set in
+         patterns.yaml). Captures interface ID + optional class name.
     """
     constants = {
         name: value for name, value in _RFC_CONST_RE.findall(content)
@@ -1120,6 +1147,17 @@ def _extract_rfc_calls(content: str) -> list[dict]:
                 seen.add(name)
                 line = content.count("\n", 0, m.start()) + 1
                 calls.append({"name": name, "line": line, "resolved_from": f"const:{ident}"})
+
+    # Custom RFC patterns (e.g., service.execute("IF-GERP-180", ..., ZMM_FUNC.class))
+    if _rfc_custom_re:
+        for m in _rfc_custom_re.finditer(content):
+            iface_id = m.group("id")
+            cls_name = m.group("cls") if m.group("cls") else ""
+            rfc_name = f"{iface_id} ({cls_name})" if cls_name else iface_id
+            if rfc_name not in seen:
+                seen.add(rfc_name)
+                line = content.count("\n", 0, m.start()) + 1
+                calls.append({"name": rfc_name, "line": line, "resolved_from": "custom-rfc"})
 
     return calls
 
@@ -1329,6 +1367,14 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
             if name not in seen:
                 seen.add(name)
                 calls.append({"name": name, "resolved_from": f"const:{ident}"})
+    if _rfc_custom_re:
+        for m in _rfc_custom_re.finditer(body):
+            iface_id = m.group("id")
+            cls_name = m.group("cls") if m.group("cls") else ""
+            rfc_name = f"{iface_id} ({cls_name})" if cls_name else iface_id
+            if rfc_name not in seen:
+                seen.add(rfc_name)
+                calls.append({"name": rfc_name, "resolved_from": "custom-rfc"})
     return calls
 
 

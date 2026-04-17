@@ -143,6 +143,7 @@ _USER_PROMPT_TEMPLATE = """아래는 Java 프로젝트에서 추출한 {n_classe
   "sql_receivers": ["SQL 호출에 사용하는 객체명 목록 (예: sqlMapClientTemplate, commonSQL)"],
   "sql_operations": ["SQL 호출 메서드명 목록 (예: queryForList, selectList, insert)"],
   "rfc_patterns": ["RFC/SAP 호출 패턴이 있다면 메서드명 목록 (예: getFunction, getJCoFunction)"],
+  "rfc_call_methods": ["RFC/인터페이스 호출에 사용하는 커스텀 메서드명 (예: execute, send, call). service.execute('IF-GERP-180', param, ZMM_FUNC.class) 같은 패턴이 있으면 해당 메서드명. 없으면 빈 리스트."],
   "service_suffixes": ["Service 클래스 네이밍 접미사 목록 (예: Service, ServiceImpl, Bo)"],
   "dao_suffixes": ["DAO 클래스 네이밍 접미사 목록 (예: Dao, DaoImpl, Repository)"],
   "di_annotations": ["의존성 주입 어노테이션 목록 (예: Autowired, Inject, Resource)"],
@@ -247,6 +248,7 @@ _DEFAULT_PATTERNS = {
     "sql_receivers": [],
     "sql_operations": [],
     "rfc_patterns": [],
+    "rfc_call_methods": [],
     "service_suffixes": [
         "Service", "ServiceImpl", "Bo", "BoImpl",
         "Biz", "BizImpl", "Manager", "ManagerImpl",
