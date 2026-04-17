@@ -339,8 +339,18 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 14B 이상 코딩 특화 모델 권장 (`PATTERN_LLM_MODEL` 환경변수로 별도 지정 가능).
 
 ```bash
+# 백엔드만 샘플링 (프레임워크·스테레오타입·SQL/RFC 패턴)
 python main.py discover-patterns \
   --backend-dir /path/to/legacy/backend \
+  --output output/legacy_analysis/patterns.yaml
+
+# menu.md + 멀티 프론트엔드 레포를 같이 주면 URL 관례 (prefix strip /
+# app_key 등) 도 동시에 학습 (LLM 실패 시 메뉴 URL 공통 prefix 기반
+# heuristic 으로 fallback)
+python main.py discover-patterns \
+  --backend-dir /workspace/backend/main-app \
+  --menu-md input/menu.md \
+  --frontends-root /workspace/frontend \
   --output output/legacy_analysis/patterns.yaml
 ```
 
@@ -355,8 +365,13 @@ python main.py discover-patterns \
 | `sql_receivers` / `sql_operations` | `sqlMapClientTemplate` / `queryForList` |
 | `rfc_call_methods` | `execute`, `send` (커스텀 RFC 호출 메서드) |
 | `service_suffixes` / `dao_suffixes` | `Service`, `Bo` / `Dao`, `Repository` |
+| `url.url_prefix_strip` | `^/apps/[^/]+`, `^/api/v\d+` (메뉴·React·컨트롤러 URL 에서 제거할 공통 prefix) |
+| `url.react_route_prefix` | `/web` (React 라우트에만 붙는 prefix, 없으면 `null`) |
+| `url.menu_url_scheme` | `path_only` / `full_url` / `app_prefixed` |
+| `url.app_key` | `{source: path_segment, index: 2}` — 멀티 레포 disambiguation 용 앱 식별자 위치 |
 
 생성 후 수동으로 수정 가능. LLM 없이 직접 작성해도 동일하게 동작합니다.
+`url:` 섹션은 하위 호환 — 기존 `patterns.yaml` (url 키 없음) 도 그대로 동작합니다.
 
 **Step 2 — 소스 분석 (LLM 불필요)**
 
@@ -587,8 +602,12 @@ python main.py standardize --schema-md ./output/스키마_enriched.md --query-md
 # === AS-IS 레거시 소스 통합 분석 (차세대 전환 대비) ===
 
 # 6. 프로젝트 패턴 발견 (LLM 사용, 프로젝트당 1회)
+#    menu.md + frontends-root 를 같이 주면 URL 관례(prefix strip, app_key)도
+#    같은 patterns.yaml 에 학습됩니다.
 python main.py discover-patterns \
-  --backend-dir /path/to/legacy/backend
+  --backend-dir /path/to/legacy/backend \
+  --menu-md input/menu.md \
+  --frontends-root /workspace/frontend
 
 # 7. AS-IS 소스 분석 (패턴 + 메뉴 기반)
 python main.py analyze-legacy \
