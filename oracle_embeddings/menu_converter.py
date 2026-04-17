@@ -396,23 +396,47 @@ def _apply_columns_per_level(rows: list[list[str]], m: dict) -> list[dict]:
 
 
 def _apply_depth_column(rows: list[list[str]], m: dict) -> list[dict]:
-    """Walk rows maintaining a path stack keyed by depth."""
+    """Walk rows maintaining a path stack keyed by depth.
+
+    Auto-detects 0-based vs 1-based depth: if any valid name-carrying row
+    uses depth 0, every depth is shifted +1 so depth 0 becomes level 1.
+    This handles the common case where "루트 카테고리" = depth 0.
+    """
     name_col = m["name_col"]
     depth_col = m["depth_col"]
     url_col = m.get("url_col")
 
-    stack: list[str] = ["", "", "", "", ""]
-    out = []
+    # First pass — collect raw depths only from rows that carry a name,
+    # so blank rows don't falsely trigger 0-shift.
+    raw_depths: list[int | None] = []
     for r in rows:
         name = _clean(r[name_col]) if name_col < len(r) else ""
         depth_raw = _clean(r[depth_col]) if depth_col < len(r) else ""
-        url = _clean(r[url_col]) if url_col is not None and url_col < len(r) else ""
-        try:
-            depth = int(re.sub(r"[^0-9]", "", depth_raw) or "0")
-        except ValueError:
-            depth = 0
-        if depth < 1 or depth > 5 or not name:
+        if not name:
+            raw_depths.append(None)
             continue
+        try:
+            d = int(re.sub(r"[^0-9]", "", depth_raw) or "-1")
+        except ValueError:
+            d = -1
+        raw_depths.append(d if d >= 0 else None)
+    meaningful = [d for d in raw_depths if d is not None]
+    shift = 1 if meaningful and min(meaningful) == 0 else 0
+    if shift:
+        logger.info("depth_column: 0-based depth detected — shifting +1")
+
+    stack: list[str] = ["", "", "", "", ""]
+    out = []
+    for r, raw in zip(rows, raw_depths):
+        if raw is None:
+            continue
+        depth = raw + shift
+        if depth < 1 or depth > 5:
+            continue
+        name = _clean(r[name_col])
+        if not name:
+            continue
+        url = _clean(r[url_col]) if url_col is not None and url_col < len(r) else ""
         stack[depth - 1] = name
         for j in range(depth, 5):
             stack[j] = ""
