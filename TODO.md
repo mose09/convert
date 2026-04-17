@@ -1,3 +1,23 @@
+# TODO: 프로젝트 점검 (완료)
+
+- [x] 프로젝트 구조/파일 구성 확인 (root 10 files + `oracle_embeddings/` 33 modules + `input/` 2 templates)
+- [x] 핵심 모듈 상태 점검 (legacy_* / mybatis_parser) — 공유 유틸 전부 존재
+- [x] main.py CLI 커맨드 등록 상태 확인 (등록 서브커맨드 17개: 단위 16 + `all`)
+- [x] 최신 코드 반영 검증 — `_MYBATIS_SKIP_DIRS = {.git, .gradle, .hg, .idea, .next, .svn, node_modules}` ✔
+- [x] import/syntax smoke test — 33개 모듈 중 `oracledb` 미설치 환경상 3개(db/extractor/std_data_validator) import는 불가, `py_compile` 구문 검사는 통과
+- [x] 점검 결과 요약 보고
+
+## 점검 결과 요약
+
+- Git: 브랜치 `claude/project-review-sCuTm` 체크아웃됨, working tree clean. 최근 커밋은 `b19de9d Revise project context and command details` (CLAUDE.md 갱신)
+- 코드 무결성: 핵심 공유 유틸 (`_read_file_safe`, `normalize_url`, `parse_all_mappers`, `scan_mybatis_dir`, `extract_table_usage`, `apply_patterns`, `_strip_comments`, `_strip_annotations_balanced`) 전부 정상 노출
+- 메뉴 로더: Markdown/Excel/DB 3종 함수 모두 존재 (`load_menu_from_markdown`, `load_menu_from_excel`, `load_menu_hierarchy`)
+- 프론트엔드: `legacy_frontend.detect_frontend_framework` + `build_frontend_url_map(_multi)` 노출 (CLAUDE.md의 "디스패처" 표현과 이름이 다를 뿐 기능은 존재)
+- CLI: 16 단위 커맨드 + `all`. CLAUDE.md 표는 15종만 나열하고 본문은 "18종"으로 적혀 있어 문서-구현 카운트 불일치 (기능 누락은 아님, 문서 수치만 업데이트 필요)
+- URL 정규화 smoke: `normalize_url('http://foo/Bar/:id/') == '/bar/{p}'` 정상
+
+---
+
 # TODO: Frontend Polymer 자동 감지 + 파서 (완료)
 
 - [x] `legacy_polymer_router.py` 신규: custom-element 인덱스 (customElements.define / Polymer({is}) / static get is() / dom-module / 파일명 규칙) + 라우트 패턴 (vaadin-router / page.js + iron-pages / app-route)
