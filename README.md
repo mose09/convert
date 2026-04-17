@@ -61,13 +61,13 @@ convert/
 
 ## 설치
 
-```bash
+```powershell
 python -m pip install -r requirements.txt
 ```
 
 ## 설정
 
-```bash
+```powershell
 cp .env.example .env
 ```
 
@@ -93,7 +93,7 @@ EMBEDDING_MODEL=Qwen3-Embedding-8B
 
 ### 1. 스키마 추출 (Oracle 접속 필요)
 
-```bash
+```powershell
 python main.py schema
 python main.py schema --owner HR
 python main.py schema --table CUSTOMERS
@@ -103,7 +103,7 @@ python main.py schema --table CUSTOMERS
 
 MyBatis, iBatis XML 모두 지원합니다.
 
-```bash
+```powershell
 # 기본 실행
 python main.py query /path/to/mybatis/mapper
 
@@ -116,7 +116,7 @@ python main.py query /path/to/mybatis/mapper --schema-md ./output/스키마.md
 빈 테이블/컬럼 코멘트를 LLM이 약어를 해석하여 자동 추천합니다.
 확신할 수 없는 약어는 비워둡니다.
 
-```bash
+```powershell
 python main.py enrich-schema --schema-md ./output/스키마.md
 ```
 
@@ -124,7 +124,7 @@ python main.py enrich-schema --schema-md ./output/스키마.md
 
 ### 4. ERD 생성
 
-```bash
+```powershell
 # .md 파일에서 직접 ERD (LLM 불필요, 즉시 실행)
 python main.py erd-md --schema-md ./output/스키마.md --query-md ./output/query.md --related-only
 
@@ -140,7 +140,7 @@ python main.py erd-group --schema-md ./output/스키마.md --query-md ./output/q
 
 스키마 컬럼명 + React 소스 변수명에서 단어를 수집하고, LLM이 약어/영문명/한글명/한글 정의를 생성합니다.
 
-```bash
+```powershell
 # 스키마 + React 소스 양쪽에서 수집
 python main.py terms --schema-md ./output/스키마.md --react-dir /path/to/react/src
 
@@ -173,20 +173,20 @@ output/
 
 자연어 요청으로 표준을 준수하는 CREATE TABLE DDL을 자동 생성합니다.
 
-```bash
+```powershell
 # 기본 사용 (용어사전 없이)
 python main.py gen-ddl --request "고객 주문 이력 테이블"
 
 # 용어사전 + 스키마 참조 (권장)
-python main.py gen-ddl \
-  --request "고객 주문 이력 테이블 만들어줘. 고객ID, 주문일자, 금액 포함" \
-  --terms-md ./output/terms_dictionary.md \
+python main.py gen-ddl `
+  --request "고객 주문 이력 테이블 만들어줘. 고객ID, 주문일자, 금액 포함" `
+  --terms-md ./output/terms_dictionary.md `
   --schema-md ./output/스키마.md
 
 # 생성 + 검증 + Oracle 실행 (컨펌 후)
-python main.py gen-ddl \
-  --request "배송 정보 테이블" \
-  --terms-md ./output/terms_dictionary.md \
+python main.py gen-ddl `
+  --request "배송 정보 테이블" `
+  --terms-md ./output/terms_dictionary.md `
   --execute
 ```
 
@@ -201,13 +201,13 @@ python main.py gen-ddl \
 
 기존 스키마 전체를 대상으로 네이밍 표준 위반을 일괄 검사합니다.
 
-```bash
+```powershell
 # 기본 약어 사전으로 검사
 python main.py audit-standards --schema-md ./output/스키마.md
 
 # 용어사전 기반 검사 (권장)
-python main.py audit-standards \
-  --schema-md ./output/스키마.md \
+python main.py audit-standards `
+  --schema-md ./output/스키마.md `
   --terms-md ./output/terms_dictionary.md
 ```
 
@@ -228,7 +228,7 @@ output/
 
 용어사전 기반으로 테이블/컬럼명이 표준을 따르는지 검증합니다.
 
-```bash
+```powershell
 # 단일 이름 검증
 python main.py validate-naming --name "TB_CUSTOMER_ORDER" --terms-md ./output/terms_dictionary.md
 python main.py validate-naming --name "CUST_NO" --kind column
@@ -255,7 +255,7 @@ python main.py validate-naming --ddl create_tables.sql --terms-md ./output/terms
 
 MyBatis/iBatis XML의 SQL 쿼리를 분석하여 비효율 패턴을 자동 감지합니다.
 
-```bash
+```powershell
 # 정적 분석만
 python main.py review-sql --mybatis-dir /path/to/mapper
 
@@ -294,7 +294,7 @@ output/
 
 ### 10. 표준화 분석 리포트
 
-```bash
+```powershell
 # 구조 분석만 (Oracle 불필요, LLM으로 표준안 제안)
 python main.py standardize --schema-md ./output/스키마.md --query-md ./output/query.md
 
@@ -333,37 +333,35 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 폴더는 자동으로 제외됩니다 (`target` / `build` / `bin` 등 빌드 산출물
 이름은 제외하지 않음 — 실제 프로젝트 폴더일 수 있어 `_is_sql_mapper` 가 별도로 필터링).
 
-> **Windows 사용자 주의** (PowerShell / cmd)
+> **Windows 사용자 안내 (PowerShell 기본)**
 >
-> 아래 예시의 `\` 줄바꿈은 bash/zsh 전용입니다. 그대로 복붙하면 안 됩니다.
-> - **PowerShell**: `\` 를 백틱 `` ` `` 으로 바꿉니다 (백틱 뒤에 공백이 없어야 함). em-dash(`—`)는 단항 연산자로 오해되니 반드시 일반 하이픈만 사용.
-> - **cmd.exe**: `\` 를 `^` 로 바꿉니다.
-> - 가장 안전한 건 **한 줄로 붙이기**. 예:
->   ```powershell
->   python main.py discover-patterns --backend-dir C:\work\backend --menu-md input\menu.md --frontends-root C:\work\frontend
->   ```
-> - `python` 이 경로에 없으면 `py -m` 또는 `py main.py ...` 로 대체.
-> - Excel 에 DRM 이 걸려 열리지 않을 땐 `--menu-xlsx` 대신 `--menu-md input/menu_template.md` 사용.
+> 아래 예시는 **PowerShell 그대로 복붙 가능**하도록 백틱 `` ` `` 줄바꿈과
+> Windows 경로(`C:\...`)로 작성돼 있습니다. 본인 환경 경로로만 바꾸세요.
+> - 여러 줄이 불편하면 모두 **한 줄로 붙여도** 동일하게 동작합니다.
+> - **cmd.exe** 를 쓴다면 백틱 `` ` `` 대신 `^` 로 바꾸세요.
+> - `python` 이 PATH 에 없으면 `py -m` 또는 `py main.py ...` 로 대체.
+> - em-dash(`—`)는 단항 연산자로 오해됩니다 — 반드시 일반 하이픈만 사용.
+> - Excel 에 DRM 이 걸려 열리지 않을 땐 `--menu-xlsx` 대신 `--menu-md input\menu_template.md` 사용.
 
 **Step 1 — 패턴 발견 (프로젝트당 1회, LLM 필요)**
 
 프로젝트 소스를 샘플링해 LLM 이 프레임워크 패턴을 자동으로 분석합니다.
 14B 이상 코딩 특화 모델 권장 (`PATTERN_LLM_MODEL` 환경변수로 별도 지정 가능).
 
-```bash
+```powershell
 # 백엔드만 샘플링 (프레임워크·스테레오타입·SQL/RFC 패턴)
-python main.py discover-patterns \
-  --backend-dir /path/to/legacy/backend \
-  --output output/legacy_analysis/patterns.yaml
+python main.py discover-patterns `
+  --backend-dir C:\work\legacy\backend `
+  --output output\legacy_analysis\patterns.yaml
 
 # menu.md + 멀티 프론트엔드 레포를 같이 주면 URL 관례 (prefix strip /
 # app_key 등) 도 동시에 학습 (LLM 실패 시 메뉴 URL 공통 prefix 기반
 # heuristic 으로 fallback)
-python main.py discover-patterns \
-  --backend-dir /workspace/backend/main-app \
-  --menu-md input/menu.md \
-  --frontends-root /workspace/frontend \
-  --output output/legacy_analysis/patterns.yaml
+python main.py discover-patterns `
+  --backend-dir C:\workspace\backend\main-app `
+  --menu-md input\menu.md `
+  --frontends-root C:\workspace\frontend `
+  --output output\legacy_analysis\patterns.yaml
 ```
 
 생성된 `patterns.yaml` 에 다음 슬롯이 채워집니다:
@@ -387,36 +385,36 @@ python main.py discover-patterns \
 
 **Step 2 — 소스 분석 (LLM 불필요)**
 
-```bash
+```powershell
 # 단일 백엔드 + 단일 프론트엔드
-python main.py analyze-legacy \
-  --backend-dir /path/to/backend \
-  --frontend-dir /path/to/frontend \
-  --menu-md input/menu.md \
-  --patterns output/legacy_analysis/patterns.yaml
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --frontend-dir C:\work\frontend `
+  --menu-md input\menu.md `
+  --patterns output\legacy_analysis\patterns.yaml
 
 # 여러 백엔드 레포 + 여러 프론트엔드 레포
-python main.py analyze-legacy \
-  --backends-root /workspace/backend \
-  --frontends-root /workspace/frontend \
-  --menu-md input/menu.md \
-  --patterns output/legacy_analysis/patterns.yaml
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backend `
+  --frontends-root C:\workspace\frontend `
+  --menu-md input\menu.md `
+  --patterns output\legacy_analysis\patterns.yaml
 
 # 메뉴 매칭된 endpoint 만 Program Detail 에 표시
-python main.py analyze-legacy \
-  --backends-root /workspace/backend \
-  --menu-md input/menu.md \
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backend `
+  --menu-md input\menu.md `
   --menu-only
 
 # 메뉴 없이 (내부 테스트용)
-python main.py analyze-legacy \
-  --backend-dir /path/to/backend \
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
   --skip-menu
 
 # 패턴 파일 없이 (기본 Spring/Vert.x/Nexcore 하드코딩 패턴 사용)
-python main.py analyze-legacy \
-  --backend-dir /path/to/backend \
-  --menu-md input/menu.md
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --menu-md input\menu.md
 ```
 
 **주요 옵션:**
@@ -584,7 +582,7 @@ Query XML, Tables, RFC`
 
 ### 6. 벡터 DB 임베딩 + RAG ERD
 
-```bash
+```powershell
 # 임베딩
 python main.py embed --schema-md ./output/스키마.md --query-md ./output/query.md
 
@@ -595,38 +593,38 @@ python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 
 ## 추천 워크플로우
 
-```bash
+```powershell
 # 1. 스키마 추출
 python main.py schema
 
 # 2. 쿼리 분석 (스키마 필터링 권장)
-python main.py query /path/to/mapper --schema-md ./output/스키마.md
+python main.py query C:\work\mapper --schema-md .\output\스키마.md
 
 # 3. 스키마 보강 (LLM 코멘트 추천, 추천된 코멘트에 'LLM추천' 표기)
-python main.py enrich-schema --schema-md ./output/스키마.md
+python main.py enrich-schema --schema-md .\output\스키마.md
 
 # 4. 주제영역별 ERD 생성
-python main.py erd-group --schema-md ./output/스키마_enriched.md --query-md ./output/query.md
+python main.py erd-group --schema-md .\output\스키마_enriched.md --query-md .\output\query.md
 
 # 5. 표준화 리포트
-python main.py standardize --schema-md ./output/스키마_enriched.md --query-md ./output/query.md --validate-data
+python main.py standardize --schema-md .\output\스키마_enriched.md --query-md .\output\query.md --validate-data
 
 # === AS-IS 레거시 소스 통합 분석 (차세대 전환 대비) ===
 
 # 6. 프로젝트 패턴 발견 (LLM 사용, 프로젝트당 1회)
 #    menu.md + frontends-root 를 같이 주면 URL 관례(prefix strip, app_key)도
 #    같은 patterns.yaml 에 학습됩니다.
-python main.py discover-patterns \
-  --backend-dir /path/to/legacy/backend \
-  --menu-md input/menu.md \
-  --frontends-root /workspace/frontend
+python main.py discover-patterns `
+  --backend-dir C:\work\legacy\backend `
+  --menu-md input\menu.md `
+  --frontends-root C:\workspace\frontend
 
 # 7. AS-IS 소스 분석 (패턴 + 메뉴 기반)
-python main.py analyze-legacy \
-  --backends-root /workspace/backend \
-  --frontends-root /workspace/frontend \
-  --menu-md input/menu.md \
-  --patterns output/legacy_analysis/patterns.yaml \
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backend `
+  --frontends-root C:\workspace\frontend `
+  --menu-md input\menu.md `
+  --patterns output\legacy_analysis\patterns.yaml `
   --menu-only
 ```
 
