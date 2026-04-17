@@ -233,7 +233,7 @@ def apply_patterns(patterns: dict | None) -> None:
     Extends the hardcoded base-class / param-type / SQL-call sets so
     that project-specific conventions are recognised.
     """
-    global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE, _rfc_custom_re
+    global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE, _rfc_custom_re, _rfc_custom_var_re
     _active_patterns = patterns or {}
 
     # Extend controller base classes
@@ -256,6 +256,7 @@ def apply_patterns(patterns: dict | None) -> None:
     rfc_methods = _active_patterns.get("rfc_call_methods") or []
     if rfc_methods:
         _rfc_custom_re = _build_rfc_custom_re(rfc_methods)
+        _rfc_custom_var_re = _build_rfc_custom_var_re(rfc_methods)
 
 _NEXCORE_METHOD_RE = re.compile(
     r"""(?:public)\s+
@@ -434,7 +435,8 @@ _RFC_GETFUNCTION_VAR_RE = re.compile(
 # Captures the interface ID (string arg) and optionally the SAP function name
 # from a ClassName.class argument. Active only when patterns.rfc_call_methods
 # is configured.
-_rfc_custom_re = None   # built dynamically via apply_patterns()
+_rfc_custom_re = None      # built dynamically via apply_patterns()
+_rfc_custom_var_re = None  # variable-arg version
 
 
 def _build_rfc_custom_re(methods: list[str], id_prefixes: list[str] | None = None) -> re.Pattern | None:
@@ -447,6 +449,20 @@ def _build_rfc_custom_re(methods: list[str], id_prefixes: list[str] | None = Non
         rf"""\b\w+\.(?:{method_alt})\s*\(
             \s*"(?P<id>[^"]+)"              # first string arg (interface ID)
             (?:[^)]*,\s*(?P<cls>\w+)\.class)?  # optional ClassName.class
+        """,
+        re.VERBOSE,
+    )
+
+
+def _build_rfc_custom_var_re(methods: list[str]) -> re.Pattern | None:
+    """Build a regex for variable-arg RFC calls: service.execute(varName, ..., Z*.class)."""
+    if not methods:
+        return None
+    method_alt = "|".join(re.escape(m) for m in methods)
+    return re.compile(
+        rf"""\b\w+\.(?:{method_alt})\s*\(
+            \s*(?P<var>[a-zA-Z_]\w*)        # variable name (not a string literal)
+            \s*(?:,[^)]*,\s*(?P<cls>\w+)\.class)?  # optional ClassName.class
         """,
         re.VERBOSE,
     )
@@ -1159,6 +1175,23 @@ def _extract_rfc_calls(content: str) -> list[dict]:
                 line = content.count("\n", 0, m.start()) + 1
                 calls.append({"name": rfc_name, "line": line, "resolved_from": "custom-rfc"})
 
+    # Variable-arg custom RFC: service.execute(interfaceId, ..., ZMM.class)
+    # where interfaceId = "IF_SKYN_001" is a String constant
+    if _rfc_custom_var_re:
+        for m in _rfc_custom_var_re.finditer(content):
+            var = m.group("var")
+            if var.startswith('"') or var[0].isdigit():
+                continue
+            resolved = constants.get(var, "")
+            if not resolved:
+                continue
+            cls_name = m.group("cls") if m.group("cls") else ""
+            rfc_name = f"{resolved} ({cls_name})" if cls_name else resolved
+            if rfc_name not in seen:
+                seen.add(rfc_name)
+                line = content.count("\n", 0, m.start()) + 1
+                calls.append({"name": rfc_name, "line": line, "resolved_from": f"custom-rfc-var:{var}"})
+
     return calls
 
 
@@ -1375,6 +1408,19 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
             if rfc_name not in seen:
                 seen.add(rfc_name)
                 calls.append({"name": rfc_name, "resolved_from": "custom-rfc"})
+    if _rfc_custom_var_re:
+        for m in _rfc_custom_var_re.finditer(body):
+            var = m.group("var")
+            if var.startswith('"') or var[0].isdigit():
+                continue
+            resolved = constants.get(var, "")
+            if not resolved:
+                continue
+            cls_name = m.group("cls") if m.group("cls") else ""
+            rfc_name = f"{resolved} ({cls_name})" if cls_name else resolved
+            if rfc_name not in seen:
+                seen.add(rfc_name)
+                calls.append({"name": rfc_name, "resolved_from": f"custom-rfc-var:{var}"})
     return calls
 
 
