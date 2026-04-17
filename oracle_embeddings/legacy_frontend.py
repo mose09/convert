@@ -179,3 +179,38 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None) -> t
 
     logger.warning("Frontend framework unknown — presentation_layer column will be empty")
     return {}, "unknown"
+
+
+def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None) -> tuple[dict, str]:
+    """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
+
+    Each immediate child directory that contains a ``package.json`` or
+    source files is treated as a separate frontend project. URL maps
+    from all sub-projects are merged (first-wins for duplicate URLs).
+    """
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return {}, "unknown"
+
+    merged_map = {}
+    detected_frameworks = []
+
+    for entry in sorted(os.listdir(frontends_root)):
+        child = os.path.join(frontends_root, entry)
+        if not os.path.isdir(child):
+            continue
+        if entry.startswith(".") or entry == "node_modules":
+            continue
+        url_map, fw = build_frontend_url_map(child, framework=framework)
+        if url_map:
+            for key, val in url_map.items():
+                merged_map.setdefault(key, val)
+            detected_frameworks.append(fw)
+            logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
+
+    overall_fw = detected_frameworks[0] if detected_frameworks else "unknown"
+    if len(set(detected_frameworks)) > 1:
+        overall_fw = "mixed"
+
+    logger.info("Frontend multi-repo: %d sub-projects, %d total routes, framework=%s",
+                len(detected_frameworks), len(merged_map), overall_fw)
+    return merged_map, overall_fw

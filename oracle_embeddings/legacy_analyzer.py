@@ -957,7 +957,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
                    rfc_depth: int = 2,
                    frontend_framework: str | None = None,
-                   patterns: dict | None = None) -> dict:
+                   patterns: dict | None = None,
+                   frontends_root: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1087,11 +1088,18 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     detected_frontend = "unknown"
     if frontend_dir:
         try:
-            from .legacy_frontend import build_frontend_url_map
-            print(f"  Frontend dir: {frontend_dir}")
-            react_url_map, detected_frontend = build_frontend_url_map(
-                frontend_dir, framework=frontend_framework
-            )
+            from .legacy_frontend import build_frontend_url_map, build_frontend_url_map_multi
+            is_multi = frontends_root is not None
+            if is_multi:
+                print(f"  Frontends root: {frontend_dir}")
+                react_url_map, detected_frontend = build_frontend_url_map_multi(
+                    frontend_dir, framework=frontend_framework
+                )
+            else:
+                print(f"  Frontend dir: {frontend_dir}")
+                react_url_map, detected_frontend = build_frontend_url_map(
+                    frontend_dir, framework=frontend_framework
+                )
             print(f"  Frontend framework: {detected_frontend}")
             print(f"  Frontend routes indexed: {len(react_url_map)}")
         except Exception as e:
@@ -1232,7 +1240,8 @@ def analyze_legacy_batch(backends_root: str,
                         rfc_depth: int = 2,
                         include_all: bool = False,
                         frontend_framework: str | None = None,
-                        patterns: dict | None = None) -> dict:
+                        patterns: dict | None = None,
+                        frontends_root: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1262,6 +1271,7 @@ def analyze_legacy_batch(backends_root: str,
             rfc_depth=rfc_depth,
             frontend_framework=frontend_framework,
             patterns=patterns,
+            frontends_root=frontends_root,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

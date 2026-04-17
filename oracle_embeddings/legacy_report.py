@@ -145,19 +145,14 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
                             f"({e['controller_class']})\n")
             f.write("\n")
 
-        # Program detail table
+        # Program detail table — column layout depends on menu presence
+        cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _SINGLE_COLUMNS_NO_MENU
         f.write("## Program Detail\n\n")
-        f.write("| Menu path | Main | Sub | Tab | Program | HTTP | URL | File | React"
-                " | Controller | Service | Service method | XML | XML method | Tables | RFC |\n")
-        f.write("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|\n")
+        f.write("| " + " | ".join(label for label, _ in cols) + " |\n")
+        f.write("|" + "|".join(["---"] * len(cols)) + "|\n")
         for r in rows:
             f.write(
-                "| " + " | ".join(_md_escape(r.get(k, "")) for k in [
-                    "menu_path", "main_menu", "sub_menu", "tab", "program_name", "http_method",
-                    "url", "file_name", "presentation_layer", "controller_class",
-                    "service_class", "service_methods", "query_xml", "sql_ids",
-                    "related_tables", "rfc",
-                ]) + " |\n"
+                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in cols) + " |\n"
             )
         f.write("\n")
 
@@ -267,9 +262,8 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
 
     # Sheet 2: Programs (main deliverable)
     ws = wb.create_sheet("Programs")
-    headers = ["No", "Menu path", "Main", "Sub", "Tab", "Program", "HTTP", "URL",
-               "File", "React", "Controller", "Service", "Service method",
-               "XML", "XML method", "Tables", "RFC"]
+    cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _SINGLE_COLUMNS_NO_MENU
+    headers = ["No"] + [label for label, _ in cols]
     _write_header(ws, headers)
     for i, r in enumerate(rows, 2):
         fill = None
@@ -277,18 +271,7 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
             fill = yellow_fill
         elif not r.get("query_xml") and not r.get("related_tables"):
             fill = gray_fill
-        _write_row(ws, i, [
-            i - 1,
-            r.get("menu_path", ""),
-            r.get("main_menu", ""), r.get("sub_menu", ""), r.get("tab", ""),
-            r.get("program_name", ""), r.get("http_method", ""), r.get("url", ""),
-            r.get("file_name", ""), r.get("presentation_layer", ""),
-            r.get("controller_class", ""), r.get("service_class", ""),
-            r.get("service_methods", ""),
-            r.get("query_xml", ""), r.get("sql_ids", ""),
-            r.get("related_tables", ""),
-            r.get("rfc", ""),
-        ], fill=fill)
+        _write_row(ws, i, [i - 1] + [r.get(key, "") for _, key in cols], fill=fill)
     ws.freeze_panes = "A2"
     _auto_width(ws)
 
@@ -385,10 +368,10 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
 # Batch reports — multi-project monorepo output
 # ---------------------------------------------------------------------------
 
-# User-requested column order for the batch report. Each tuple is
-# ``(header label, row dict key)``. Keep this in one place so the
-# Markdown and Excel writers stay in sync.
-BATCH_COLUMNS = [
+# Column definitions: menu-first vs no-menu layouts.
+# When menu data is present, hierarchy columns go first so users see
+# "메뉴에서 호출한 메소드" flow. Without menu, backend-focused layout.
+_BATCH_COLUMNS_WITH_MENU = [
     ("Backend project",   "backend_project"),
     ("Backend framework", "backend_framework"),
     ("Menu path",         "menu_path"),
@@ -408,6 +391,61 @@ BATCH_COLUMNS = [
     ("Table",             "related_tables"),
     ("RFC",               "rfc"),
 ]
+
+_BATCH_COLUMNS_NO_MENU = [
+    ("Backend project",   "backend_project"),
+    ("Backend framework", "backend_framework"),
+    ("File",              "file_name"),
+    ("Controller",        "controller_class"),
+    ("URL",               "url"),
+    ("HTTP",              "http_method"),
+    ("Program",           "program_name"),
+    ("Service",           "service_class"),
+    ("Service method",    "service_methods"),
+    ("XML",               "query_xml"),
+    ("XML method",        "sql_ids"),
+    ("Table",             "related_tables"),
+    ("RFC",               "rfc"),
+]
+
+_SINGLE_COLUMNS_WITH_MENU = [
+    ("Menu path",         "menu_path"),
+    ("Main",              "main_menu"),
+    ("Sub",               "sub_menu"),
+    ("Tab",               "tab"),
+    ("Program",           "program_name"),
+    ("HTTP",              "http_method"),
+    ("URL",               "url"),
+    ("File",              "file_name"),
+    ("React",             "presentation_layer"),
+    ("Controller",        "controller_class"),
+    ("Service",           "service_class"),
+    ("Service method",    "service_methods"),
+    ("XML",               "query_xml"),
+    ("XML method",        "sql_ids"),
+    ("Tables",            "related_tables"),
+    ("RFC",               "rfc"),
+]
+
+_SINGLE_COLUMNS_NO_MENU = [
+    ("Program",           "program_name"),
+    ("HTTP",              "http_method"),
+    ("URL",               "url"),
+    ("File",              "file_name"),
+    ("React",             "presentation_layer"),
+    ("Controller",        "controller_class"),
+    ("Service",           "service_class"),
+    ("Service method",    "service_methods"),
+    ("XML",               "query_xml"),
+    ("XML method",        "sql_ids"),
+    ("Tables",            "related_tables"),
+    ("RFC",               "rfc"),
+]
+
+
+def _has_menu_data(rows: list[dict]) -> bool:
+    """Return True if any row has non-empty menu info."""
+    return any(r.get("main_menu") or r.get("menu_path") for r in rows)
 
 
 def _build_batch_filename(output_dir: str, ts: str, ext: str) -> str:
@@ -472,12 +510,13 @@ def save_legacy_batch_markdown(result: dict, output_dir: str) -> str:
                 )
             f.write("\n")
 
+        batch_cols = _BATCH_COLUMNS_WITH_MENU if _has_menu_data(rows) else _BATCH_COLUMNS_NO_MENU
         f.write("## Program Detail\n\n")
-        f.write("| " + " | ".join(label for label, _ in BATCH_COLUMNS) + " |\n")
-        f.write("|" + "|".join(["---"] * len(BATCH_COLUMNS)) + "|\n")
+        f.write("| " + " | ".join(label for label, _ in batch_cols) + " |\n")
+        f.write("|" + "|".join(["---"] * len(batch_cols)) + "|\n")
         for r in rows:
             f.write(
-                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in BATCH_COLUMNS) + " |\n"
+                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in batch_cols) + " |\n"
             )
         f.write("\n")
 
@@ -596,7 +635,8 @@ def save_legacy_batch_excel(result: dict, output_dir: str) -> str:
 
     # Sheet 3: Programs (the requested column order)
     ws = wb.create_sheet("Programs")
-    headers = ["No"] + [label for label, _ in BATCH_COLUMNS]
+    batch_cols = _BATCH_COLUMNS_WITH_MENU if _has_menu_data(rows) else _BATCH_COLUMNS_NO_MENU
+    headers = ["No"] + [label for label, _ in batch_cols]
     _write_header(ws, headers)
     for i, r in enumerate(rows, 2):
         fill = None
@@ -604,7 +644,7 @@ def save_legacy_batch_excel(result: dict, output_dir: str) -> str:
             fill = yellow_fill
         elif not r.get("query_xml") and not r.get("related_tables"):
             fill = gray_fill
-        values = [i - 1] + [r.get(key, "") for _, key in BATCH_COLUMNS]
+        values = [i - 1] + [r.get(key, "") for _, key in batch_cols]
         _write_row(ws, i, values, fill=fill)
     ws.freeze_panes = "A2"
     _auto_width(ws)

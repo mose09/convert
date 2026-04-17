@@ -970,8 +970,11 @@ def cmd_analyze_legacy(args):
     if backend_dir and not os.path.isdir(backend_dir):
         print(f"Error: Backend dir not found: {backend_dir}")
         return
-    if args.frontend_dir and not os.path.isdir(args.frontend_dir):
-        print(f"Error: Frontend dir not found: {args.frontend_dir}")
+    # Resolve frontend dir: --frontends-root takes priority over --frontend-dir
+    frontend_dir = getattr(args, "frontends_root", None) or args.frontend_dir
+    is_frontends_root = bool(getattr(args, "frontends_root", None))
+    if frontend_dir and not os.path.isdir(frontend_dir):
+        print(f"Error: Frontend dir not found: {frontend_dir}")
         return
 
     # Resolve menu source priority:
@@ -1039,21 +1042,23 @@ def cmd_analyze_legacy(args):
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
-            frontend_dir=args.frontend_dir,
+            frontend_dir=frontend_dir,
             menu_rows=menu_programs,
             rfc_depth=rfc_depth,
             include_all=args.include_all,
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
+            frontends_root=is_frontends_root,
         )
     else:
         result = analyze_legacy(
             backend_dir=backend_dir,
-            frontend_dir=args.frontend_dir,
+            frontend_dir=frontend_dir,
             menu_rows=menu_programs,
             rfc_depth=rfc_depth,
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
+            frontends_root=is_frontends_root,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1210,8 +1215,11 @@ def main():
                            help="With --backends-root: include every direct child "
                                 "directory regardless of build-file detection")
     al_parser.add_argument("--frontend-dir",
-                           help="Frontend project root (React .js/.jsx/.ts/.tsx 또는 "
-                                "Polymer .html/.js, optional). 프레임워크는 자동 감지됩니다.")
+                           help="단일 프론트엔드 프로젝트 루트 (React/Polymer, optional)")
+    al_parser.add_argument("--frontends-root",
+                           help="여러 프론트엔드 레포가 있는 상위 디렉토리. 각 하위 폴더를 "
+                                "개별 프론트엔드 프로젝트로 인식해 URL 맵을 통합. "
+                                "--frontend-dir 대신 사용.")
     al_parser.add_argument("--frontend-framework", choices=["auto", "react", "polymer"],
                            default="auto",
                            help="Frontend framework override. 기본 'auto' = package.json 의존성 + "
