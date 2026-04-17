@@ -1,3 +1,12 @@
+# TODO: Oracle MERGE 테이블 추출 버그 (완료)
+
+- [x] 원인: `UPDATE\s+(\w+)`가 `UPDATE SET`의 `SET`을 테이블로 캡처, `MERGE INTO <tbl>`은 아예 추출 규칙 없음
+- [x] fix: `_add_table` 헬퍼로 키워드·alias 필터 + INSERT/UPDATE/DELETE 모두 finditer + `MERGE INTO` / `USING` 추가 추출
+- [x] 검증: MERGE + 서브쿼리 source / MERGE + 테이블 source / plain UPDATE / multi-UPDATE / INSERT·DELETE 5종 전부 통과, `SET`은 더 이상 테이블에 안 잡힘
+- [x] 커밋 & 푸시
+
+---
+
 # TODO: URL-convention LLM 학습으로 menu ↔ React ↔ controller 매칭 고치기 (완료)
 
 - [x] `legacy_util.normalize_url(url, strip_patterns=None)` 키워드 인자 + 컴파일 캐시

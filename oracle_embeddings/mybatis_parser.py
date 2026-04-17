@@ -402,20 +402,48 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
             if table not in SQL_KEYWORDS and table not in aliases_in_stmt:
                 tables.add(table)
 
-        # INSERT INTO table
-        insert_match = re.search(r'INSERT\s+INTO\s+(\w+)', sql)
-        if insert_match:
-            tables.add(insert_match.group(1))
+        def _add_table(name: str) -> None:
+            """Add ``name`` to tables iff it's neither a keyword nor an alias.
 
-        # UPDATE table
-        update_match = re.search(r'UPDATE\s+(\w+)', sql)
-        if update_match:
-            tables.add(update_match.group(1))
+            Keyword-filtering here is critical for Oracle ``MERGE`` where
+            ``UPDATE SET`` appears inside ``WHEN MATCHED`` — without this
+            check the regex captures ``SET`` as a table.
+            """
+            if not name:
+                return
+            upper = name.upper()
+            if upper in SQL_KEYWORDS:
+                return
+            if name in aliases_in_stmt:
+                return
+            tables.add(name)
+
+        # INSERT INTO table
+        for m in re.finditer(r'INSERT\s+INTO\s+(\w+)', sql):
+            _add_table(m.group(1))
+
+        # UPDATE table — use finditer so both the merge-UPDATE-SET false
+        # positive is filtered AND real multi-UPDATE dynamic SQL still
+        # picks up every target.
+        for m in re.finditer(r'UPDATE\s+(\w+)', sql):
+            _add_table(m.group(1))
 
         # DELETE FROM table
-        delete_match = re.search(r'DELETE\s+FROM\s+(\w+)', sql)
-        if delete_match:
-            tables.add(delete_match.group(1))
+        for m in re.finditer(r'DELETE\s+FROM\s+(\w+)', sql):
+            _add_table(m.group(1))
+
+        # Oracle MERGE: target is ``MERGE INTO <tbl> [alias]``,
+        # source is ``USING <tbl>`` (but not ``USING (subquery)``).
+        for m in re.finditer(r'MERGE\s+INTO\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql):
+            _add_table(m.group(1))
+            alias = m.group(2)
+            if alias and alias.upper() not in SQL_KEYWORDS:
+                aliases_in_stmt.add(alias)
+        for m in re.finditer(r'USING\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?', sql):
+            _add_table(m.group(1))
+            alias = m.group(2)
+            if alias and alias.upper() not in SQL_KEYWORDS:
+                aliases_in_stmt.add(alias)
 
         # Oracle comma-style JOIN: FROM T1 [a1], T2 [a2], T3 [a3] [JOIN ... | WHERE | ...]
         # Strict pattern: require at least one comma and word-only table names
