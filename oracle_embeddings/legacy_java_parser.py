@@ -498,16 +498,53 @@ def get_http_method_default() -> str:
     return "POST"
 
 
+# SQL call with variable prefix: sqlSession.selectList(namespace + "findList", param)
+# Captures the variable name and the string suffix separately.
+_SQL_CALL_VAR_RE = re.compile(
+    rf"""\b(?:{_DEFAULT_SQL_RECEIVERS})
+        (?:\.\w+)?
+        \.\s*(?P<op>{_DEFAULT_SQL_OPS})
+        \s*\(\s*(?P<var>\w+)\s*\+\s*"(?P<suffix>[^"]+)"
+    """,
+    re.VERBOSE,
+)
+
+# String field/constant that holds a namespace prefix:
+#   private String namespace = "com.example.mapper.";
+#   private static final String NAMESPACE = "com.example.";
+#   String sqlId = "com.example.mapper.";
+_NS_CONST_RE = re.compile(
+    r"""(?:private|protected|public|static|final|\s)*
+        String\s+(?P<name>\w+)\s*=\s*"(?P<value>[^"]+)"
+    """,
+    re.VERBOSE,
+)
+
+
+def _extract_ns_constants(content: str) -> dict:
+    """Collect ``{variable_name: string_value}`` for namespace prefix resolution."""
+    constants = {}
+    for m in _NS_CONST_RE.finditer(content):
+        name = m.group("name")
+        value = m.group("value")
+        if "." in value:
+            constants[name] = value
+    return constants
+
+
 def _extract_sql_calls(content: str) -> list[dict]:
     """Find string-based MyBatis SQL helper calls.
 
-    Returns a list of ``{op, sqlid, namespace, sql_id, line}``. The SQL ID
-    is split at the LAST ``.`` so ``com.example.order.findAll`` becomes
-    ``namespace='com.example.order'`` + ``sql_id='findAll'``. IDs without
-    any dot are skipped (filtered at the regex level).
+    Handles two forms:
+    1. Literal: ``sqlSession.selectList("namespace.sqlId", param)``
+    2. Variable prefix: ``sqlSession.selectList(namespace + "sqlId", param)``
+       where ``namespace`` is resolved from ``String namespace = "..."``
     """
+    ns_constants = _extract_ns_constants(content)
     results = []
     seen = set()
+
+    # 1) Literal string SQL IDs
     for m in _SQL_CALL_RE.finditer(content):
         sqlid = m.group("sqlid")
         namespace, _, sql_id = sqlid.rpartition(".")
@@ -524,6 +561,31 @@ def _extract_sql_calls(content: str) -> list[dict]:
             "sql_id": sql_id,
             "line": content.count("\n", 0, m.start()) + 1,
         })
+
+    # 2) Variable + string suffix: sqlSession.selectList(namespace + "findList")
+    for m in _SQL_CALL_VAR_RE.finditer(content):
+        var = m.group("var")
+        suffix = m.group("suffix")
+        prefix = ns_constants.get(var, "")
+        if not prefix:
+            continue
+        sqlid = prefix + suffix
+        namespace, _, sql_id = sqlid.rpartition(".")
+        if not namespace:
+            continue
+        key = (m.group("op"), sqlid)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "op": m.group("op"),
+            "sqlid": sqlid,
+            "namespace": namespace,
+            "sql_id": sql_id,
+            "line": content.count("\n", 0, m.start()) + 1,
+            "resolved_from": f"var:{var}",
+        })
+
     return results
 
 
@@ -1270,10 +1332,16 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
     return calls
 
 
-def _collect_body_sql_calls(body: str) -> list[dict]:
-    """SQL helper calls (``commonSQL.selectList("ns.id", ...)``) in a body."""
+def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list[dict]:
+    """SQL helper calls in a method body.
+
+    Handles both literal ``"ns.id"`` and variable prefix ``var + "id"``
+    forms. ``ns_constants`` is the class-level namespace string map.
+    """
+    ns_constants = ns_constants or {}
     results = []
     seen = set()
+
     for m in _SQL_CALL_RE.finditer(body):
         sqlid = m.group("sqlid")
         namespace, _, sql_id = sqlid.rpartition(".")
@@ -1288,6 +1356,28 @@ def _collect_body_sql_calls(body: str) -> list[dict]:
             "sqlid": sqlid,
             "namespace": namespace,
             "sql_id": sql_id,
+        })
+
+    for m in _SQL_CALL_VAR_RE.finditer(body):
+        var = m.group("var")
+        suffix = m.group("suffix")
+        prefix = ns_constants.get(var, "")
+        if not prefix:
+            continue
+        sqlid = prefix + suffix
+        namespace, _, sql_id = sqlid.rpartition(".")
+        if not namespace:
+            continue
+        key = (m.group("op"), sqlid)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "op": m.group("op"),
+            "sqlid": sqlid,
+            "namespace": namespace,
+            "sql_id": sql_id,
+            "resolved_from": f"var:{var}",
         })
     return results
 
@@ -1430,10 +1520,11 @@ def parse_java_file(filepath: str) -> dict:
     # has been blanked out — this matters for method body brace
     # balancing.
     rfc_constants = {n: v for n, v in _RFC_CONST_RE.findall(raw)}
+    ns_constants = _extract_ns_constants(raw)
     methods = _extract_method_bodies(content_nc, class_info)
     for meth in methods:
         body = meth["body"]
-        meth["body_sql_calls"] = _collect_body_sql_calls(body)
+        meth["body_sql_calls"] = _collect_body_sql_calls(body, ns_constants)
         meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
         meth["body_field_calls"] = _collect_body_field_calls(body)
         meth["is_endpoint"] = False
