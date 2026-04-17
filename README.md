@@ -346,14 +346,26 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 
 **Step 0 (선택) — 메뉴 양식이 다를 때: `convert-menu` 로 표준 menu.md 생성**
 
-프로젝트 메뉴 Excel 의 컬럼 구성이 템플릿과 다르면 먼저 변환합니다. LLM 이
-헤더 한 번만 읽고 다음 세 가지 유형 중 어느 쪽인지 매핑을 결정합니다.
+프로젝트 메뉴 Excel 의 컬럼 구성이 템플릿과 다르면 먼저 변환합니다. 헤더와
+샘플 20 행을 보고 다음 세 가지 유형 중 어느 쪽인지 **매핑을 한 번 결정**해서
+표준 `menu.md` 로 쓰면 끝.
 
 | mode | 예시 헤더 |
 |---|---|
 | `columns_per_level` | `대메뉴 / 중메뉴 / 소메뉴 / 링크` (레벨별 별도 컬럼) |
-| `depth_column` | `메뉴명 / 뎁스 / URL` (뎁스 숫자 컬럼) |
+| `depth_column` | `메뉴명 / 뎁스 / URL` (뎁스 숫자 컬럼, 0-base / 1-base 자동 감지) |
 | `path_column` | `경로(A > B > C) / URL` (한 컬럼에 계층 압축) |
+
+**매핑을 누가 결정하나**
+
+| 상황 | 결정 주체 | 비고 |
+|---|---|---|
+| `PATTERN_LLM_*` 또는 `LLM_*` 설정됨 (기본) | **LLM** | 로그에 `LLM mapping: mode=...` 표시 |
+| LLM 응답이 비정상 / 연결 실패 | heuristic | 헤더 synonym (`대메뉴/뎁스/경로/link/...`) 로 폴백 |
+| `--no-llm` 플래그 | heuristic | LLM 호출 자체 skip, 폐쇄망·오프라인용 |
+
+LLM/heuristic 어느 쪽이 판단하든 그 다음 단계(병합 셀 forward-fill,
+헤더 라인 자동 탐지, 0-base depth 자동 shift 등)는 동일하게 적용됩니다.
 
 ```powershell
 # LLM 매핑 + 3가지 모드 자동 분류 + menu.md 생성
