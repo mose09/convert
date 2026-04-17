@@ -894,6 +894,26 @@ def cmd_erd_md(args):
     print(f"Tables: {len(schema['tables'])}, Relationships: {len(joins)}")
 
 
+def cmd_convert_menu(args):
+    """메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)."""
+    from oracle_embeddings.menu_converter import convert_menu
+
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    if not os.path.isfile(args.menu_xlsx):
+        print(f"Error: Menu xlsx not found: {args.menu_xlsx}")
+        return
+
+    output = args.output or "input/menu.md"
+    abs_path = convert_menu(
+        args.menu_xlsx, output, config,
+        sheet_name=args.sheet,
+        use_llm=not args.no_llm,
+    )
+    print(f"\nMenu Markdown 저장됨: {abs_path}")
+    print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
+
+
 def cmd_discover_patterns(args):
     """Discover project-specific patterns using LLM."""
     from oracle_embeddings.legacy_pattern_discovery import discover_patterns, save_patterns
@@ -1271,6 +1291,19 @@ def main():
                            help="프론트 멀티 레포 루트 (URL 관례 학습용). 하위 "
                                 "디렉토리명을 app 후보로, 샘플 라우트를 LLM 에 제공.")
 
+    # convert-menu command
+    cm_parser = subparsers.add_parser(
+        "convert-menu",
+        help="임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)")
+    cm_parser.add_argument("--menu-xlsx", required=True,
+                           help="변환할 메뉴 Excel 파일 경로")
+    cm_parser.add_argument("--output",
+                           help="출력 menu.md 경로 (기본: input/menu.md)")
+    cm_parser.add_argument("--sheet",
+                           help="시트명 (미지정 시 가장 내용 많은 시트 자동 선택)")
+    cm_parser.add_argument("--no-llm", action="store_true",
+                           help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
+
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
@@ -1314,6 +1347,8 @@ def main():
         cmd_analyze_legacy(args)
     elif args.command == "discover-patterns":
         cmd_discover_patterns(args)
+    elif args.command == "convert-menu":
+        cmd_convert_menu(args)
     elif args.command == "all":
         cmd_all(args)
     else:

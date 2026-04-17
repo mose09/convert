@@ -21,6 +21,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
 | `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
 | `discover-patterns` | LLM 으로 프로젝트 패턴 자동 발견 (analyze-legacy 사전 단계) | X | O |
+| `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -343,6 +344,33 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 > - em-dash(`—`)는 단항 연산자로 오해됩니다 — 반드시 일반 하이픈만 사용.
 > - Excel 에 DRM 이 걸려 열리지 않을 땐 `--menu-xlsx` 대신 `--menu-md input\menu_template.md` 사용.
 
+**Step 0 (선택) — 메뉴 양식이 다를 때: `convert-menu` 로 표준 menu.md 생성**
+
+프로젝트 메뉴 Excel 의 컬럼 구성이 템플릿과 다르면 먼저 변환합니다. LLM 이
+헤더 한 번만 읽고 다음 세 가지 유형 중 어느 쪽인지 매핑을 결정합니다.
+
+| mode | 예시 헤더 |
+|---|---|
+| `columns_per_level` | `대메뉴 / 중메뉴 / 소메뉴 / 링크` (레벨별 별도 컬럼) |
+| `depth_column` | `메뉴명 / 뎁스 / URL` (뎁스 숫자 컬럼) |
+| `path_column` | `경로(A > B > C) / URL` (한 컬럼에 계층 압축) |
+
+```powershell
+# LLM 매핑 + 3가지 모드 자동 분류 + menu.md 생성
+python main.py convert-menu `
+  --menu-xlsx C:\work\menu_원본.xlsx `
+  --output input\menu.md
+
+# 시트 지정
+python main.py convert-menu --menu-xlsx C:\work\menu.xlsx --sheet "Sheet1" --output input\menu.md
+
+# 폐쇄망 / 오프라인 (LLM 없이 헤더 synonym heuristic 만 사용)
+python main.py convert-menu --menu-xlsx C:\work\menu.xlsx --no-llm --output input\menu.md
+```
+
+변환된 `menu.md` 를 이후 Step 1 (`discover-patterns --menu-md ...`) 과
+analyze-legacy 양쪽에서 그대로 사용합니다.
+
 **Step 1 — 패턴 발견 (프로젝트당 1회, LLM 필요)**
 
 프로젝트 소스를 샘플링해 LLM 이 프레임워크 패턴을 자동으로 분석합니다.
@@ -611,7 +639,12 @@ python main.py standardize --schema-md .\output\스키마_enriched.md --query-md
 
 # === AS-IS 레거시 소스 통합 분석 (차세대 전환 대비) ===
 
-# 6. 프로젝트 패턴 발견 (LLM 사용, 프로젝트당 1회)
+# 6. (선택) 메뉴 Excel 양식이 템플릿과 다르면 먼저 표준 menu.md 로 변환
+python main.py convert-menu `
+  --menu-xlsx C:\work\menu_원본.xlsx `
+  --output input\menu.md
+
+# 7. 프로젝트 패턴 발견 (LLM 사용, 프로젝트당 1회)
 #    menu.md + frontends-root 를 같이 주면 URL 관례(prefix strip, app_key)도
 #    같은 patterns.yaml 에 학습됩니다.
 python main.py discover-patterns `
@@ -619,7 +652,7 @@ python main.py discover-patterns `
   --menu-md input\menu.md `
   --frontends-root C:\workspace\frontend
 
-# 7. AS-IS 소스 분석 (패턴 + 메뉴 기반)
+# 8. AS-IS 소스 분석 (패턴 + 메뉴 기반)
 python main.py analyze-legacy `
   --backends-root C:\workspace\backend `
   --frontends-root C:\workspace\frontend `

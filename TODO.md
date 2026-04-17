@@ -1,3 +1,15 @@
+# TODO: convert-menu 커맨드 — LLM 기반 메뉴 Excel → 표준 menu.md 변환 (완료)
+
+- [x] `oracle_embeddings/menu_converter.py` 신규: merged cell forward-fill, 헤더 라인 탐지, LLM 1회 매핑(구조화 JSON 검증), heuristic fallback, 3 mode (columns_per_level / depth_column / path_column) emit
+- [x] `main.py convert-menu` 서브커맨드 + `--menu-xlsx` / `--output` / `--sheet` / `--no-llm` 인자
+- [x] LLM 환경: `PATTERN_LLM_*` > `LLM_*` fallback (discover-patterns와 동일 컨벤션)
+- [x] mock 3종 (cols / depth / path) 변환 검증 — 전부 load_menu_from_markdown 라운드트립 통과
+- [x] 기존 `input/menu_template.xlsx` 회귀 — 7행 전부 정상 변환
+- [x] README에 Step 0 (convert-menu) 섹션 + 기능 요약 표 + 7단계 워크플로우 업데이트 (→ 8단계)
+- [x] conventional commit + `claude/push-previous-changes-4P5x8` push
+
+---
+
 # TODO: Oracle MERGE 테이블 추출 버그 (완료)
 
 - [x] 원인: `UPDATE\s+(\w+)`가 `UPDATE SET`의 `SET`을 테이블로 캡처, `MERGE INTO <tbl>`은 아예 추출 규칙 없음
