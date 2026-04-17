@@ -785,6 +785,18 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             for fc in method.get("body_field_calls") or []:
                 receiver = fc.get("receiver") or ""
                 target_method_name = fc.get("method") or ""
+                # Same-class self call (``this.foo()``): stay inside the
+                # current ``owner`` class so helper methods' SQL/RFC are
+                # still attributed to this endpoint. Do NOT bump depth —
+                # we're not crossing a service boundary, and rfc_depth
+                # should only gate cross-class transitive calls.
+                if receiver == "this":
+                    if not target_method_name:
+                        continue
+                    self_method = _find_method_in_class(owner, target_method_name)
+                    if self_method is not None:
+                        queue.append((self_method, owner, depth))
+                    continue
                 svc_fqcn = _resolve_field_type_fqcn(receiver, owner, indexes)
                 if not svc_fqcn:
                     continue

@@ -1,3 +1,12 @@
+# TODO: this.self-call 체인 추적 (완료)
+
+- [x] 원인: `_resolve_endpoint_chain`가 `body_field_calls`에서 `receiver=="this"` 케이스를 `_resolve_field_type_fqcn`에 통과시켜 빈 FQCN으로 continue — self helper 안의 SQL/RFC 누락
+- [x] 패치: `receiver=="this"`면 `_find_method_in_class(owner, target_method_name)`로 같은 클래스 내 메서드 enqueue (depth 증가 없음)
+- [x] 검증: mock_this (단일 self-call 2개) + mock_this_cycle (a↔b 순환 + a→c→SQL) + mock_this_mixed (self → field → SQL) 모두 통과, Program Detail에 Tables/XML 정상 표시
+- [x] 커밋 & 푸시
+
+---
+
 # TODO: 프로젝트 점검 (완료)
 
 - [x] 프로젝트 구조/파일 구성 확인 (root 10 files + `oracle_embeddings/` 33 modules + `input/` 2 templates)
