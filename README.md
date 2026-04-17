@@ -20,6 +20,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
 | `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
+| `discover-patterns` | LLM 으로 프로젝트 패턴 자동 발견 (analyze-legacy 사전 단계) | X | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -49,6 +50,7 @@ convert/
     ├── storage.py                # Markdown 파일 생성
     ├── legacy_java_parser.py     # 레거시 Java 정규식 파서 (Controller/Service/Mapper/RFC)
     ├── legacy_frontend.py        # 프론트엔드 React/Polymer 자동 감지 + 디스패처
+    ├── legacy_pattern_discovery.py # LLM 기반 프로젝트 패턴 자동 발견
     ├── legacy_react_router.py    # React Router v5/v6 + lazy import 스캐너
     ├── legacy_polymer_router.py  # Polymer (vaadin-router/page.js/dom-module) 파서
     ├── legacy_menu_loader.py     # 메뉴 로더 (DB 테이블 / Excel / Markdown)
@@ -331,30 +333,76 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 폴더는 자동으로 제외됩니다 (`target` / `build` / `bin` 등 빌드 산출물
 이름은 제외하지 않음 — 실제 프로젝트 폴더일 수 있어 `_is_sql_mapper` 가 별도로 필터링).
 
-```bash
-# 전체 분석 (메뉴 Markdown + 프론트엔드 자동 감지)
-python main.py analyze-legacy \
-  --backend-dir /path/to/legacy/backend \
-  --frontend-dir /path/to/legacy/frontend \
-  --menu-md input/menu.md
+**Step 1 — 패턴 발견 (프로젝트당 1회, LLM 필요)**
 
-# 메뉴 Excel (DRM 없는 환경)
-python main.py analyze-legacy \
+프로젝트 소스를 샘플링해 LLM 이 프레임워크 패턴을 자동으로 분석합니다.
+14B 이상 코딩 특화 모델 권장 (`PATTERN_LLM_MODEL` 환경변수로 별도 지정 가능).
+
+```bash
+python main.py discover-patterns \
   --backend-dir /path/to/legacy/backend \
-  --menu-xlsx input/menu.xlsx
+  --output output/legacy_analysis/patterns.yaml
+```
+
+생성된 `patterns.yaml` 에 다음 슬롯이 채워집니다:
+
+| 슬롯 | 예시 |
+|---|---|
+| `framework_type` | spring / vertx / nexcore / custom |
+| `controller_base_classes` | `AbstractMultiActionBizController` |
+| `endpoint_param_types` | `IDataSet`, `IBizServiceContext` |
+| `url_suffix` / `http_method_default` | `.do` / `POST` |
+| `sql_receivers` / `sql_operations` | `sqlMapClientTemplate` / `queryForList` |
+| `rfc_call_methods` | `execute`, `send` (커스텀 RFC 호출 메서드) |
+| `service_suffixes` / `dao_suffixes` | `Service`, `Bo` / `Dao`, `Repository` |
+
+생성 후 수동으로 수정 가능. LLM 없이 직접 작성해도 동일하게 동작합니다.
+
+**Step 2 — 소스 분석 (LLM 불필요)**
+
+```bash
+# 단일 백엔드 + 단일 프론트엔드
+python main.py analyze-legacy \
+  --backend-dir /path/to/backend \
+  --frontend-dir /path/to/frontend \
+  --menu-md input/menu.md \
+  --patterns output/legacy_analysis/patterns.yaml
+
+# 여러 백엔드 레포 + 여러 프론트엔드 레포
+python main.py analyze-legacy \
+  --backends-root /workspace/backend \
+  --frontends-root /workspace/frontend \
+  --menu-md input/menu.md \
+  --patterns output/legacy_analysis/patterns.yaml
+
+# 메뉴 매칭된 endpoint 만 Program Detail 에 표시
+python main.py analyze-legacy \
+  --backends-root /workspace/backend \
+  --menu-md input/menu.md \
+  --menu-only
 
 # 메뉴 없이 (내부 테스트용)
 python main.py analyze-legacy \
-  --backend-dir /path/to/legacy/backend \
+  --backend-dir /path/to/backend \
   --skip-menu
 
-# DB 메뉴 테이블 오버라이드 + RFC 탐색 깊이 + 포맷 + 프론트 강제 지정
+# 패턴 파일 없이 (기본 Spring/Vert.x/Nexcore 하드코딩 패턴 사용)
 python main.py analyze-legacy \
-  --backend-dir /path/to/legacy/backend \
-  --frontend-dir /path/to/legacy/frontend \
-  --menu-table SYS_MENU --rfc-depth 3 --format excel \
-  --frontend-framework polymer
+  --backend-dir /path/to/backend \
+  --menu-md input/menu.md
 ```
+
+**주요 옵션:**
+
+| 옵션 | 설명 |
+|------|------|
+| `--backend-dir` / `--backends-root` | 단일 백엔드 / 여러 백엔드 레포 상위 |
+| `--frontend-dir` / `--frontends-root` | 단일 프론트엔드 / 여러 프론트엔드 레포 상위 |
+| `--patterns` | `discover-patterns` 로 생성한 패턴 파일 (없으면 기본값) |
+| `--menu-md` / `--menu-xlsx` / `--menu-table` | 메뉴 소스 (우선순위: skip > md > xlsx > DB) |
+| `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
+| `--frontend-framework` | `auto` / `react` / `polymer` 강제 지정 |
+| `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 2) |
 
 **메뉴 소스 우선순위**: `--skip-menu` > `--menu-md` > `--menu-xlsx` > DB (`config.yaml`)
 - `--menu-md`: Markdown 파이프 테이블 (DRM 환경 권장, `input/menu_template.md` 참조)
@@ -464,12 +512,16 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
   fallback
 - 인터페이스 + `*Impl` 패턴 (`OrderService` → `OrderServiceImpl` 자동 추적)
 - Abstract Controller 의 `extends` 체인 class-level mapping 상속
-- **SAP JCo RFC**:
-  - 표준: `destination.getFunction("Z_...")`
-  - 프로젝트 유틸: `JCoUtil.getCoFunction("Z_...")` 등 `.getFunction` /
-    `.getCoFunction` 메서드 호출 모두 인식
+- **SAP JCo RFC / 인터페이스 호출**:
+  - 표준: `destination.getFunction("Z_...")`, `JCoUtil.getCoFunction("Z_...")`
   - `String FN_XXX = "..."` 상수를 거친 **2-pass 해석**
+  - **커스텀 RFC**: `siteService.execute("IF-GERP-180", param, ZMM_FUNC.class)`
+    같은 서비스 래퍼 패턴. `patterns.yaml` 의 `rfc_call_methods: [execute, send]`
+    로 활성화. 인터페이스 ID + SAP 함수명(.class) 모두 캡처
   - 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
+- **SQL namespace 변수**: `sqlSession.selectList(namespace + "findList", param)`
+  에서 `String namespace = "com.example."` 상수를 2-pass 로 해석하여
+  `com.example.findList` 로 결합
 - **React Router** v5 `component={X}` / v6 `element={<X/>}` / 객체 라우트 /
   `React.lazy(() => import("./X"))` / 중첩 Route 의 부모 path 누적 결합
 - **Polymer**: vaadin-router `setRoutes([{path, component}])` / page.js + iron-pages
@@ -483,6 +535,7 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
 
 ```
 output/legacy_analysis/
+├── patterns.yaml                           # discover-patterns 산출물
 ├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
 └── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 시트)
     ├── Sheet: Summary                 (전체 집계)
@@ -531,11 +584,19 @@ python main.py erd-group --schema-md ./output/스키마_enriched.md --query-md .
 # 5. 표준화 리포트
 python main.py standardize --schema-md ./output/스키마_enriched.md --query-md ./output/query.md --validate-data
 
-# 6. 차세대 전환 대비 - AS-IS 레거시 소스 통합 분석 (선택)
+# === AS-IS 레거시 소스 통합 분석 (차세대 전환 대비) ===
+
+# 6. 프로젝트 패턴 발견 (LLM 사용, 프로젝트당 1회)
+python main.py discover-patterns \
+  --backend-dir /path/to/legacy/backend
+
+# 7. AS-IS 소스 분석 (패턴 + 메뉴 기반)
 python main.py analyze-legacy \
-  --backend-dir /path/to/legacy/backend \
-  --frontend-dir /path/to/legacy/frontend \
-  --menu-md input/menu.md
+  --backends-root /workspace/backend \
+  --frontends-root /workspace/frontend \
+  --menu-md input/menu.md \
+  --patterns output/legacy_analysis/patterns.yaml \
+  --menu-only
 ```
 
 ## ERD 렌더링
