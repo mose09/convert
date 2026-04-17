@@ -222,12 +222,17 @@ def _extract_app_routes(content: str) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def build_url_to_component_map(polymer_dir: str) -> dict:
+def build_url_to_component_map(polymer_dir: str, strip_patterns=None,
+                                route_prefix: str | None = None) -> dict:
     """Scan ``polymer_dir`` and return ``{normalized_url: {component, file_path, declared_in}}``.
 
     Walks every file; for each detected route entry we resolve the custom
     element tag back to its declaring file via ``build_custom_element_index``.
     page.js + iron-pages routes are paired by slug.
+
+    ``strip_patterns`` / ``route_prefix`` forwarded to
+    :func:`legacy_util.normalize_url` for URL-convention alignment with
+    the menu and controller sides.
     """
     if not polymer_dir or not os.path.isdir(polymer_dir):
         return {}
@@ -240,10 +245,12 @@ def build_url_to_component_map(polymer_dir: str) -> dict:
     tag_index = build_custom_element_index(files)
     logger.info("Polymer custom-element index: %d tags", len(tag_index))
 
+    prefix = route_prefix or ""
+
     url_map = {}
 
     def _record(url: str, tag: str, declared_in: str):
-        key = normalize_url(url)
+        key = normalize_url(prefix + url, strip_patterns)
         if not key or not tag:
             return
         file_path = tag_index.get(tag.lower(), "")

@@ -174,6 +174,223 @@ def _build_prompt(classes: list[dict]) -> str:
     )
 
 
+# ── URL-convention sampling & prompt ─────────────────────────────
+
+_URL_PROMPT_TEMPLATE = """
+
+## URL 관례 분석 (추가)
+
+아래는 이 프로젝트의 **메뉴 URL**, **프론트엔드 디렉토리 구조**, **React/Polymer 라우트** 샘플입니다.
+메뉴 URL ↔ 라우트 ↔ 컨트롤러가 서로 매칭되도록 **URL 정규화 규칙**을 추출하세요.
+
+### 메뉴 URL 샘플 ({n_menu}개)
+{menu_urls}
+
+### 프론트 하위 디렉토리명 ({n_dirs}개)
+{frontend_dirs}
+
+### React/Polymer 라우트 샘플 ({n_routes}개)
+{react_routes}
+
+### 응답 JSON 에 아래 `url` 키를 추가하세요
+
+```json
+{{
+  "url": {{
+    "url_prefix_strip": ["정규화 직전 메뉴/라우트 URL 에서 제거할 정규식들. 예: '^/apps/[^/]+', '^/api/v\\\\d+'"],
+    "react_route_prefix": "React 라우트에만 앞에 붙여야 맞는 공통 prefix. 없으면 null",
+    "menu_url_scheme": "path_only | full_url | app_prefixed 중 하나. 메뉴 URL이 어떤 형태인지.",
+    "app_key": {{"source": "path_segment", "index": N}} 또는 {{"source": "query_param", "name": "app"}} 또는 null
+  }}
+}}
+```
+
+주의:
+- `url_prefix_strip` 은 각 항목이 **유효한 Python re 정규식** 이어야 합니다. 역슬래시는 YAML/JSON 문자열에서 두 번 씁니다 (`\\d`).
+- 매칭되는 패턴이 없으면 해당 필드에 빈 리스트/null 을 돌려주세요.
+"""
+
+
+def _sample_menu_urls(menu_md: str | None, limit: int = 20) -> list[str]:
+    if not menu_md or not os.path.isfile(menu_md):
+        return []
+    try:
+        from .legacy_menu_loader import load_menu_from_markdown
+        programs = load_menu_from_markdown(menu_md)
+    except Exception as e:
+        logger.warning("menu.md 샘플 로드 실패: %s", e)
+        return []
+    urls = [p.get("url", "") for p in programs if p.get("url")]
+    return urls[:limit]
+
+
+def _sample_frontend_routes(frontends_root: str | None,
+                             per_dir: int = 5, total: int = 20) -> tuple[list[str], list[str]]:
+    """Return ``(frontend_dir_names, sample_routes)``.
+
+    Routes are raw (pre-normalized) when possible — we peek at the
+    router parser's intermediate state via `_extract_routes_from_content`
+    on a small file sample, so patterns.yaml bootstrap doesn't depend on
+    an already-configured ``url_prefix_strip``.
+    """
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return [], []
+    from .legacy_react_router import (
+        scan_react_dir, _extract_routes_from_content,
+    )
+    from .mybatis_parser import _read_file_safe
+
+    dir_names = []
+    routes: list[str] = []
+    for entry in sorted(os.listdir(frontends_root)):
+        child = os.path.join(frontends_root, entry)
+        if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
+            continue
+        dir_names.append(entry)
+        # Quick raw-route probe
+        try:
+            files = scan_react_dir(child)[:30]
+            count = 0
+            for fp in files:
+                try:
+                    content = _read_file_safe(fp)
+                except Exception:
+                    continue
+                for r in _extract_routes_from_content(content):
+                    raw = r.get("path") or ""
+                    if raw:
+                        routes.append(raw)
+                        count += 1
+                    if count >= per_dir:
+                        break
+                if count >= per_dir:
+                    break
+        except Exception:
+            continue
+        if len(routes) >= total:
+            break
+    return dir_names, routes[:total]
+
+
+def _build_url_prompt(menu_urls: list[str], dir_names: list[str],
+                      react_routes: list[str]) -> str:
+    return _URL_PROMPT_TEMPLATE.format(
+        n_menu=len(menu_urls),
+        menu_urls=json.dumps(menu_urls, ensure_ascii=False),
+        n_dirs=len(dir_names),
+        frontend_dirs=json.dumps(dir_names, ensure_ascii=False),
+        n_routes=len(react_routes),
+        react_routes=json.dumps(react_routes, ensure_ascii=False),
+    )
+
+
+def _longest_common_path_prefix(urls: list[str]) -> str:
+    """Return the longest common path-segment prefix across ``urls``.
+
+    Used as a heuristic fallback when no LLM is available. Only counts
+    full path segments so we don't mid-segment-slice a word.
+    """
+    if not urls:
+        return ""
+    import re as _re
+    # Strip protocol+host
+    paths = []
+    for u in urls:
+        p = _re.sub(r"^https?://[^/]+", "", u.strip())
+        p = p.split("?", 1)[0]
+        paths.append([seg for seg in p.split("/") if seg])
+    if not paths:
+        return ""
+    common = []
+    for i in range(min(len(p) for p in paths)):
+        seg = paths[0][i]
+        if all(p[i] == seg for p in paths):
+            common.append(seg)
+        else:
+            break
+    return "/" + "/".join(common) if common else ""
+
+
+def _heuristic_url_section(menu_urls: list[str], dir_names: list[str]) -> dict:
+    """Fallback when no LLM is available: derive naive strip prefix.
+
+    Rules (very conservative to avoid breaking matches):
+    - If every menu URL begins with the same path-segment prefix *and*
+      the first segment after that prefix matches one of ``dir_names``,
+      assume ``/<prefix>/<app>/...`` and emit a strip regex + app_key.
+    - Otherwise leave slots empty so the analyzer behaviour is unchanged.
+    """
+    section = dict(_DEFAULT_URL_SECTION)
+    if not menu_urls:
+        return section
+    prefix = _longest_common_path_prefix(menu_urls)
+    if not prefix or prefix == "/":
+        return section
+    # How many segments in the common prefix?
+    prefix_segs = [s for s in prefix.split("/") if s]
+    if not prefix_segs:
+        return section
+    # Does the segment *after* the common prefix match a known dir name?
+    app_like = False
+    for u in menu_urls:
+        import re as _re
+        path_only = _re.sub(r"^https?://[^/]+", "", u.strip()).split("?", 1)[0]
+        segs = [s for s in path_only.split("/") if s]
+        if len(segs) > len(prefix_segs) and dir_names and segs[len(prefix_segs)].lower() in {
+            d.lower() for d in dir_names
+        }:
+            app_like = True
+            break
+    # Emit a strip for the literal common prefix (escaped).
+    import re as _re
+    section["url_prefix_strip"] = [f"^{''.join(_re.escape('/' + s) for s in prefix_segs)}"]
+    if app_like:
+        section["app_key"] = {"source": "path_segment", "index": 1}
+        section["menu_url_scheme"] = "app_prefixed"
+    return section
+
+
+def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
+    """Overlay LLM-provided url section onto a safe default.
+
+    Invalid regexes are dropped; non-dict or empty LLM output falls back
+    entirely to ``fallback``. Returns a fresh dict.
+    """
+    merged = dict(_DEFAULT_URL_SECTION)
+    # Apply heuristic fallback first
+    for k, v in (fallback or {}).items():
+        if v is not None:
+            merged[k] = v
+    if not isinstance(llm_url, dict):
+        return merged
+    # Accept known keys only
+    if isinstance(llm_url.get("url_prefix_strip"), list):
+        good = []
+        for pat in llm_url["url_prefix_strip"]:
+            if not pat:
+                continue
+            try:
+                re.compile(pat)
+                good.append(pat)
+            except re.error as e:
+                logger.warning("LLM이 반환한 url_prefix_strip 정규식 무효 (%r): %s", pat, e)
+        merged["url_prefix_strip"] = good
+    if "react_route_prefix" in llm_url:
+        v = llm_url["react_route_prefix"]
+        merged["react_route_prefix"] = v if isinstance(v, str) and v else None
+    if "menu_url_scheme" in llm_url:
+        v = llm_url["menu_url_scheme"]
+        if v in ("path_only", "full_url", "app_prefixed"):
+            merged["menu_url_scheme"] = v
+    if "app_key" in llm_url:
+        v = llm_url["app_key"]
+        if isinstance(v, dict) and v.get("source") in ("path_segment", "query_param"):
+            merged["app_key"] = v
+        elif v is None:
+            merged["app_key"] = None
+    return merged
+
+
 def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
     """Send prompt to the LLM and parse the JSON response.
 
@@ -234,6 +451,14 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
 
 # ── Pattern file I/O ──────────────────────────────────────────────
 
+_DEFAULT_URL_SECTION = {
+    "url_prefix_strip": [],            # list[str] — regexes applied by normalize_url
+    "react_route_prefix": None,        # str | None — prepend to React routes before normalize
+    "menu_url_scheme": "path_only",    # path_only | full_url | app_prefixed
+    "app_key": None,                   # {source: path_segment, index: N} | {source: query_param, name: X}
+}
+
+
 _DEFAULT_PATTERNS = {
     "framework_type": "spring",
     "controller_base_classes": [],
@@ -257,6 +482,7 @@ _DEFAULT_PATTERNS = {
     "dao_suffixes": ["Dao", "DaoImpl", "Repository"],
     "di_annotations": ["Autowired", "Inject", "Resource"],
     "notes": "",
+    "url": dict(_DEFAULT_URL_SECTION),
 }
 
 
@@ -287,30 +513,55 @@ def save_patterns(patterns: dict, output_path: str) -> str:
 
 
 def load_patterns(yaml_path: str) -> dict:
-    """Load patterns from YAML and merge with defaults."""
+    """Load patterns from YAML and merge with defaults.
+
+    The ``url`` sub-section is deep-merged so older ``patterns.yaml`` files
+    without it continue to load with safe defaults.
+    """
     with open(yaml_path, "r", encoding="utf-8") as f:
         loaded = yaml.safe_load(f) or {}
 
     # Merge: loaded values override defaults; lists are replaced, not appended
     merged = dict(_DEFAULT_PATTERNS)
+    merged["url"] = dict(_DEFAULT_URL_SECTION)
     for key, value in loaded.items():
-        if value is not None:
+        if value is None:
+            continue
+        if key == "url" and isinstance(value, dict):
+            # deep-merge, keep defaults for missing keys
+            url_merged = dict(_DEFAULT_URL_SECTION)
+            for uk, uv in value.items():
+                if uv is not None:
+                    url_merged[uk] = uv
+            merged["url"] = url_merged
+        else:
             merged[key] = value
 
+    url_section = merged.get("url") or {}
     logger.info("Loaded patterns from %s: framework=%s, %d controller_base_classes, "
-                "%d sql_receivers, %d service_suffixes",
+                "%d sql_receivers, %d service_suffixes, "
+                "%d url_prefix_strip, app_key=%s",
                 yaml_path,
                 merged.get("framework_type", "?"),
                 len(merged.get("controller_base_classes", [])),
                 len(merged.get("sql_receivers", [])),
-                len(merged.get("service_suffixes", [])))
+                len(merged.get("service_suffixes", [])),
+                len(url_section.get("url_prefix_strip", []) or []),
+                bool(url_section.get("app_key")))
     return merged
 
 
 # ── Main entry point ──────────────────────────────────────────────
 
-def discover_patterns(backend_dir: str, config: dict) -> dict:
+def discover_patterns(backend_dir: str, config: dict,
+                       menu_md: str | None = None,
+                       frontends_root: str | None = None) -> dict:
     """Scan backend sources and use LLM to discover project patterns.
+
+    When ``menu_md`` and/or ``frontends_root`` are provided, also samples
+    menu URLs + frontend directory names + React/Polymer raw routes,
+    appends a URL-convention section to the LLM prompt, and emits the
+    result under the top-level ``url`` key in the returned patterns dict.
 
     Returns the patterns dict (also suitable for ``save_patterns``).
     """
@@ -329,18 +580,40 @@ def discover_patterns(backend_dir: str, config: dict) -> dict:
     sample_count = len(_sample_classes(classes))
     print(f"  Sampled {sample_count} classes for LLM analysis")
 
+    # URL-convention sampling (optional)
+    menu_urls = _sample_menu_urls(menu_md)
+    dir_names, react_routes = _sample_frontend_routes(frontends_root)
+    want_url = bool(menu_urls or dir_names or react_routes)
+    heuristic_url = _heuristic_url_section(menu_urls, dir_names) if want_url else {}
+    if want_url:
+        prompt = prompt + _build_url_prompt(menu_urls, dir_names, react_routes)
+        print(f"  URL samples: menu={len(menu_urls)} dirs={len(dir_names)} "
+              f"routes={len(react_routes)}")
+
     print("\n=== Step 3: Calling LLM ===")
     llm_result = _call_llm(prompt, config)
 
     if not llm_result:
         print("  LLM call failed. Returning defaults.")
-        return dict(_DEFAULT_PATTERNS)
+        patterns = dict(_DEFAULT_PATTERNS)
+        if want_url:
+            patterns["url"] = _merge_url_section(None, heuristic_url)
+            print(f"  URL 섹션 heuristic fallback 적용")
+        return patterns
 
     # Merge LLM result with defaults
     patterns = dict(_DEFAULT_PATTERNS)
+    patterns["url"] = dict(_DEFAULT_URL_SECTION)
     for key, value in llm_result.items():
-        if key in patterns and value is not None:
+        if value is None:
+            continue
+        if key == "url" and isinstance(value, dict):
+            patterns["url"] = _merge_url_section(value, heuristic_url)
+        elif key in patterns:
             patterns[key] = value
+    if want_url and patterns["url"] == _DEFAULT_URL_SECTION:
+        # LLM returned no url section; fall back to heuristic.
+        patterns["url"] = _merge_url_section(None, heuristic_url)
 
     print(f"\n=== Discovered patterns ===")
     print(f"  Framework type:          {patterns['framework_type']}")
@@ -354,5 +627,13 @@ def discover_patterns(backend_dir: str, config: dict) -> dict:
     print(f"  RFC patterns:            {patterns['rfc_patterns']}")
     if patterns.get("notes"):
         print(f"  Notes:                   {patterns['notes']}")
+
+    if want_url:
+        print(f"\n=== Step 4: URL conventions ===")
+        url = patterns["url"]
+        print(f"  url_prefix_strip:        {url.get('url_prefix_strip')}")
+        print(f"  react_route_prefix:      {url.get('react_route_prefix')}")
+        print(f"  menu_url_scheme:         {url.get('menu_url_scheme')}")
+        print(f"  app_key:                 {url.get('app_key')}")
 
     return patterns

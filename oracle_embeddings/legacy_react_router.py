@@ -169,19 +169,27 @@ def _extract_routes_from_content(content: str) -> list[dict]:
     return routes
 
 
-def build_url_to_component_map(react_dir: str) -> dict:
+def build_url_to_component_map(react_dir: str, strip_patterns=None,
+                                route_prefix: str | None = None) -> dict:
     """Scan ``react_dir`` and return ``{normalized_url: {component, file_path}}``.
 
     For each route entry we resolve the component to an absolute file path
     using the component index and lazy-import map of the declaring file.
     If no file path can be determined, the component name is still recorded
     so that callers can degrade gracefully.
+
+    ``strip_patterns`` / ``route_prefix`` are forwarded to
+    :func:`legacy_util.normalize_url` so URL conventions learned by
+    ``discover-patterns`` (e.g. ``^/apps/[^/]+`` strip, ``/web`` route
+    prefix) can be applied uniformly across all URL-producing modules.
     """
     if not react_dir or not os.path.isdir(react_dir):
         return {}
 
     files = scan_react_dir(react_dir)
     component_index = build_component_index(files)
+
+    prefix = route_prefix or ""
 
     url_map = {}
     for fp in files:
@@ -196,7 +204,7 @@ def build_url_to_component_map(react_dir: str) -> dict:
         for r in routes:
             comp = r["component"]
             file_path = lazy_map.get(comp) or component_index.get(comp) or ""
-            key = normalize_url(r["path"])
+            key = normalize_url(prefix + r["path"], strip_patterns)
             if not key:
                 continue
             url_map.setdefault(key, {

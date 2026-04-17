@@ -1,3 +1,21 @@
+# TODO: URL-convention LLM 학습으로 menu ↔ React ↔ controller 매칭 고치기 (완료)
+
+- [x] `legacy_util.normalize_url(url, strip_patterns=None)` 키워드 인자 + 컴파일 캐시
+- [x] `legacy_react_router` / `legacy_polymer_router` `build_url_to_component_map(..., strip_patterns, route_prefix)`
+- [x] `legacy_frontend.build_frontend_url_map_multi` 3-tuple 반환 + value에 `frontend_name` + `by_frontend` 누적
+- [x] `legacy_analyzer.analyze_legacy`에서 `patterns["url"]` 로드 → 모든 normalize/builder에 주입 + `_extract_app_key` + by_frontend 우선 lookup
+- [x] `legacy_pattern_discovery`: `_DEFAULT_URL_SECTION` + URL 샘플링 (menu_md + frontends_root) + LLM 프롬프트 URL 섹션 + heuristic fallback + 잘못된 regex drop
+- [x] `main.py discover-patterns`에 `--menu-md` / `--frontends-root` 추가
+- [x] 참고: `legacy_menu_loader`는 normalize_url을 직접 호출하지 않음 (dead한 `build_url_index` 외). analyzer 한 곳에서 strip_patterns 주입하면 충분. 로더 시그니처 변경 불필요.
+- [x] mock 시나리오 3종 통과:
+  - A (`/tmp/mock_urlstrip`): 메뉴 `/apps/orderweb/order/list` + React `/order/list` + `url_prefix_strip: ["^/apps/[^/]+"]` → matched=1, With React=1
+  - B (`/tmp/mock_urlapp`): 멀티 레포 `foo/bar` 동일 라우트, 메뉴 `/apps/foo/...` + `app_key: {source: path_segment, index: 2}` → `foo/src/FooList.jsx` 선택 (글로벌 first-wins는 `bar`가 됨)
+  - C (기존 mock_this): url 섹션 없는 patterns.yaml + `--skip-menu` → 기존 결과와 동일, `URL conventions` 로그도 나오지 않음
+- [x] LLM 미연결 환경에서 heuristic fallback 정상 동작 (샘플 1개일 때 LCP = 전체 URL로 축소), save/load 라운드트립도 OK
+- [x] Conventional commit 후 `claude/push-previous-changes-4P5x8`로 push
+
+---
+
 # TODO: this.self-call 체인 추적 (완료)
 
 - [x] 원인: `_resolve_endpoint_chain`가 `body_field_calls`에서 `receiver=="this"` 케이스를 `_resolve_field_type_fqcn`에 통과시켜 빈 FQCN으로 continue — self helper 안의 SQL/RFC 누락

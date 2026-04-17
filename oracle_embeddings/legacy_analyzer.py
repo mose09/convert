@@ -617,6 +617,52 @@ def _collect_rfc_transitive(root_fqcns: list[str], indexes: dict,
     return sorted(rfc_names)
 
 
+def _extract_app_key(raw_url: str, app_key_spec: dict | None) -> str:
+    """Pull the app identifier out of a raw menu URL per ``app_key_spec``.
+
+    ``app_key_spec`` shape (from ``patterns.yaml`` ``url.app_key``)::
+
+        {"source": "path_segment", "index": 1}   # 1-based segment index
+        {"source": "query_param", "name": "app"}
+
+    Returns the extracted app name lowercased, or ``""`` on any miss.
+    Works on the raw (pre-normalized) URL so we can see query strings
+    and original casing before the normalize step drops them.
+    """
+    if not raw_url or not app_key_spec:
+        return ""
+    source = app_key_spec.get("source")
+    try:
+        # Split host/path — we don't use urlparse to avoid stdlib overhead
+        # and stay robust to non-URL inputs like "/apps/foo/x".
+        path = re.sub(r"^https?://[^/]+", "", raw_url.strip())
+        if source == "path_segment":
+            idx = int(app_key_spec.get("index", 1))
+            # Split off query first
+            path_only = path.split("?", 1)[0]
+            parts = [p for p in path_only.split("/") if p]
+            # 1-based, so user says index=2 means the second non-empty segment.
+            # Also accept "/apps/foo/order" with index=2 → "foo".
+            if 1 <= idx <= len(parts):
+                return parts[idx - 1].lower()
+            return ""
+        if source == "query_param":
+            name = str(app_key_spec.get("name") or "").lower()
+            if not name or "?" not in path:
+                return ""
+            query = path.split("?", 1)[1]
+            for chunk in query.split("&"):
+                if "=" not in chunk:
+                    continue
+                k, v = chunk.split("=", 1)
+                if k.strip().lower() == name:
+                    return v.strip().lower()
+            return ""
+    except Exception:
+        return ""
+    return ""
+
+
 def _resolve_field_type_fqcn(receiver: str, controller: dict,
                              indexes: dict) -> str:
     """Map a field name (``orderService``) back to its FQCN.
@@ -1097,7 +1143,18 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
           f"{promo_note} services={len(indexes['services_by_fqcn'])} "
           f"mappers={len(indexes['mappers_by_fqcn'])}")
 
+    # URL-convention patterns (from discover-patterns LLM or hand-written):
+    # thread strip_patterns + route_prefix through every URL normalizer.
+    url_section = (patterns or {}).get("url") or {}
+    url_strip = url_section.get("url_prefix_strip") or []
+    route_prefix = url_section.get("react_route_prefix")
+    app_key_spec = url_section.get("app_key")
+    if url_strip or route_prefix or app_key_spec:
+        print(f"  URL conventions: strip={len(url_strip)} "
+              f"route_prefix={route_prefix!r} app_key={app_key_spec}")
+
     react_url_map = {}
+    by_frontend: dict[str, dict] = {}
     detected_frontend = "unknown"
     if frontend_dir:
         try:
@@ -1105,25 +1162,33 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             is_multi = frontends_root is not None
             if is_multi:
                 print(f"  Frontends root: {frontend_dir}")
-                react_url_map, detected_frontend = build_frontend_url_map_multi(
-                    frontend_dir, framework=frontend_framework
+                react_url_map, detected_frontend, by_frontend = build_frontend_url_map_multi(
+                    frontend_dir, framework=frontend_framework,
+                    strip_patterns=url_strip, route_prefix=route_prefix,
                 )
             else:
                 print(f"  Frontend dir: {frontend_dir}")
                 react_url_map, detected_frontend = build_frontend_url_map(
-                    frontend_dir, framework=frontend_framework
+                    frontend_dir, framework=frontend_framework,
+                    strip_patterns=url_strip, route_prefix=route_prefix,
                 )
             print(f"  Frontend framework: {detected_frontend}")
             print(f"  Frontend routes indexed: {len(react_url_map)}")
+            if by_frontend:
+                print(f"  Frontend buckets: {sorted(by_frontend)}")
         except Exception as e:
             logger.warning("Frontend scan skipped: %s", e)
 
-    # Menu URL index
+    # Menu URL index — preserve raw_url alongside the normalized key so
+    # the app_key extractor can inspect the pre-normalization form later.
     menu_url_index = {}
+    menu_raw_by_key = {}
     for r in (menu_rows or []):
-        key = normalize_url(r.get("url", ""))
+        raw = r.get("url", "")
+        key = normalize_url(raw, url_strip)
         if key:
             menu_url_index[key] = r
+            menu_raw_by_key[key] = raw
 
     backend_project = os.path.basename(os.path.normpath(backend_dir or ""))
     base_dirs = {
@@ -1145,7 +1210,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         class_paths = _inherit_class_paths(controller, indexes["controllers_by_fqcn"])
         endpoints = controller.get("endpoints") or []
         for ep in endpoints:
-            key = normalize_url(ep["full_url"])
+            key = normalize_url(ep["full_url"], url_strip)
             controller_urls.add(key)
             menu_entry = menu_url_index.get(key)
 
@@ -1165,7 +1230,19 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 })
                 continue
 
-            react_file = (react_url_map.get(key) or {}).get("file_path", "")
+            # Prefer the frontend bucket matching the menu's app_key when
+            # multi-repo disambiguation is configured; fall back to the
+            # global first-wins map so single-repo / unmatched endpoints
+            # keep working.
+            react_entry = None
+            if menu_entry and by_frontend and app_key_spec:
+                raw_menu = menu_raw_by_key.get(key, menu_entry.get("url", ""))
+                app = _extract_app_key(raw_menu, app_key_spec)
+                if app:
+                    react_entry = (by_frontend.get(app) or {}).get(key)
+            if react_entry is None:
+                react_entry = react_url_map.get(key)
+            react_file = (react_entry or {}).get("file_path", "")
             row = _build_row(
                 ep, controller, indexes, mybatis_idx,
                 menu_entry, react_file, base_dirs, rfc_depth=rfc_depth,

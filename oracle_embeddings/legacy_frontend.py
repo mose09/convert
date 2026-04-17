@@ -152,13 +152,18 @@ def detect_frontend_framework(frontend_dir: str) -> str:
     return chosen
 
 
-def build_frontend_url_map(frontend_dir: str, framework: str | None = None) -> tuple[dict, str]:
+def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
+                            strip_patterns=None,
+                            route_prefix: str | None = None) -> tuple[dict, str]:
     """Return ``(url_map, framework)`` for the given frontend directory.
 
     ``framework`` may be one of ``"react"``, ``"polymer"``, ``"auto"``, or
     ``None`` (treated as auto). Auto-detection runs ``detect_frontend_framework``
     first and dispatches to the matching parser. Unknown frontends return
     ``({}, "unknown")``.
+
+    ``strip_patterns`` / ``route_prefix`` forwarded to the router parser
+    for cross-source URL normalization.
     """
     if not frontend_dir:
         return {}, "unknown"
@@ -172,26 +177,41 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None) -> t
 
     if fw == "react":
         from .legacy_react_router import build_url_to_component_map
-        return build_url_to_component_map(frontend_dir), "react"
+        return build_url_to_component_map(
+            frontend_dir, strip_patterns=strip_patterns, route_prefix=route_prefix,
+        ), "react"
     if fw == "polymer":
         from .legacy_polymer_router import build_url_to_component_map
-        return build_url_to_component_map(frontend_dir), "polymer"
+        return build_url_to_component_map(
+            frontend_dir, strip_patterns=strip_patterns, route_prefix=route_prefix,
+        ), "polymer"
 
     logger.warning("Frontend framework unknown — presentation_layer column will be empty")
     return {}, "unknown"
 
 
-def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None) -> tuple[dict, str]:
+def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None,
+                                  strip_patterns=None,
+                                  route_prefix: str | None = None
+                                  ) -> tuple[dict, str, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
     Each immediate child directory that contains a ``package.json`` or
     source files is treated as a separate frontend project. URL maps
     from all sub-projects are merged (first-wins for duplicate URLs).
+
+    Returns a 3-tuple ``(merged_map, overall_framework, by_frontend)``
+    where ``by_frontend`` is ``{frontend_name: url_map}`` keyed by the
+    immediate child directory name. Each value in every map carries a
+    ``frontend_name`` key so callers know where a route originated.
+    This enables multi-app disambiguation via an ``app_key`` extracted
+    from the menu URL.
     """
     if not frontends_root or not os.path.isdir(frontends_root):
-        return {}, "unknown"
+        return {}, "unknown", {}
 
     merged_map = {}
+    by_frontend: dict[str, dict] = {}
     detected_frameworks = []
 
     for entry in sorted(os.listdir(frontends_root)):
@@ -200,10 +220,19 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             continue
         if entry.startswith(".") or entry == "node_modules":
             continue
-        url_map, fw = build_frontend_url_map(child, framework=framework)
+        url_map, fw = build_frontend_url_map(
+            child, framework=framework,
+            strip_patterns=strip_patterns, route_prefix=route_prefix,
+        )
         if url_map:
+            # Annotate each value with its origin frontend for disambiguation.
+            annotated = {}
             for key, val in url_map.items():
-                merged_map.setdefault(key, val)
+                tagged = dict(val)
+                tagged["frontend_name"] = entry
+                annotated[key] = tagged
+                merged_map.setdefault(key, tagged)
+            by_frontend[entry] = annotated
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
 
@@ -213,4 +242,4 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
 
     logger.info("Frontend multi-repo: %d sub-projects, %d total routes, framework=%s",
                 len(detected_frameworks), len(merged_map), overall_fw)
-    return merged_map, overall_fw
+    return merged_map, overall_fw, by_frontend

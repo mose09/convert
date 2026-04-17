@@ -905,7 +905,11 @@ def cmd_discover_patterns(args):
         print(f"Error: Backend dir not found: {args.backend_dir}")
         return
 
-    patterns = discover_patterns(args.backend_dir, config)
+    patterns = discover_patterns(
+        args.backend_dir, config,
+        menu_md=getattr(args, "menu_md", None),
+        frontends_root=getattr(args, "frontends_root", None),
+    )
 
     if args.output:
         output_path = args.output
@@ -1260,6 +1264,12 @@ def main():
                            help="Backend project root to analyze")
     dp_parser.add_argument("--output",
                            help="Output YAML path (default: output/legacy_analysis/patterns.yaml)")
+    dp_parser.add_argument("--menu-md",
+                           help="메뉴 Markdown (URL 관례 학습용). 지정하면 LLM 이 "
+                                "url_prefix_strip / app_key 등 URL 섹션도 추출.")
+    dp_parser.add_argument("--frontends-root",
+                           help="프론트 멀티 레포 루트 (URL 관례 학습용). 하위 "
+                                "디렉토리명을 app 후보로, 샘플 라우트를 LLM 에 제공.")
 
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
