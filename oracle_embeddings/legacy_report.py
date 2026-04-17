@@ -84,14 +84,19 @@ def _group_by_menu(rows: list[dict]) -> dict:
     return groups
 
 
-def save_legacy_markdown(result: dict, output_dir: str) -> str:
+def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a Markdown document."""
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_filename(output_dir, result, ts, "md")
 
-    rows = result.get("rows", [])
-    unmatched = result.get("unmatched_controllers", [])
+    all_rows = result.get("rows", [])
+    if menu_only:
+        rows = [r for r in all_rows if r.get("matched")]
+        unmatched = [r for r in all_rows if not r.get("matched")]
+    else:
+        rows = all_rows
+        unmatched = result.get("unmatched_controllers", [])
     orphans = result.get("orphan_menus", [])
     stats = result.get("stats", {})
 
@@ -188,7 +193,7 @@ def save_legacy_markdown(result: dict, output_dir: str) -> str:
     return filepath
 
 
-def save_legacy_excel(result: dict, output_dir: str) -> str:
+def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -197,8 +202,13 @@ def save_legacy_excel(result: dict, output_dir: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_filename(output_dir, result, ts, "xlsx")
 
-    rows = result.get("rows", [])
-    unmatched = result.get("unmatched_controllers", [])
+    all_rows = result.get("rows", [])
+    if menu_only:
+        rows = [r for r in all_rows if r.get("matched")]
+        unmatched = [r for r in all_rows if not r.get("matched")]
+    else:
+        rows = all_rows
+        unmatched = result.get("unmatched_controllers", [])
     orphans = result.get("orphan_menus", [])
     stats = result.get("stats", {})
 
@@ -453,13 +463,17 @@ def _build_batch_filename(output_dir: str, ts: str, ext: str) -> str:
     return os.path.join(_legacy_output_dir(output_dir), f"as_is_analysis_batch_{ts}.{ext}")
 
 
-def save_legacy_batch_markdown(result: dict, output_dir: str) -> str:
+def save_legacy_batch_markdown(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render a batch (multi-project) analysis result as Markdown."""
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_batch_filename(output_dir, ts, "md")
 
-    rows = result.get("rows", [])
+    all_rows = result.get("rows", [])
+    if menu_only:
+        rows = [r for r in all_rows if r.get("matched")]
+    else:
+        rows = all_rows
     stats = result.get("stats", {})
     per_project = result.get("per_project_stats", {}) or {}
     project_frameworks = result.get("project_frameworks", {}) or {}
@@ -539,7 +553,7 @@ def save_legacy_batch_markdown(result: dict, output_dir: str) -> str:
     return filepath
 
 
-def save_legacy_batch_excel(result: dict, output_dir: str) -> str:
+def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render a batch (multi-project) analysis result as a multi-sheet workbook."""
     from openpyxl import Workbook
     from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
@@ -548,8 +562,13 @@ def save_legacy_batch_excel(result: dict, output_dir: str) -> str:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_batch_filename(output_dir, ts, "xlsx")
 
-    rows = result.get("rows", [])
-    unmatched = result.get("unmatched_controllers", [])
+    all_rows = result.get("rows", [])
+    if menu_only:
+        rows = [r for r in all_rows if r.get("matched")]
+        unmatched = [r for r in all_rows if not r.get("matched")]
+    else:
+        rows = all_rows
+        unmatched = result.get("unmatched_controllers", [])
     stats = result.get("stats", {})
     per_project = result.get("per_project_stats", {}) or {}
     project_frameworks = result.get("project_frameworks", {}) or {}

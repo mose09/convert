@@ -1063,21 +1063,22 @@ def cmd_analyze_legacy(args):
 
     print("\n=== Step 3: Writing report ===")
     fmt = args.format
+    menu_only = getattr(args, "menu_only", False)
     md_path = None
     xlsx_path = None
     if result.get("is_batch"):
         if fmt in ("markdown", "both"):
-            md_path = save_legacy_batch_markdown(result, output_dir)
+            md_path = save_legacy_batch_markdown(result, output_dir, menu_only=menu_only)
             print(f"  Markdown: {os.path.abspath(md_path)}")
         if fmt in ("excel", "both"):
-            xlsx_path = save_legacy_batch_excel(result, output_dir)
+            xlsx_path = save_legacy_batch_excel(result, output_dir, menu_only=menu_only)
             print(f"  Excel:    {os.path.abspath(xlsx_path)}")
     else:
         if fmt in ("markdown", "both"):
-            md_path = save_legacy_markdown(result, output_dir)
+            md_path = save_legacy_markdown(result, output_dir, menu_only=menu_only)
             print(f"  Markdown: {os.path.abspath(md_path)}")
         if fmt in ("excel", "both"):
-            xlsx_path = save_legacy_excel(result, output_dir)
+            xlsx_path = save_legacy_excel(result, output_dir, menu_only=menu_only)
             print(f"  Excel:    {os.path.abspath(xlsx_path)}")
 
     s = result["stats"]
@@ -1236,6 +1237,9 @@ def main():
                                 "지정되면 DB 메뉴 테이블 대신 이 파일을 사용합니다.")
     al_parser.add_argument("--skip-menu", action="store_true",
                            help="Skip menu load entirely (menu columns left blank)")
+    al_parser.add_argument("--menu-only", action="store_true",
+                           help="Program Detail 에 메뉴 매칭된 endpoint 만 표시. "
+                                "매칭 안 된 endpoint 는 Unmatched Controllers 섹션으로 분리.")
     al_parser.add_argument("--patterns",
                            help="Path to patterns.yaml (LLM 이 생성한 프로젝트 패턴 파일). "
                                 "discover-patterns 로 생성하거나 수동 작성. 지정하면 "
