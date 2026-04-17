@@ -333,6 +333,18 @@ Java/Spring/Vert.x/**Nexcore** + MyBatis/**iBatis** + React/**Polymer** + 메뉴
 폴더는 자동으로 제외됩니다 (`target` / `build` / `bin` 등 빌드 산출물
 이름은 제외하지 않음 — 실제 프로젝트 폴더일 수 있어 `_is_sql_mapper` 가 별도로 필터링).
 
+> **Windows 사용자 주의** (PowerShell / cmd)
+>
+> 아래 예시의 `\` 줄바꿈은 bash/zsh 전용입니다. 그대로 복붙하면 안 됩니다.
+> - **PowerShell**: `\` 를 백틱 `` ` `` 으로 바꿉니다 (백틱 뒤에 공백이 없어야 함). em-dash(`—`)는 단항 연산자로 오해되니 반드시 일반 하이픈만 사용.
+> - **cmd.exe**: `\` 를 `^` 로 바꿉니다.
+> - 가장 안전한 건 **한 줄로 붙이기**. 예:
+>   ```powershell
+>   python main.py discover-patterns --backend-dir C:\work\backend --menu-md input\menu.md --frontends-root C:\work\frontend
+>   ```
+> - `python` 이 경로에 없으면 `py -m` 또는 `py main.py ...` 로 대체.
+> - Excel 에 DRM 이 걸려 열리지 않을 땐 `--menu-xlsx` 대신 `--menu-md input/menu_template.md` 사용.
+
 **Step 1 — 패턴 발견 (프로젝트당 1회, LLM 필요)**
 
 프로젝트 소스를 샘플링해 LLM 이 프레임워크 패턴을 자동으로 분석합니다.
