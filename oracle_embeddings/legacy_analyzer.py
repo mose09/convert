@@ -958,7 +958,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    rfc_depth: int = 2,
                    frontend_framework: str | None = None,
                    patterns: dict | None = None,
-                   frontends_root: bool = False) -> dict:
+                   frontends_root: bool = False,
+                   menu_only: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1123,20 +1124,35 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     rows = []
     unmatched = []
     controller_urls = set()
+    skipped_no_menu = 0
 
     # Iterate every controller endpoint
     for controller in indexes["controllers_by_fqcn"].values():
         if controller.get("abstract"):
             continue
         class_paths = _inherit_class_paths(controller, indexes["controllers_by_fqcn"])
-        # Expand class-path×method-path combinations (endpoints already have
-        # full_url built from the current class_paths). For inherited case,
-        # we re-extract with the parent's class path by prefixing.
         endpoints = controller.get("endpoints") or []
         for ep in endpoints:
             key = normalize_url(ep["full_url"])
             controller_urls.add(key)
             menu_entry = menu_url_index.get(key)
+
+            # menu_only optimization: skip expensive chain resolution
+            # for endpoints that don't match any menu URL.
+            if menu_only and not menu_entry:
+                skipped_no_menu += 1
+                unmatched.append({
+                    "backend_project": base_dirs.get("backend_project", ""),
+                    "backend_framework": base_dirs.get("backend_framework", ""),
+                    "program_name": ep["method_name"],
+                    "http_method": ep["http_method"],
+                    "url": ep["full_url"],
+                    "file_name": controller["filepath"],
+                    "controller_class": controller["fqcn"],
+                    "matched": False,
+                })
+                continue
+
             react_file = (react_url_map.get(key) or {}).get("file_path", "")
             row = _build_row(
                 ep, controller, indexes, mybatis_idx,
@@ -1145,6 +1161,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             rows.append(row)
             if not row["matched"]:
                 unmatched.append(row)
+
+    if skipped_no_menu:
+        print(f"  menu-only: skipped {skipped_no_menu} non-matching endpoints "
+              f"(chain resolution saved)")
 
     orphan_menus = []
     for key, m in menu_url_index.items():
@@ -1241,7 +1261,8 @@ def analyze_legacy_batch(backends_root: str,
                         include_all: bool = False,
                         frontend_framework: str | None = None,
                         patterns: dict | None = None,
-                        frontends_root: bool = False) -> dict:
+                        frontends_root: bool = False,
+                        menu_only: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1272,6 +1293,7 @@ def analyze_legacy_batch(backends_root: str,
             frontend_framework=frontend_framework,
             patterns=patterns,
             frontends_root=frontends_root,
+            menu_only=menu_only,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

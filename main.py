@@ -1039,6 +1039,8 @@ def cmd_analyze_legacy(args):
         print(f"  Loading patterns: {args.patterns}")
         loaded_patterns = load_patterns(args.patterns)
 
+    menu_only = getattr(args, "menu_only", False)
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -1049,6 +1051,7 @@ def cmd_analyze_legacy(args):
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
+            menu_only=menu_only,
         )
     else:
         result = analyze_legacy(
@@ -1059,11 +1062,11 @@ def cmd_analyze_legacy(args):
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
+            menu_only=menu_only,
         )
 
     print("\n=== Step 3: Writing report ===")
     fmt = args.format
-    menu_only = getattr(args, "menu_only", False)
     md_path = None
     xlsx_path = None
     if result.get("is_batch"):
