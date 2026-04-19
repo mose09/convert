@@ -14,15 +14,32 @@ logger = logging.getLogger(__name__)
 
 
 def load_config(config_path: str) -> dict:
-    """Load YAML config and resolve environment variable references."""
+    """Load YAML config and resolve ``${VAR}`` references from env.
+
+    Unresolved placeholders are replaced with empty strings (and a
+    warning is printed) so downstream callers never accidentally ship a
+    literal ``${LLM_MODEL}`` to an API client.
+    """
     with open(config_path, "r", encoding="utf-8") as f:
         content = f.read()
 
+    missing = []
+
     def replace_env(match):
         var_name = match.group(1)
-        return os.environ.get(var_name, match.group(0))
+        value = os.environ.get(var_name)
+        if value is None:
+            missing.append(var_name)
+            return ""
+        return value
 
     content = re.sub(r"\$\{(\w+)\}", replace_env, content)
+    if missing:
+        uniq = sorted(set(missing))
+        print(
+            f"  [경고] config.yaml 의 환경변수 {uniq} 미정의 — .env 가 로드됐는지 확인. "
+            f"빈 값으로 대체됩니다."
+        )
     return yaml.safe_load(content)
 
 
@@ -898,6 +915,7 @@ def cmd_convert_menu(args):
     """메뉴 Excel / 붙여넣기 텍스트 → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)."""
     from oracle_embeddings.menu_converter import convert_menu
 
+    load_dotenv()
     config = load_config(args.config) if os.path.exists(args.config) else {}
 
     xlsx = getattr(args, "menu_xlsx", None)
@@ -928,6 +946,7 @@ def cmd_discover_patterns(args):
     """Discover project-specific patterns using LLM."""
     from oracle_embeddings.legacy_pattern_discovery import discover_patterns, save_patterns
 
+    load_dotenv()
     config = load_config(args.config) if os.path.exists(args.config) else {}
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
