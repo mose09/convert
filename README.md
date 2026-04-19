@@ -378,7 +378,18 @@ python main.py convert-menu --menu-xlsx C:\work\menu.xlsx --sheet "Sheet1" --out
 
 # 폐쇄망 / 오프라인 (LLM 없이 헤더 synonym heuristic 만 사용)
 python main.py convert-menu --menu-xlsx C:\work\menu.xlsx --no-llm --output input\menu.md
+
+# DRM 걸린 xlsx 대안: 뷰어에서 셀 전체를 복사해 .md / .txt / .tsv 로 붙여
+# 넣은 뒤 --menu-md-in 으로 지정. 파이프 테이블·TSV·CSV 자동 감지.
+python main.py convert-menu `
+  --menu-md-in C:\work\menu_paste.md `
+  --output input\menu.md
 ```
+
+**DRM 우회 팁**: 원본 xlsx 가 DRM 으로 openpyxl 에서 안 열릴 때는 Excel
+뷰어에서 메뉴 표 영역을 선택→복사 한 뒤 VSCode 나 메모장에 붙여넣고
+`.md` 로 저장하면 됩니다. 기본은 TSV(탭 구분) 로 붙고, 원하면 직접
+파이프 테이블(``| a | b | c |``) 로 바꿔 써도 동일하게 인식합니다.
 
 변환된 `menu.md` 를 이후 Step 1 (`discover-patterns --menu-md ...`) 과
 analyze-legacy 양쪽에서 그대로 사용합니다.

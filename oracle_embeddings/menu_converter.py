@@ -59,6 +59,69 @@ def _load_sheet(xlsx_path: str, sheet_name: str | None = None):
     return best
 
 
+def _load_rows_from_text(text_path: str) -> list[list]:
+    """Load a pasted menu table from a text file — DRM-safe alternative.
+
+    User flow: open DRM-locked Excel in the viewer, select all cells,
+    copy, paste into a ``.md`` or ``.txt`` file, run convert-menu on it.
+
+    Format auto-detection (looking at the densest delimiter across lines):
+      - Markdown pipe table: ``| a | b | c |`` (separator row ``|---|`` skipped)
+      - TSV: tab-delimited (most common when copy/pasting from Excel)
+      - CSV: comma-delimited (fallback)
+
+    Returns a rectangular list-of-lists (padded with empty strings).
+    """
+    with open(text_path, "r", encoding="utf-8") as f:
+        raw_lines = [ln.rstrip("\r\n") for ln in f.readlines()]
+
+    # Skip leading blank / non-table prose lines (e.g. "# 제목").
+    # A "table-like" line carries at least 2 of {|, \t, ,}.
+    def _is_tableish(ln: str) -> bool:
+        return (ln.count("|") + ln.count("\t") + ln.count(",")) >= 2
+
+    table_lines = [ln for ln in raw_lines if ln.strip() and _is_tableish(ln)]
+    if not table_lines:
+        return []
+
+    # Pick the delimiter with the highest *per-line* average across the
+    # table-looking lines. Pipe beats tab beats comma when tied.
+    def _avg(ch: str) -> float:
+        return sum(ln.count(ch) for ln in table_lines) / len(table_lines)
+    pipe_score = _avg("|")
+    tab_score = _avg("\t")
+    comma_score = _avg(",")
+
+    rows: list[list] = []
+    if pipe_score >= 2 and pipe_score >= tab_score:
+        # Markdown pipe table
+        for ln in table_lines:
+            # drop outer pipes, skip separator rows like |---|---|
+            stripped = ln.strip().strip("|")
+            cells = [c.strip() for c in stripped.split("|")]
+            if all(c.replace("-", "").replace(":", "") == "" for c in cells):
+                continue
+            rows.append(cells)
+    elif tab_score >= 1 and tab_score >= comma_score:
+        # TSV
+        for ln in table_lines:
+            rows.append([c.strip() for c in ln.split("\t")])
+    else:
+        # CSV
+        import csv as _csv
+        from io import StringIO
+        reader = _csv.reader(StringIO("\n".join(table_lines)))
+        for cells in reader:
+            rows.append([c.strip() for c in cells])
+
+    # Pad to the longest row for safe indexing downstream.
+    n_cols = max((len(r) for r in rows), default=0)
+    for r in rows:
+        if len(r) < n_cols:
+            r.extend([""] * (n_cols - len(r)))
+    return rows
+
+
 def _forward_fill_merged(ws) -> list[list]:
     """Return rows with merged cells forward-filled.
 
@@ -506,20 +569,35 @@ def _md_escape(s: str) -> str:
 # ── Public entry point ───────────────────────────────────────────
 
 
-def convert_menu(xlsx_path: str, output_path: str, config: dict,
+def convert_menu(xlsx_path: str | None, output_path: str, config: dict,
                   sheet_name: str | None = None,
-                  use_llm: bool = True) -> str:
-    """Convert an arbitrary menu xlsx to the standard ``menu.md`` template.
+                  use_llm: bool = True,
+                  text_path: str | None = None) -> str:
+    """Convert an arbitrary menu source to the standard ``menu.md`` template.
+
+    Exactly one of ``xlsx_path`` / ``text_path`` must be provided.
+    ``text_path`` lets users work around DRM-locked xlsx by copy-pasting
+    the visible cells into a ``.md`` / ``.txt`` / ``.tsv`` file; the
+    parser auto-detects pipe-table, TSV, or CSV shape.
 
     Returns the absolute path of the emitted ``.md`` file.
     """
-    print(f"=== Step 1: Loading {xlsx_path} ===")
-    ws = _load_sheet(xlsx_path, sheet_name)
-    print(f"  Sheet: {ws.title}")
+    if bool(xlsx_path) == bool(text_path):
+        raise ValueError("xlsx_path 와 text_path 중 정확히 하나만 지정하세요.")
 
-    rows_raw = _forward_fill_merged(ws)
+    if xlsx_path:
+        print(f"=== Step 1: Loading {xlsx_path} ===")
+        ws = _load_sheet(xlsx_path, sheet_name)
+        print(f"  Sheet: {ws.title}")
+        rows_raw = _forward_fill_merged(ws)
+        source_name = os.path.basename(xlsx_path)
+    else:
+        print(f"=== Step 1: Loading {text_path} (DRM-friendly text paste) ===")
+        rows_raw = _load_rows_from_text(text_path)
+        source_name = os.path.basename(text_path)
+        print(f"  Parsed rows: {len(rows_raw)} ({max((len(r) for r in rows_raw), default=0)} columns)")
     if not rows_raw:
-        raise ValueError("빈 시트입니다.")
+        raise ValueError("빈 입력입니다.")
     header_idx = _detect_header_row(rows_raw)
     headers = [_clean(c) for c in rows_raw[header_idx][: _MAX_COLS]]
     print(f"  Detected header row: {header_idx} ({len([h for h in headers if h])} non-empty columns)")
@@ -567,7 +645,7 @@ def convert_menu(xlsx_path: str, output_path: str, config: dict,
     print(f"  Emitted rows: {len(entries)}")
 
     print("\n=== Step 4: Writing menu.md ===")
-    md = _emit_menu_md(entries, os.path.basename(xlsx_path))
+    md = _emit_menu_md(entries, source_name)
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(md)

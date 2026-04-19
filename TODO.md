@@ -1,3 +1,14 @@
+# TODO: convert-menu 에 DRM 우회용 텍스트 입력(--menu-md-in) 추가 (완료)
+
+- [x] `menu_converter._load_rows_from_text` 신규: 파이프 테이블 / TSV / CSV 자동 감지 + 행 파싱
+- [x] `convert_menu(..., text_path=...)` 분기 + xlsx/text 상호 배타 검증
+- [x] `main.py convert-menu --menu-md-in <path>` CLI 인자
+- [x] mock 2종 (파이프 테이블 / TSV 붙여넣기) 로 0-base depth_column 변환 통과, xlsx 회귀 유지
+- [x] README Step 0 에 DRM 우회 예시·설명 추가
+- [x] 커밋 & 푸시
+
+---
+
 # TODO: convert-menu 커맨드 — LLM 기반 메뉴 Excel → 표준 menu.md 변환 (완료)
 
 - [x] `oracle_embeddings/menu_converter.py` 신규: merged cell forward-fill, 헤더 라인 탐지, LLM 1회 매핑(구조화 JSON 검증), heuristic fallback, 3 mode (columns_per_level / depth_column / path_column) emit

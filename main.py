@@ -895,20 +895,30 @@ def cmd_erd_md(args):
 
 
 def cmd_convert_menu(args):
-    """메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)."""
+    """메뉴 Excel / 붙여넣기 텍스트 → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)."""
     from oracle_embeddings.menu_converter import convert_menu
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
 
-    if not os.path.isfile(args.menu_xlsx):
-        print(f"Error: Menu xlsx not found: {args.menu_xlsx}")
+    xlsx = getattr(args, "menu_xlsx", None)
+    text = getattr(args, "menu_md_in", None)
+    if not xlsx and not text:
+        print("Error: --menu-xlsx 또는 --menu-md-in 중 하나를 지정하세요.")
+        return
+    if xlsx and text:
+        print("Error: --menu-xlsx 와 --menu-md-in 은 동시에 지정할 수 없습니다.")
+        return
+    source = xlsx or text
+    if not os.path.isfile(source):
+        print(f"Error: 입력 파일 없음: {source}")
         return
 
     output = args.output or "input/menu.md"
     abs_path = convert_menu(
-        args.menu_xlsx, output, config,
+        xlsx, output, config,
         sheet_name=args.sheet,
         use_llm=not args.no_llm,
+        text_path=text,
     )
     print(f"\nMenu Markdown 저장됨: {abs_path}")
     print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
@@ -1294,13 +1304,18 @@ def main():
     # convert-menu command
     cm_parser = subparsers.add_parser(
         "convert-menu",
-        help="임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)")
-    cm_parser.add_argument("--menu-xlsx", required=True,
-                           help="변환할 메뉴 Excel 파일 경로")
+        help="임의 양식의 메뉴 소스 → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습)")
+    cm_parser.add_argument("--menu-xlsx",
+                           help="변환할 메뉴 Excel 파일 경로 (DRM 없을 때)")
+    cm_parser.add_argument("--menu-md-in",
+                           help="DRM 우회용: Excel 셀을 복사해 붙여넣은 텍스트 "
+                                "파일 (.md / .txt / .tsv). 파이프 테이블·TSV·CSV "
+                                "자동 감지")
     cm_parser.add_argument("--output",
                            help="출력 menu.md 경로 (기본: input/menu.md)")
     cm_parser.add_argument("--sheet",
-                           help="시트명 (미지정 시 가장 내용 많은 시트 자동 선택)")
+                           help="시트명 (--menu-xlsx 때만, 미지정 시 가장 내용 "
+                                "많은 시트 자동 선택)")
     cm_parser.add_argument("--no-llm", action="store_true",
                            help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
 
