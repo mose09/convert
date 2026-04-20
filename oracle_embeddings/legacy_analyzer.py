@@ -619,19 +619,29 @@ def _collect_rfc_transitive(root_fqcns: list[str], indexes: dict,
 
 def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
                          app_slug: str) -> dict | None:
-    """Return the first menu row whose URL yields ``app_slug``.
+    """Return the first menu row whose URL maps to ``app_slug``.
 
-    Used by the 2-hop matcher so endpoints that resolve to a screen in
-    an app bucket can still be attributed to the menu entry that points
-    at the same app, even when direct menu.url↔controller.url comparison
-    fails (the common case when menu URL == app root and controller URL
-    is a REST API).
+    Two matching strategies:
+      1. Structured (preferred): when ``app_key_spec`` is configured,
+         extract slug from each menu URL with :func:`_extract_app_key`
+         and compare.
+      2. Substring fallback: when ``app_key_spec`` is missing/null (LLM
+         couldn't learn it, patterns.yaml hand-edited, etc.), look for
+         the ``app_slug`` string inside the raw menu URL (case-
+         insensitive). Less precise but keeps 2-hop matching useful
+         even without perfect pattern learning.
     """
-    if not menu_rows or not app_key_spec or not app_slug:
+    if not menu_rows or not app_slug:
         return None
     app_slug_lower = app_slug.lower()
+    if app_key_spec:
+        for row in menu_rows:
+            if _extract_app_key(row.get("url", ""), app_key_spec) == app_slug_lower:
+                return row
+        return None
+    # Fallback: raw substring match on the menu URL
     for row in menu_rows:
-        if _extract_app_key(row.get("url", ""), app_key_spec) == app_slug_lower:
+        if app_slug_lower in (row.get("url", "") or "").lower():
             return row
     return None
 
