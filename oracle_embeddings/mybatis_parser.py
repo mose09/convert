@@ -365,12 +365,33 @@ def _detect_join_type(sql: str, pos: int) -> str:
     return "INNER JOIN"
 
 
+def _strip_sql_comments(sql: str) -> str:
+    """Remove ``/* ... */`` and ``-- ...`` comments from SQL.
+
+    Comments are replaced with a single space so identifier tokens stay
+    separated (``DELETE/*c*/FROM T`` becomes ``DELETE FROM T``, not
+    ``DELETEFROM T``). Block comments can span lines. String literals
+    are left alone — comments inside quoted strings is exceedingly rare
+    in mybatis mappers and not worth the extra tokenizer complexity.
+    """
+    if not sql:
+        return sql
+    # /* ... */  (non-greedy, multi-line)
+    sql = re.sub(r"/\*[\s\S]*?\*/", " ", sql)
+    # -- to end-of-line
+    sql = re.sub(r"--[^\n]*", " ", sql)
+    return sql
+
+
 def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
     """Analyze which tables are used in which queries and how."""
     usage = {}
 
     for stmt in statements:
-        sql = stmt["sql"].upper()
+        # Strip block / line comments before upper-casing so inline
+        # comments between DML keyword and table name don't hide
+        # identifiers from the regexes below.
+        sql = _strip_sql_comments(stmt["sql"]).upper()
 
         # Extract real table names (not aliases) from FROM/JOIN clauses
         tables = set()
@@ -428,8 +449,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         for m in re.finditer(r'UPDATE\s+(\w+)', sql):
             _add_table(m.group(1))
 
-        # DELETE FROM table
-        for m in re.finditer(r'DELETE\s+FROM\s+(\w+)', sql):
+        # DELETE [FROM] table — Oracle 은 FROM 을 생략 가능하므로 둘 다 허용
+        for m in re.finditer(r'DELETE\s+(?:FROM\s+)?(\w+)', sql):
             _add_table(m.group(1))
 
         # Oracle MERGE: target is ``MERGE INTO <tbl> [alias]``,
