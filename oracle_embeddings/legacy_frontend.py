@@ -277,7 +277,7 @@ def _enumerate_buckets(frontends_root: str) -> list[tuple[str, str]]:
         if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
             continue
         nested_parent = None
-        for rel in ("src/apps", "svc/apps", "apps", "src/pages", "svc/pages", "packages"):
+        for rel in ("src/apps", "apps", "src/pages", "packages"):
             cand = os.path.join(child, rel)
             if os.path.isdir(cand):
                 inner_dirs = [
