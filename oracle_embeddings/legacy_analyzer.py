@@ -621,15 +621,17 @@ def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
                          app_slug: str) -> dict | None:
     """Return the first menu row whose URL maps to ``app_slug``.
 
-    Two matching strategies:
+    Two matching strategies, tried in order:
+
       1. Structured (preferred): when ``app_key_spec`` is configured,
          extract slug from each menu URL with :func:`_extract_app_key`
          and compare.
-      2. Substring fallback: when ``app_key_spec`` is missing/null (LLM
-         couldn't learn it, patterns.yaml hand-edited, etc.), look for
-         the ``app_slug`` string inside the raw menu URL (case-
-         insensitive). Less precise but keeps 2-hop matching useful
-         even without perfect pattern learning.
+      2. Substring fallback: if no structured match (or spec missing),
+         look for the ``app_slug`` string inside the raw menu URL
+         (case-insensitive). This catches cases where the learned
+         ``app_key.index`` is off by one (common LLM mistake) — instead
+         of silently returning no match, we still get a best-effort
+         attribution so 2-hop matching keeps producing useful rows.
     """
     if not menu_rows or not app_slug:
         return None
@@ -638,8 +640,7 @@ def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
         for row in menu_rows:
             if _extract_app_key(row.get("url", ""), app_key_spec) == app_slug_lower:
                 return row
-        return None
-    # Fallback: raw substring match on the menu URL
+        # Structured match failed — fall through to substring below.
     for row in menu_rows:
         if app_slug_lower in (row.get("url", "") or "").lower():
             return row
