@@ -344,13 +344,14 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             strip_patterns=strip_patterns, route_prefix=route_prefix,
         )
         if url_map:
-            annotated = {}
+            # 같은 이름의 inner app 이 여러 repo 에 있을 수 있어 bucket key
+            # 충돌 가능. 기존 bucket 이 있으면 url 단위로 merge (덮어쓰기 금지).
+            existing = by_frontend.setdefault(entry_lower, {})
             for key, val in url_map.items():
                 tagged = dict(val)
                 tagged["frontend_name"] = entry
-                annotated[key] = tagged
+                existing.setdefault(key, tagged)
                 merged_map.setdefault(key, tagged)
-            by_frontend[entry_lower] = annotated
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
         try:
@@ -360,10 +361,21 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             logger.warning("build_api_url_index %s 실패: %s", entry, e)
             api_idx = {}
         if api_idx:
-            api_by_frontend[entry_lower] = {
-                url: [f"{entry}/{f}" for f in files]
-                for url, files in api_idx.items()
-            }
+            # Merge into existing bucket when same lowercase key already
+            # has entries from another repo. Each URL's file list gets
+            # extended so no call site is lost.
+            bucket = api_by_frontend.setdefault(entry_lower, {})
+            for url, files in api_idx.items():
+                prefixed = [f"{entry}/{f}" for f in files]
+                if url in bucket:
+                    # preserve order while deduping
+                    merged_list = list(bucket[url])
+                    for p in prefixed:
+                        if p not in merged_list:
+                            merged_list.append(p)
+                    bucket[url] = merged_list
+                else:
+                    bucket[url] = prefixed
             logger.info("Frontend sub-project %s: %d api urls", entry, len(api_idx))
             try:
                 trig = extract_button_triggers(child, api_idx, patterns=patterns,
@@ -372,7 +384,16 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                 logger.warning("extract_button_triggers %s 실패: %s", entry, e)
                 trig = {}
             if trig:
-                triggers_by_frontend[entry_lower] = trig
+                tbucket = triggers_by_frontend.setdefault(entry_lower, {})
+                for url, labels in trig.items():
+                    if url in tbucket:
+                        merged_labels = list(tbucket[url])
+                        for lbl in labels:
+                            if lbl not in merged_labels:
+                                merged_labels.append(lbl)
+                        tbucket[url] = merged_labels
+                    else:
+                        tbucket[url] = list(labels)
                 logger.info("Frontend sub-project %s: %d button triggers", entry, len(trig))
 
     overall_fw = detected_frameworks[0] if detected_frameworks else "unknown"
