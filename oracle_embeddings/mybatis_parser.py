@@ -467,21 +467,26 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 aliases_in_stmt.add(alias)
 
         # Oracle comma-style JOIN: FROM T1 [a1], T2 [a2], T3 [a3] [JOIN ... | WHERE | ...]
-        # Strict pattern: require at least one comma and word-only table names
+        # Use finditer so every subquery level's comma-FROM is processed.
+        # Previously `re.search` only caught the first occurrence, so nested
+        # subqueries like:
+        #     ... FROM (SELECT ... FROM A a, B b WHERE ...) x,
+        #         (SELECT ... FROM C a, D b WHERE ...) y
+        # dropped C / D at the inner level.
         comma_tables = []  # preserve order; idx 0 is main, rest are joins
-        # Match: FROM TBL [alias] (, TBL [alias])+ before any non-word-comma content
-        # First capture first table + optional alias
-        strict_from = re.search(
+        for strict_from in re.finditer(
             r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?((?:\s*,\s*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
             sql, re.IGNORECASE,
-        )
-        if strict_from:
+        ):
             first_table = strict_from.group(1)
+            first_alias = strict_from.group(2)
             rest_clause = strict_from.group(3) or ""
-            # first table
             if first_table and first_table.upper() not in SQL_KEYWORDS and first_table not in aliases_in_stmt:
-                comma_tables.append(first_table)
+                if first_table not in comma_tables:
+                    comma_tables.append(first_table)
                 tables.add(first_table)
+                if first_alias and first_alias.upper() not in SQL_KEYWORDS:
+                    aliases_in_stmt.add(first_alias)
             # remaining tables in comma list
             for match in re.finditer(r',\s*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest_clause):
                 tbl = match.group(1)
@@ -490,7 +495,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                     continue
                 if tbl in aliases_in_stmt:
                     continue
-                comma_tables.append(tbl)
+                if tbl not in comma_tables:
+                    comma_tables.append(tbl)
                 tables.add(tbl)
                 if alias and alias.upper() not in SQL_KEYWORDS:
                     aliases_in_stmt.add(alias)
