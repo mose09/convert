@@ -958,6 +958,7 @@ def cmd_discover_patterns(args):
         args.backend_dir, config,
         menu_md=getattr(args, "menu_md", None),
         frontends_root=getattr(args, "frontends_root", None),
+        frontend_dir=getattr(args, "frontend_dir", None),
     )
 
     if args.output:
@@ -1318,7 +1319,14 @@ def main():
                                 "url_prefix_strip / app_key 등 URL 섹션도 추출.")
     dp_parser.add_argument("--frontends-root",
                            help="프론트 멀티 레포 루트 (URL 관례 학습용). 하위 "
-                                "디렉토리명을 app 후보로, 샘플 라우트를 LLM 에 제공.")
+                                "디렉토리명을 app 후보로, 샘플 라우트를 LLM 에 제공. "
+                                "frontend-dir 미지정 시 가장 큰 하위 레포를 "
+                                "프론트 패턴 학습 대표로 자동 선택.")
+    dp_parser.add_argument("--frontend-dir",
+                           help="프론트 패턴 학습용 대표 레포 단일 경로. 29 개 앱 전체를 "
+                                "샘플링하면 프롬프트가 너무 커져 LLM 이 JSON 파싱 실패하므로 "
+                                "대표 하나만 지정하면 안정적. frontends-root 와 같이 쓰면 "
+                                "URL 관례는 root 기준, 프론트 패턴은 이 dir 기준.")
 
     # convert-menu command
     cm_parser = subparsers.add_parser(

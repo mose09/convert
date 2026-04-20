@@ -1,3 +1,16 @@
+# TODO: LLM JSON 파싱 실패 대응 — 2-call 분리 + 대표 레포 지정 (완료)
+
+- [x] `_call_llm` 이 JSON 파싱 실패 시 원본 응답을 `output/legacy_analysis/pattern_llm_raw_<label>.txt` 로 덤프
+- [x] JSON 추출 강화: 코드펜스 없으면 첫 `{` ~ 마지막 `}` 사이를 슬라이스
+- [x] `discover_patterns` 를 2-call 로 분리 — 백엔드 / url+frontend. 한쪽 실패해도 다른 쪽은 진행
+- [x] timeout 180s → 300s 상향
+- [x] `_pick_representative_frontend` 신규: frontends_root 하위에서 가장 큰 레포 자동 선택
+- [x] `--frontend-dir` CLI 인자 추가: 사용자가 명시적으로 대표 레포 지정 가능. 기본은 frontends-root 에서 auto-pick
+- [x] `_sample_frontend_for_pattern` 가 단일 레포만 샘플링 → 29 앱 monorepo 에서도 프롬프트 사이즈 통제
+- [x] smoke: LLM down 상태에서도 url heuristic + frontend 기본값으로 patterns.yaml 산출
+
+---
+
 # TODO: 2홉 매칭 (Menu → Frontend → API call → Controller) + frontend 패턴 LLM 학습 (완료)
 
 - [x] `legacy_pattern_discovery._DEFAULT_PATTERNS`에 `frontend` 섹션 (router_files / route_library / api_call_methods / api_url_const_files / button_components / button_label_props)

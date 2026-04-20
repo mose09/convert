@@ -352,23 +352,72 @@ _FRONTEND_PROMPT = """
 """
 
 
+def _pick_representative_frontend(frontends_root: str | None) -> str | None:
+    """Return the path of the "most representative" sub-repo under
+    ``frontends_root``, or ``None`` if not available.
+
+    Heuristic: pick the immediate child with the largest count of
+    ``.js/.jsx/.ts/.tsx`` files. That bucket typically holds the most
+    routes / components so LLM samples from there are more useful than
+    from a tiny stub app. First-wins on ties.
+    """
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return None
+    best = None
+    best_score = -1
+    for entry in sorted(os.listdir(frontends_root)):
+        child = os.path.join(frontends_root, entry)
+        if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
+            continue
+        score = 0
+        for root, dirs, names in os.walk(child):
+            dirs[:] = [d for d in dirs if d not in {"node_modules", "build", "dist", ".git"}]
+            for n in names:
+                if n.endswith((".js", ".jsx", ".ts", ".tsx")):
+                    score += 1
+            if score > 200:  # enough signal; stop early
+                break
+        if score > best_score:
+            best_score = score
+            best = child
+    return best
+
+
 def _sample_frontend_for_pattern(frontends_root: str | None,
+                                  frontend_dir: str | None = None,
                                   per_dir_router: int = 2,
                                   per_dir_comp: int = 3,
-                                  total_comp: int = 20) -> tuple[list[dict], list[dict], list[dict]]:
+                                  total_comp: int = 12) -> tuple[list[dict], list[dict], list[dict]]:
     """Return ``(packages, router_samples, component_samples)`` for LLM.
 
-    * packages        : ``[{frontend_name, deps: {react-router-dom: ^6.0, ...}}]``
-    * router_samples  : ``[{frontend_name, file, snippet}]`` (up to per_dir_router per bucket)
-    * component_samples : ``[{frontend_name, file, snippet}]`` (up to per_dir_comp per bucket, API/버튼 있는 것 위주)
+    If ``frontend_dir`` is given, that **single** repo is sampled (explicit
+    representative). Otherwise when ``frontends_root`` is given the helper
+    auto-picks the largest sub-repo as a representative via
+    :func:`_pick_representative_frontend` — scanning 29 repos blows up the
+    prompt without added learning value since conventions are usually
+    shared.
 
-    Snippets are trimmed to ~1500 chars to keep the prompt manageable even
-    on 30+ app monorepos.
+    * packages        : ``[{frontend_name, deps: {react-router-dom: ^6.0, ...}}]``
+    * router_samples  : ``[{frontend_name, file, snippet}]`` (up to per_dir_router)
+    * component_samples : ``[{frontend_name, file, snippet}]`` (up to per_dir_comp, API/버튼 있는 것 위주)
+
+    Snippets are trimmed to ~1500 chars to keep the prompt manageable.
     """
     packages: list[dict] = []
     router_samples: list[dict] = []
     component_samples: list[dict] = []
-    if not frontends_root or not os.path.isdir(frontends_root):
+
+    # Resolve which dir(s) to sample.
+    target_dirs: list[tuple[str, str]] = []  # (frontend_name, abs_path)
+    if frontend_dir and os.path.isdir(frontend_dir):
+        name = os.path.basename(os.path.normpath(frontend_dir))
+        target_dirs.append((name, frontend_dir))
+    elif frontends_root and os.path.isdir(frontends_root):
+        rep = _pick_representative_frontend(frontends_root)
+        if rep:
+            target_dirs.append((os.path.basename(rep), rep))
+
+    if not target_dirs:
         return packages, router_samples, component_samples
 
     import re as _re
@@ -382,11 +431,7 @@ def _sample_frontend_for_pattern(frontends_root: str | None,
                   _re.compile(r"\b\w+\s*\.\s*(?:get|post|put|patch|delete)\s*\("),
                   _re.compile(r"<button\b|<Button\b"))
 
-    for entry in sorted(os.listdir(frontends_root)):
-        child = os.path.join(frontends_root, entry)
-        if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
-            continue
-
+    for entry, child in target_dirs:
         # package.json
         pkg_path = os.path.join(child, "package.json")
         if os.path.isfile(pkg_path):
@@ -599,11 +644,17 @@ def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
     return merged
 
 
-def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
+def _call_llm(prompt: str, config: dict, max_retries: int = 2,
+              label: str = "patterns") -> dict:
     """Send prompt to the LLM and parse the JSON response.
 
     Uses ``PATTERN_LLM_*`` env vars first (coding-model recommended),
     falls back to generic ``LLM_*`` / ``config.yaml`` ``llm`` section.
+
+    On JSON parse failure the raw response is written to
+    ``output/legacy_analysis/pattern_llm_raw_<label>.txt`` so the
+    operator can inspect what the model actually returned (truncation,
+    prose leakage, invalid syntax, etc.).
     """
     from openai import OpenAI
 
@@ -622,7 +673,9 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
 
     print(f"  LLM model: {model} (PATTERN_LLM_MODEL 또는 LLM_MODEL)")
     print(f"  LLM endpoint: {api_base}")
+    print(f"  LLM request: {label} (prompt {len(prompt)} chars)")
 
+    last_text = ""
     for attempt in range(max_retries + 1):
         try:
             response = client.chat.completions.create(
@@ -632,29 +685,57 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2) -> dict:
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
-                timeout=180,
+                timeout=300,
             )
-            text = response.choices[0].message.content.strip()
+            last_text = response.choices[0].message.content.strip()
+            text = last_text
 
-            # Extract JSON from markdown code block if present
+            # Extract first fenced JSON block if present
             json_match = re.search(r'```(?:json)?\s*([\s\S]*?)```', text)
             if json_match:
                 text = json_match.group(1).strip()
+            else:
+                # No fence — try to slice from first `{` to last `}`.
+                first = text.find("{")
+                last = text.rfind("}")
+                if first != -1 and last != -1 and last > first:
+                    text = text[first:last + 1]
 
             return json.loads(text)
-        except json.JSONDecodeError:
+        except json.JSONDecodeError as je:
             wait = 2 ** (attempt + 1)
             if attempt < max_retries:
-                logger.warning("LLM returned invalid JSON (attempt %d), retrying in %ds...",
-                             attempt + 1, wait)
+                logger.warning("LLM returned invalid JSON for %s (attempt %d: %s), retrying in %ds...",
+                             label, attempt + 1, je, wait)
                 time.sleep(wait)
             else:
-                logger.error("Failed to parse LLM response after %d attempts", max_retries + 1)
+                logger.error("Failed to parse LLM response for %s after %d attempts",
+                             label, max_retries + 1)
+                _dump_raw_response(last_text, label)
         except Exception as e:
-            logger.error("LLM call failed: %s", e)
+            logger.error("LLM call failed for %s: %s", label, e)
+            if last_text:
+                _dump_raw_response(last_text, label)
             break
 
     return {}
+
+
+def _dump_raw_response(text: str, label: str) -> None:
+    """Write the raw LLM response to ``output/legacy_analysis/pattern_llm_raw_<label>.txt``.
+
+    Silently skipped if the target dir can't be created — this is a best-
+    effort debug aid, not a hard requirement.
+    """
+    try:
+        outdir = os.path.join("output", "legacy_analysis")
+        os.makedirs(outdir, exist_ok=True)
+        path = os.path.join(outdir, f"pattern_llm_raw_{label}.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text or "(empty response)")
+        logger.error("  원본 LLM 응답 저장: %s (JSON 파싱 실패 원인 확인용)", path)
+    except Exception:
+        pass
 
 
 # ── Pattern file I/O ──────────────────────────────────────────────
@@ -795,13 +876,24 @@ def load_patterns(yaml_path: str) -> dict:
 
 def discover_patterns(backend_dir: str, config: dict,
                        menu_md: str | None = None,
-                       frontends_root: str | None = None) -> dict:
+                       frontends_root: str | None = None,
+                       frontend_dir: str | None = None) -> dict:
     """Scan backend sources and use LLM to discover project patterns.
 
-    When ``menu_md`` and/or ``frontends_root`` are provided, also samples
-    menu URLs + frontend directory names + React/Polymer raw routes,
-    appends a URL-convention section to the LLM prompt, and emits the
-    result under the top-level ``url`` key in the returned patterns dict.
+    When ``menu_md`` and/or ``frontends_root`` / ``frontend_dir`` are
+    provided, also samples menu URLs + frontend sources for URL and
+    frontend conventions (emitted under ``url`` and ``frontend`` keys).
+
+    For monorepos the ``frontend_dir`` (single representative repo) is
+    preferred — scanning every sub-project blows up the LLM prompt
+    without additional learning value since conventions are shared. If
+    only ``frontends_root`` is given, the largest sub-repo is auto-
+    picked as representative.
+
+    The LLM is called **twice**: once for backend patterns, once for
+    url + frontend. This keeps each request's prompt and response under
+    typical model context limits and makes partial success useful (e.g.
+    backend learned but frontend failed).
 
     Returns the patterns dict (also suitable for ``save_patterns``).
     """
@@ -815,10 +907,10 @@ def discover_patterns(backend_dir: str, config: dict,
         print("  No classes found. Returning defaults.")
         return dict(_DEFAULT_PATTERNS)
 
-    print("\n=== Step 2: Building LLM prompt ===")
-    prompt = _build_prompt(classes)
+    print("\n=== Step 2: Building LLM prompts ===")
+    backend_prompt = _build_prompt(classes)
     sample_count = len(_sample_classes(classes))
-    print(f"  Sampled {sample_count} classes for LLM analysis")
+    print(f"  Sampled {sample_count} classes for backend analysis")
 
     # URL-convention sampling (optional)
     menu_urls = _sample_menu_urls(menu_md)
@@ -826,50 +918,65 @@ def discover_patterns(backend_dir: str, config: dict,
     want_url = bool(menu_urls or dir_names or react_routes)
     heuristic_url = _heuristic_url_section(menu_urls, dir_names) if want_url else {}
     if want_url:
-        prompt = prompt + _build_url_prompt(menu_urls, dir_names, react_routes)
         print(f"  URL samples: menu={len(menu_urls)} dirs={len(dir_names)} "
               f"routes={len(react_routes)}")
 
-    # Frontend-pattern sampling (optional, same trigger as URL)
-    fe_packages, fe_routers, fe_components = _sample_frontend_for_pattern(frontends_root)
+    # Frontend-pattern sampling (optional). Single representative repo —
+    # explicit `frontend_dir` wins; otherwise pick largest child of root.
+    fe_packages, fe_routers, fe_components = _sample_frontend_for_pattern(
+        frontends_root=frontends_root, frontend_dir=frontend_dir,
+    )
     want_fe = bool(fe_packages or fe_routers or fe_components)
     heuristic_fe = _heuristic_frontend_section(fe_packages, fe_routers, fe_components) if want_fe else {}
     if want_fe:
-        prompt = prompt + _build_frontend_prompt(fe_packages, fe_routers, fe_components)
+        reps = sorted({p["frontend_name"] for p in fe_packages} |
+                      {s["frontend_name"] for s in fe_routers} |
+                      {s["frontend_name"] for s in fe_components})
+        print(f"  Frontend representative repo(s): {reps}")
         print(f"  Frontend samples: packages={len(fe_packages)} routers={len(fe_routers)} "
               f"components={len(fe_components)}")
 
-    print("\n=== Step 3: Calling LLM ===")
-    llm_result = _call_llm(prompt, config)
+    # ── LLM call 1: backend patterns ──
+    print("\n=== Step 3: Calling LLM — backend patterns ===")
+    llm_backend = _call_llm(backend_prompt, config, label="backend")
 
-    if not llm_result:
-        print("  LLM call failed. Returning defaults.")
-        patterns = dict(_DEFAULT_PATTERNS)
+    # ── LLM call 2: url + frontend (optional) ──
+    llm_url_fe: dict = {}
+    if want_url or want_fe:
+        print("\n=== Step 4: Calling LLM — url / frontend patterns ===")
+        # Build a focused prompt that contains *only* the URL + FE
+        # sections. Omit backend samples to keep tokens tight.
+        secondary = "프로젝트의 URL 관례와 프론트엔드 패턴을 추출해 주세요. 응답에는 `url` 과 `frontend` 두 키만 포함합니다.\n"
         if want_url:
-            patterns["url"] = _merge_url_section(None, heuristic_url)
-            print(f"  URL 섹션 heuristic fallback 적용")
+            secondary += _build_url_prompt(menu_urls, dir_names, react_routes)
         if want_fe:
-            patterns["frontend"] = _merge_frontend_section(None, heuristic_fe)
-            print(f"  Frontend 섹션 heuristic fallback 적용")
-        return patterns
+            secondary += _build_frontend_prompt(fe_packages, fe_routers, fe_components)
+        llm_url_fe = _call_llm(secondary, config, label="url_frontend")
 
-    # Merge LLM result with defaults
-    patterns = dict(_DEFAULT_PATTERNS)
+    if not llm_backend:
+        print("  Backend LLM call failed. Returning backend defaults; url/frontend continue if available.")
+        patterns = dict(_DEFAULT_PATTERNS)
+    else:
+        patterns = dict(_DEFAULT_PATTERNS)
+        for key, value in llm_backend.items():
+            if value is None:
+                continue
+            if key in patterns and key not in ("url", "frontend"):
+                patterns[key] = value
+
+    # URL / frontend merge (uses llm_url_fe + heuristic fallback).
     patterns["url"] = dict(_DEFAULT_URL_SECTION)
     patterns["frontend"] = dict(_DEFAULT_FRONTEND_SECTION)
-    for key, value in llm_result.items():
-        if value is None:
-            continue
-        if key == "url" and isinstance(value, dict):
-            patterns["url"] = _merge_url_section(value, heuristic_url)
-        elif key == "frontend" and isinstance(value, dict):
-            patterns["frontend"] = _merge_frontend_section(value, heuristic_fe)
-        elif key in patterns:
-            patterns[key] = value
-    if want_url and patterns["url"] == _DEFAULT_URL_SECTION:
-        patterns["url"] = _merge_url_section(None, heuristic_url)
-    if want_fe and patterns["frontend"] == _DEFAULT_FRONTEND_SECTION:
-        patterns["frontend"] = _merge_frontend_section(None, heuristic_fe)
+    if want_url:
+        patterns["url"] = _merge_url_section(
+            (llm_url_fe or {}).get("url") if isinstance(llm_url_fe, dict) else None,
+            heuristic_url,
+        )
+    if want_fe:
+        patterns["frontend"] = _merge_frontend_section(
+            (llm_url_fe or {}).get("frontend") if isinstance(llm_url_fe, dict) else None,
+            heuristic_fe,
+        )
 
     print(f"\n=== Discovered patterns ===")
     print(f"  Framework type:          {patterns['framework_type']}")
@@ -885,7 +992,7 @@ def discover_patterns(backend_dir: str, config: dict,
         print(f"  Notes:                   {patterns['notes']}")
 
     if want_url:
-        print(f"\n=== Step 4: URL conventions ===")
+        print(f"\n=== Step 5: URL conventions ===")
         url = patterns["url"]
         print(f"  url_prefix_strip:        {url.get('url_prefix_strip')}")
         print(f"  react_route_prefix:      {url.get('react_route_prefix')}")
@@ -893,7 +1000,7 @@ def discover_patterns(backend_dir: str, config: dict,
         print(f"  app_key:                 {url.get('app_key')}")
 
     if want_fe:
-        print(f"\n=== Step 5: Frontend conventions ===")
+        print(f"\n=== Step 6: Frontend conventions ===")
         fe = patterns["frontend"]
         print(f"  route_library:           {fe.get('route_library')}")
         print(f"  router_files:            {fe.get('router_files')}")
