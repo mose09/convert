@@ -1,3 +1,17 @@
+# TODO: 2홉 매칭 (Menu → Frontend → API call → Controller) + frontend 패턴 LLM 학습 (완료)
+
+- [x] `legacy_pattern_discovery._DEFAULT_PATTERNS`에 `frontend` 섹션 (router_files / route_library / api_call_methods / api_url_const_files / button_components / button_label_props)
+- [x] `discover-patterns` 가 `--frontends-root` 주어졌을 때 프론트 샘플(package.json, 라우터 후보, 대표 컴포넌트) 을 LLM 에 추가로 던져 `frontend` 섹션 채움
+- [x] heuristic fallback: deps 에서 react-router-dom 버전 / 파일명 컨벤션으로 router_files 추정
+- [x] `oracle_embeddings/legacy_react_api_scanner.py` 신규 — React 소스에서 API URL 호출 추출 + URL 상수 2-pass + 템플릿 리터럴 정규화 + onClick 핸들러→라벨→URL 페어링
+- [x] `build_frontend_url_map_multi` 5-tuple 로 확장: `(merged_map, framework, by_frontend, api_by_frontend, triggers_by_frontend)`
+- [x] `legacy_analyzer` 매칭 재설계: endpoint.url 로 api_by_frontend lookup → 해당 app 의 메뉴로 귀속 (virtual matching)
+- [x] `_build_row` 에 `frontend_trigger` (버튼 라벨) 필드 추가 + 레포트 컬럼 추가
+- [x] mock 통과: menu → app_slug → React 파일 → API 호출 → controller, `Endpoints: 2 (matched: 2)` + `Trigger=조회; 초기화`. 기존 `mock_this` 회귀 정상 (NO_MENU 레이아웃 유지)
+- [x] conventional commit + `claude/push-previous-changes-4P5x8` push
+
+---
+
 # TODO: convert-menu 에 DRM 우회용 텍스트 입력(--menu-md-in) 추가 (완료)
 
 - [x] `menu_converter._load_rows_from_text` 신규: 파이프 테이블 / TSV / CSV 자동 감지 + 행 파싱

@@ -617,6 +617,25 @@ def _collect_rfc_transitive(root_fqcns: list[str], indexes: dict,
     return sorted(rfc_names)
 
 
+def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
+                         app_slug: str) -> dict | None:
+    """Return the first menu row whose URL yields ``app_slug``.
+
+    Used by the 2-hop matcher so endpoints that resolve to a screen in
+    an app bucket can still be attributed to the menu entry that points
+    at the same app, even when direct menu.url↔controller.url comparison
+    fails (the common case when menu URL == app root and controller URL
+    is a REST API).
+    """
+    if not menu_rows or not app_key_spec or not app_slug:
+        return None
+    app_slug_lower = app_slug.lower()
+    for row in menu_rows:
+        if _extract_app_key(row.get("url", ""), app_key_spec) == app_slug_lower:
+            return row
+    return None
+
+
 def _extract_app_key(raw_url: str, app_key_spec: dict | None) -> str:
     """Pull the app identifier out of a raw menu URL per ``app_key_spec``.
 
@@ -955,7 +974,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                react_file: str | None, base_dirs: dict,
                rfc_depth: int = 2,
                menu_raw_url: str = "",
-               react_entry: dict | None = None) -> dict:
+               react_entry: dict | None = None,
+               frontend_trigger: str = "") -> dict:
     """Assemble a single program-row dict for one controller endpoint.
 
     Resolution runs against the **controller method's own body** when
@@ -1001,7 +1021,16 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "url": endpoint["full_url"],
         "file_name": _rel(controller["filepath"], backend_dir),
         "frontend_project": (react_entry or {}).get("frontend_name", ""),
-        "presentation_layer": _rel(react_file or "", frontend_dir),
+        # react_file may be (a) a single absolute path from the Router
+        # scanner → _rel it to frontend_dir, or (b) a "; "-joined list
+        # already relative to frontends_root (from the 2-hop api
+        # scanner). Only normalize the first case.
+        "presentation_layer": (
+            _rel(react_file, frontend_dir)
+            if react_file and "; " not in react_file and os.path.isabs(react_file)
+            else (react_file or "")
+        ),
+        "frontend_trigger": frontend_trigger,
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
         "service_methods": "; ".join(service_methods),
@@ -1159,16 +1188,25 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
 
     react_url_map = {}
     by_frontend: dict[str, dict] = {}
+    api_by_frontend: dict[str, dict] = {}
+    triggers_by_frontend: dict[str, dict] = {}
+    single_api_index: dict[str, list[str]] = {}
+    single_triggers: dict[str, list[str]] = {}
     detected_frontend = "unknown"
     if frontend_dir:
         try:
-            from .legacy_frontend import build_frontend_url_map, build_frontend_url_map_multi
+            from .legacy_frontend import (
+                build_frontend_url_map, build_frontend_url_map_multi,
+                build_frontend_api_index,
+            )
             is_multi = frontends_root is not None
             if is_multi:
                 print(f"  Frontends root: {frontend_dir}")
-                react_url_map, detected_frontend, by_frontend = build_frontend_url_map_multi(
+                (react_url_map, detected_frontend, by_frontend,
+                 api_by_frontend, triggers_by_frontend) = build_frontend_url_map_multi(
                     frontend_dir, framework=frontend_framework,
                     strip_patterns=url_strip, route_prefix=route_prefix,
+                    patterns=patterns,
                 )
             else:
                 print(f"  Frontend dir: {frontend_dir}")
@@ -1176,10 +1214,24 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     frontend_dir, framework=frontend_framework,
                     strip_patterns=url_strip, route_prefix=route_prefix,
                 )
+                single_api_index, single_triggers = build_frontend_api_index(
+                    frontend_dir, patterns=patterns, strip_patterns=url_strip,
+                )
             print(f"  Frontend framework: {detected_frontend}")
             print(f"  Frontend routes indexed: {len(react_url_map)}")
             if by_frontend:
                 print(f"  Frontend buckets: {sorted(by_frontend)}")
+            if api_by_frontend:
+                total_api = sum(len(v) for v in api_by_frontend.values())
+                print(f"  Frontend API calls indexed: {total_api} across "
+                      f"{len(api_by_frontend)} buckets")
+            elif single_api_index:
+                print(f"  Frontend API calls indexed: {len(single_api_index)}")
+            if triggers_by_frontend:
+                total_trig = sum(len(v) for v in triggers_by_frontend.values())
+                print(f"  Button triggers indexed: {total_trig} urls labeled")
+            elif single_triggers:
+                print(f"  Button triggers indexed: {len(single_triggers)} urls labeled")
         except Exception as e:
             logger.warning("Frontend scan skipped: %s", e)
 
@@ -1234,25 +1286,83 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 })
                 continue
 
-            # Prefer the frontend bucket matching the menu's app_key when
-            # multi-repo disambiguation is configured; fall back to the
-            # global first-wins map so single-repo / unmatched endpoints
-            # keep working.
+            # Step 1 — app_slug from direct menu match (if any).
+            app_slug = ""
+            raw_menu_url = ""
+            if menu_entry:
+                raw_menu_url = menu_raw_by_key.get(key, menu_entry.get("url", ""))
+                if app_key_spec:
+                    app_slug = _extract_app_key(raw_menu_url, app_key_spec)
+
+            # Step 2 — 2-hop match via API-call index. If direct menu
+            # match failed (menu URL ≠ controller URL — the common case
+            # where menu points at app root and controller is a REST
+            # API), look up the endpoint URL across every app bucket's
+            # api index. First hit wins; we attribute the endpoint to
+            # that app's menu row.
+            screen_files: list[str] = []
+            two_hop_app = ""
+            if api_by_frontend:
+                # Prefer the pre-known app bucket (from direct match).
+                if app_slug:
+                    files = (api_by_frontend.get(app_slug) or {}).get(key) or []
+                    if files:
+                        screen_files = list(files)
+                        two_hop_app = app_slug
+                if not screen_files:
+                    for app_name, idx in api_by_frontend.items():
+                        files = idx.get(key)
+                        if files:
+                            screen_files = list(files)
+                            two_hop_app = app_name
+                            break
+            elif single_api_index:
+                screen_files = list(single_api_index.get(key) or [])
+
+            # If no direct menu but 2-hop found an app bucket, attribute
+            # endpoint to that app's menu row.
+            if menu_entry is None and two_hop_app:
+                promoted = _lookup_menu_by_app(menu_rows or [], app_key_spec, two_hop_app)
+                if promoted:
+                    menu_entry = promoted
+                    raw_menu_url = menu_entry.get("url", "")
+                    app_slug = two_hop_app
+
+            # react_entry (for frontend_project metadata + direct-match
+            # presentation_layer) — prefer the resolved app's bucket.
             react_entry = None
-            if menu_entry and by_frontend and app_key_spec:
-                raw_menu = menu_raw_by_key.get(key, menu_entry.get("url", ""))
-                app = _extract_app_key(raw_menu, app_key_spec)
-                if app:
-                    react_entry = (by_frontend.get(app) or {}).get(key)
+            if app_slug and by_frontend:
+                react_entry = (by_frontend.get(app_slug) or {}).get(key)
             if react_entry is None:
                 react_entry = react_url_map.get(key)
+            # If 2-hop supplied an app_slug but the Router didn't index
+            # any routes (common: custom routing or menu hits app root),
+            # synthesise a minimal react_entry so Frontend project column
+            # isn't empty.
+            if react_entry is None and app_slug:
+                react_entry = {"frontend_name": app_slug, "file_path": ""}
+
+            # Button labels — same bucketing logic as screen files.
+            trigger_labels: list[str] = []
+            if triggers_by_frontend:
+                bucket = app_slug or two_hop_app
+                if bucket:
+                    trigger_labels = list((triggers_by_frontend.get(bucket) or {}).get(key) or [])
+            elif single_triggers:
+                trigger_labels = list(single_triggers.get(key) or [])
+
             react_file = (react_entry or {}).get("file_path", "")
-            raw_menu_url = menu_raw_by_key.get(key, "") if menu_entry else ""
+            # Prefer the concrete 2-hop screens as Frontend screen — they
+            # are the files that actually call this endpoint. Fall back
+            # to the router-matched file for simple projects.
+            presentation = "; ".join(screen_files) if screen_files else react_file
+
             row = _build_row(
                 ep, controller, indexes, mybatis_idx,
-                menu_entry, react_file, base_dirs, rfc_depth=rfc_depth,
+                menu_entry, presentation, base_dirs, rfc_depth=rfc_depth,
                 menu_raw_url=raw_menu_url,
                 react_entry=react_entry,
+                frontend_trigger="; ".join(trigger_labels),
             )
             rows.append(row)
             if not row["matched"]:

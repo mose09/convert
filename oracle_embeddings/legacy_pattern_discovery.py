@@ -311,6 +311,211 @@ def _longest_common_path_prefix(urls: list[str]) -> str:
     return "/" + "/".join(common) if common else ""
 
 
+# ── Frontend sampling & prompt ───────────────────────────────────
+
+_FRONTEND_PROMPT = """
+
+## 프론트엔드 구조 분석 (추가)
+
+아래는 프론트엔드 프로젝트 샘플입니다. React / Polymer 의 **라우터 위치**, **API 호출 패턴**, **버튼 컴포넌트**를 추출해 JSON 응답에 `frontend` 키로 포함하세요.
+
+### package.json dependencies ({n_pkg}개 앱)
+{packages}
+
+### 라우터 후보 파일 (각 앱에서 `<Route>` 나 route 배열 선언이 보이는 파일)
+{router_samples}
+
+### 대표 컴포넌트 파일 ({n_comp}개, API 호출/버튼 있는 것 위주)
+{component_samples}
+
+### 응답 JSON
+
+```json
+{{
+  "frontend": {{
+    "router_files": ["src/routes.tsx"],                        // 앱별 라우터 선언 파일 경로 패턴
+    "route_library": "react-router-v6 | react-router-v5 | vaadin-router | polymer | custom",
+    "api_call_methods": ["axios.get", "axios.post", "httpClient.post", "api.fetch"],   // 이 프로젝트에서 실제로 쓰는 API 호출 메서드 (커스텀 래퍼 포함)
+    "api_url_const_files": ["src/constants/urls.ts"],          // URL 상수 모음 파일 (있으면)
+    "button_components": ["Button", "IconButton", "ActionButton"],   // 버튼 컴포넌트 네이밍
+    "button_label_props": ["children", "label", "title"],      // 버튼 라벨이 들어가는 prop
+    "notes": "기타 특이사항"
+  }}
+}}
+```
+
+- `api_call_methods` 는 **실제 샘플에서 관찰된** 호출 형태여야 합니다. 추측 금지.
+- 해당 섹션이 없는 프로젝트면 빈 리스트 / 빈 문자열.
+"""
+
+
+def _sample_frontend_for_pattern(frontends_root: str | None,
+                                  per_dir_router: int = 2,
+                                  per_dir_comp: int = 3,
+                                  total_comp: int = 20) -> tuple[list[dict], list[dict], list[dict]]:
+    """Return ``(packages, router_samples, component_samples)`` for LLM.
+
+    * packages        : ``[{frontend_name, deps: {react-router-dom: ^6.0, ...}}]``
+    * router_samples  : ``[{frontend_name, file, snippet}]`` (up to per_dir_router per bucket)
+    * component_samples : ``[{frontend_name, file, snippet}]`` (up to per_dir_comp per bucket, API/버튼 있는 것 위주)
+
+    Snippets are trimmed to ~1500 chars to keep the prompt manageable even
+    on 30+ app monorepos.
+    """
+    packages: list[dict] = []
+    router_samples: list[dict] = []
+    component_samples: list[dict] = []
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return packages, router_samples, component_samples
+
+    import re as _re
+    from .mybatis_parser import _read_file_safe
+    from .legacy_react_router import scan_react_dir
+
+    ROUTE_HINTS = (_re.compile(r"<Route\b"), _re.compile(r"\bpath\s*:\s*['\"]"),
+                    _re.compile(r"createBrowserRouter|createHashRouter|setRoutes"))
+    API_HINTS = (_re.compile(r"\baxios\s*\.\s*(?:get|post|put|patch|delete)"),
+                  _re.compile(r"\bfetch\s*\("),
+                  _re.compile(r"\b\w+\s*\.\s*(?:get|post|put|patch|delete)\s*\("),
+                  _re.compile(r"<button\b|<Button\b"))
+
+    for entry in sorted(os.listdir(frontends_root)):
+        child = os.path.join(frontends_root, entry)
+        if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
+            continue
+
+        # package.json
+        pkg_path = os.path.join(child, "package.json")
+        if os.path.isfile(pkg_path):
+            try:
+                with open(pkg_path, "r", encoding="utf-8") as f:
+                    pkg = json.load(f)
+                deps = {}
+                for k in ("dependencies", "devDependencies", "peerDependencies"):
+                    deps.update(pkg.get(k, {}) or {})
+                # Keep only routing/fetch-related deps to cap prompt size
+                keep = {k: v for k, v in deps.items()
+                        if any(t in k for t in ("react", "polymer", "vaadin", "router",
+                                                 "axios", "ky", "fetch", "query", "apollo"))}
+                packages.append({"frontend_name": entry, "deps": keep})
+            except Exception:
+                pass
+
+        # sample files
+        try:
+            files = scan_react_dir(child)
+        except Exception:
+            files = []
+        router_count = 0
+        comp_count = 0
+        for fp in files:
+            if router_count >= per_dir_router and comp_count >= per_dir_comp:
+                break
+            try:
+                content = _read_file_safe(fp, limit=4000)
+            except Exception:
+                continue
+            if router_count < per_dir_router and any(r.search(content) for r in ROUTE_HINTS):
+                router_samples.append({
+                    "frontend_name": entry,
+                    "file": os.path.relpath(fp, child),
+                    "snippet": content[:1500],
+                })
+                router_count += 1
+                continue
+            if comp_count < per_dir_comp and any(r.search(content) for r in API_HINTS):
+                component_samples.append({
+                    "frontend_name": entry,
+                    "file": os.path.relpath(fp, child),
+                    "snippet": content[:1500],
+                })
+                comp_count += 1
+        if len(component_samples) >= total_comp:
+            break
+
+    return packages, router_samples, component_samples
+
+
+def _build_frontend_prompt(packages: list[dict], router_samples: list[dict],
+                            component_samples: list[dict]) -> str:
+    return _FRONTEND_PROMPT.format(
+        n_pkg=len(packages),
+        packages=json.dumps(packages, ensure_ascii=False, indent=2),
+        router_samples=json.dumps(router_samples, ensure_ascii=False, indent=2),
+        n_comp=len(component_samples),
+        component_samples=json.dumps(component_samples, ensure_ascii=False, indent=2),
+    )
+
+
+def _heuristic_frontend_section(packages: list[dict], router_samples: list[dict],
+                                  component_samples: list[dict]) -> dict:
+    """Non-LLM fallback: pick up route_library from deps, common file names.
+
+    Emits:
+      - route_library: from react-router-dom major version
+      - router_files : unique basenames of files where router declarations were found
+      - api_call_methods : union of regex hits over sample content
+    """
+    section = dict(_DEFAULT_FRONTEND_SECTION)
+    # route_library from deps
+    majors = []
+    for pkg in packages:
+        v = (pkg.get("deps") or {}).get("react-router-dom", "")
+        m = re.search(r"(\d+)", v or "")
+        if m:
+            majors.append(int(m.group(1)))
+    if majors:
+        if max(majors) >= 6:
+            section["route_library"] = "react-router-v6"
+        elif max(majors) >= 5:
+            section["route_library"] = "react-router-v5"
+    # polymer / vaadin hints
+    for pkg in packages:
+        deps = pkg.get("deps") or {}
+        if any("polymer" in k for k in deps) or any("vaadin/router" in k for k in deps):
+            section["route_library"] = section["route_library"] or "polymer"
+
+    # router_files: top-level unique basenames of router_samples
+    seen: set[str] = set()
+    router_files: list[str] = []
+    for s in router_samples:
+        bn = s.get("file", "")
+        if bn and bn not in seen:
+            seen.add(bn)
+            router_files.append(bn)
+    section["router_files"] = router_files[:6]
+
+    # api_call_methods: scan snippets for axios.X / fetch(
+    call_hits: set[str] = set()
+    for s in component_samples:
+        for m in re.finditer(r"\b(axios|fetch|api|http|request|client)\s*\.\s*(\w+)\s*\(", s.get("snippet", "")):
+            call_hits.add(f"{m.group(1)}.{m.group(2)}")
+        if re.search(r"\bfetch\s*\(", s.get("snippet", "")):
+            call_hits.add("fetch")
+    section["api_call_methods"] = sorted(call_hits)[:20]
+    return section
+
+
+def _merge_frontend_section(llm_fe: dict | None, fallback: dict) -> dict:
+    """Overlay LLM-provided frontend section onto heuristic fallback."""
+    merged = dict(_DEFAULT_FRONTEND_SECTION)
+    for k, v in (fallback or {}).items():
+        if v is not None:
+            merged[k] = v
+    if not isinstance(llm_fe, dict):
+        return merged
+    for k in ("router_files", "api_call_methods", "api_url_const_files",
+              "button_components", "button_label_props"):
+        v = llm_fe.get(k)
+        if isinstance(v, list):
+            merged[k] = [str(x) for x in v if x]
+    for k in ("route_library", "notes"):
+        v = llm_fe.get(k)
+        if isinstance(v, str):
+            merged[k] = v
+    return merged
+
+
 def _heuristic_url_section(menu_urls: list[str], dir_names: list[str]) -> dict:
     """Fallback when no LLM is available: derive naive strip prefix.
 
@@ -459,6 +664,23 @@ _DEFAULT_URL_SECTION = {
 }
 
 
+_DEFAULT_FRONTEND_SECTION = {
+    # where <Route> declarations live; empty → scan whole tree
+    "router_files": [],
+    # react-router-v5 | react-router-v6 | vaadin-router | polymer | custom
+    "route_library": "",
+    # API 호출 메서드 (커스텀 래퍼 포함). 예: axios.get, httpClient.post
+    "api_call_methods": [],
+    # URL 상수 정의 파일 (2-pass 해석용). 예: src/constants/urls.ts
+    "api_url_const_files": [],
+    # 버튼으로 추정할 컴포넌트 이름 목록
+    "button_components": ["Button", "IconButton", "ActionButton"],
+    # 버튼 라벨이 들어갈 prop 이름 후보
+    "button_label_props": ["children", "label", "title"],
+    "notes": "",
+}
+
+
 _DEFAULT_PATTERNS = {
     "framework_type": "spring",
     "controller_base_classes": [],
@@ -483,6 +705,7 @@ _DEFAULT_PATTERNS = {
     "di_annotations": ["Autowired", "Inject", "Resource"],
     "notes": "",
     "url": dict(_DEFAULT_URL_SECTION),
+    "frontend": dict(_DEFAULT_FRONTEND_SECTION),
 }
 
 
@@ -524,6 +747,7 @@ def load_patterns(yaml_path: str) -> dict:
     # Merge: loaded values override defaults; lists are replaced, not appended
     merged = dict(_DEFAULT_PATTERNS)
     merged["url"] = dict(_DEFAULT_URL_SECTION)
+    merged["frontend"] = dict(_DEFAULT_FRONTEND_SECTION)
     for key, value in loaded.items():
         if value is None:
             continue
@@ -534,20 +758,30 @@ def load_patterns(yaml_path: str) -> dict:
                 if uv is not None:
                     url_merged[uk] = uv
             merged["url"] = url_merged
+        elif key == "frontend" and isinstance(value, dict):
+            fe_merged = dict(_DEFAULT_FRONTEND_SECTION)
+            for uk, uv in value.items():
+                if uv is not None:
+                    fe_merged[uk] = uv
+            merged["frontend"] = fe_merged
         else:
             merged[key] = value
 
     url_section = merged.get("url") or {}
+    fe_section = merged.get("frontend") or {}
     logger.info("Loaded patterns from %s: framework=%s, %d controller_base_classes, "
                 "%d sql_receivers, %d service_suffixes, "
-                "%d url_prefix_strip, app_key=%s",
+                "%d url_prefix_strip, app_key=%s, "
+                "%d api_call_methods, route_library=%s",
                 yaml_path,
                 merged.get("framework_type", "?"),
                 len(merged.get("controller_base_classes", [])),
                 len(merged.get("sql_receivers", [])),
                 len(merged.get("service_suffixes", [])),
                 len(url_section.get("url_prefix_strip", []) or []),
-                bool(url_section.get("app_key")))
+                bool(url_section.get("app_key")),
+                len(fe_section.get("api_call_methods", []) or []),
+                fe_section.get("route_library") or "unknown")
     return merged
 
 
@@ -590,6 +824,15 @@ def discover_patterns(backend_dir: str, config: dict,
         print(f"  URL samples: menu={len(menu_urls)} dirs={len(dir_names)} "
               f"routes={len(react_routes)}")
 
+    # Frontend-pattern sampling (optional, same trigger as URL)
+    fe_packages, fe_routers, fe_components = _sample_frontend_for_pattern(frontends_root)
+    want_fe = bool(fe_packages or fe_routers or fe_components)
+    heuristic_fe = _heuristic_frontend_section(fe_packages, fe_routers, fe_components) if want_fe else {}
+    if want_fe:
+        prompt = prompt + _build_frontend_prompt(fe_packages, fe_routers, fe_components)
+        print(f"  Frontend samples: packages={len(fe_packages)} routers={len(fe_routers)} "
+              f"components={len(fe_components)}")
+
     print("\n=== Step 3: Calling LLM ===")
     llm_result = _call_llm(prompt, config)
 
@@ -599,21 +842,28 @@ def discover_patterns(backend_dir: str, config: dict,
         if want_url:
             patterns["url"] = _merge_url_section(None, heuristic_url)
             print(f"  URL 섹션 heuristic fallback 적용")
+        if want_fe:
+            patterns["frontend"] = _merge_frontend_section(None, heuristic_fe)
+            print(f"  Frontend 섹션 heuristic fallback 적용")
         return patterns
 
     # Merge LLM result with defaults
     patterns = dict(_DEFAULT_PATTERNS)
     patterns["url"] = dict(_DEFAULT_URL_SECTION)
+    patterns["frontend"] = dict(_DEFAULT_FRONTEND_SECTION)
     for key, value in llm_result.items():
         if value is None:
             continue
         if key == "url" and isinstance(value, dict):
             patterns["url"] = _merge_url_section(value, heuristic_url)
+        elif key == "frontend" and isinstance(value, dict):
+            patterns["frontend"] = _merge_frontend_section(value, heuristic_fe)
         elif key in patterns:
             patterns[key] = value
     if want_url and patterns["url"] == _DEFAULT_URL_SECTION:
-        # LLM returned no url section; fall back to heuristic.
         patterns["url"] = _merge_url_section(None, heuristic_url)
+    if want_fe and patterns["frontend"] == _DEFAULT_FRONTEND_SECTION:
+        patterns["frontend"] = _merge_frontend_section(None, heuristic_fe)
 
     print(f"\n=== Discovered patterns ===")
     print(f"  Framework type:          {patterns['framework_type']}")
@@ -635,5 +885,14 @@ def discover_patterns(backend_dir: str, config: dict,
         print(f"  react_route_prefix:      {url.get('react_route_prefix')}")
         print(f"  menu_url_scheme:         {url.get('menu_url_scheme')}")
         print(f"  app_key:                 {url.get('app_key')}")
+
+    if want_fe:
+        print(f"\n=== Step 5: Frontend conventions ===")
+        fe = patterns["frontend"]
+        print(f"  route_library:           {fe.get('route_library')}")
+        print(f"  router_files:            {fe.get('router_files')}")
+        print(f"  api_call_methods:        {fe.get('api_call_methods')}")
+        print(f"  api_url_const_files:     {fe.get('api_url_const_files')}")
+        print(f"  button_components:       {fe.get('button_components')}")
 
     return patterns

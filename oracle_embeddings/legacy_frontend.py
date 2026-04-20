@@ -152,6 +152,23 @@ def detect_frontend_framework(frontend_dir: str) -> str:
     return chosen
 
 
+def build_frontend_api_index(frontend_dir: str, patterns: dict | None = None,
+                               strip_patterns=None) -> tuple[dict, dict]:
+    """Single-frontend helper: return (api_index, trigger_index).
+
+    Thin wrapper that delegates to :mod:`legacy_react_api_scanner` so the
+    analyzer can call one place for both single and multi-repo setups.
+    """
+    if not frontend_dir or not os.path.isdir(frontend_dir):
+        return {}, {}
+    from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
+    api_idx = build_api_url_index(frontend_dir, patterns=patterns,
+                                   strip_patterns=strip_patterns)
+    trig = extract_button_triggers(frontend_dir, api_idx, patterns=patterns,
+                                    strip_patterns=strip_patterns) if api_idx else {}
+    return api_idx, trig
+
+
 def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
                             strip_patterns=None,
                             route_prefix: str | None = None) -> tuple[dict, str]:
@@ -192,27 +209,43 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
 
 def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None,
                                   strip_patterns=None,
-                                  route_prefix: str | None = None
-                                  ) -> tuple[dict, str, dict]:
+                                  route_prefix: str | None = None,
+                                  patterns: dict | None = None,
+                                  ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
     Each immediate child directory that contains a ``package.json`` or
     source files is treated as a separate frontend project. URL maps
     from all sub-projects are merged (first-wins for duplicate URLs).
 
-    Returns a 3-tuple ``(merged_map, overall_framework, by_frontend)``
-    where ``by_frontend`` is ``{frontend_name: url_map}`` keyed by the
-    immediate child directory name. Each value in every map carries a
-    ``frontend_name`` key so callers know where a route originated.
-    This enables multi-app disambiguation via an ``app_key`` extracted
-    from the menu URL.
+    Returns a 5-tuple
+    ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``:
+
+    * ``merged_map`` / ``by_frontend`` — React/Polymer route → component file
+      (legacy direct-match path, unchanged semantics).
+    * ``api_by_frontend`` — ``{frontend_name: {normalized_api_url: [file, ...]}}``
+      built by :func:`legacy_react_api_scanner.build_api_url_index`. Used
+      by the 2-hop matcher so a controller endpoint URL can be linked to
+      the screen(s) that call it.
+    * ``triggers_by_frontend`` — ``{frontend_name: {normalized_api_url: [button_label, ...]}}``
+      best-effort button label → API URL association. Populated by
+      :func:`legacy_react_api_scanner.extract_button_triggers`.
+
+    Each value in every ``by_frontend`` map carries a ``frontend_name``
+    key so callers know where a route originated — this enables
+    multi-app disambiguation via an ``app_key`` extracted from the menu
+    URL.
     """
     if not frontends_root or not os.path.isdir(frontends_root):
-        return {}, "unknown", {}
+        return {}, "unknown", {}, {}, {}
 
     merged_map = {}
     by_frontend: dict[str, dict] = {}
+    api_by_frontend: dict[str, dict] = {}
+    triggers_by_frontend: dict[str, dict] = {}
     detected_frameworks = []
+
+    from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
 
     for entry in sorted(os.listdir(frontends_root)):
         child = os.path.join(frontends_root, entry)
@@ -225,7 +258,6 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             strip_patterns=strip_patterns, route_prefix=route_prefix,
         )
         if url_map:
-            # Annotate each value with its origin frontend for disambiguation.
             annotated = {}
             for key, val in url_map.items():
                 tagged = dict(val)
@@ -235,6 +267,32 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             by_frontend[entry] = annotated
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
+        # Build API URL index for every sub-project (even if no routes
+        # declared — some projects put all navigation elsewhere).
+        try:
+            api_idx = build_api_url_index(child, patterns=patterns,
+                                           strip_patterns=strip_patterns)
+        except Exception as e:
+            logger.warning("build_api_url_index %s 실패: %s", entry, e)
+            api_idx = {}
+        if api_idx:
+            # Prepend bucket name so report paths are readable as
+            # <frontend_name>/<relative_file> — analogous to how we treat
+            # routes in the merged_map.
+            api_by_frontend[entry] = {
+                url: [f"{entry}/{f}" for f in files]
+                for url, files in api_idx.items()
+            }
+            logger.info("Frontend sub-project %s: %d api urls", entry, len(api_idx))
+            try:
+                trig = extract_button_triggers(child, api_idx, patterns=patterns,
+                                                strip_patterns=strip_patterns)
+            except Exception as e:
+                logger.warning("extract_button_triggers %s 실패: %s", entry, e)
+                trig = {}
+            if trig:
+                triggers_by_frontend[entry] = trig
+                logger.info("Frontend sub-project %s: %d button triggers", entry, len(trig))
 
     overall_fw = detected_frameworks[0] if detected_frameworks else "unknown"
     if len(set(detected_frameworks)) > 1:
@@ -242,4 +300,4 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
 
     logger.info("Frontend multi-repo: %d sub-projects, %d total routes, framework=%s",
                 len(detected_frameworks), len(merged_map), overall_fw)
-    return merged_map, overall_fw, by_frontend
+    return merged_map, overall_fw, by_frontend, api_by_frontend, triggers_by_frontend
