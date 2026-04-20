@@ -252,6 +252,49 @@ def _resolve_app_buckets_root(frontends_root: str) -> str:
     return frontends_root
 
 
+def _enumerate_buckets(frontends_root: str) -> list[tuple[str, str]]:
+    """Return the list of ``(bucket_name, bucket_path)`` to treat as apps.
+
+    Handles two common monorepo shapes:
+
+    1. **Flat**: ``frontends_root/<app>/...`` — each immediate child is an
+       app. Bucket name = child dir name.
+    2. **Nested** (e.g. ``frontends_root/<repo>/src/apps/<app>/...``): the
+       real apps live two levels below. This is common at SK Hynix where
+       a "repo" wraps several inner apps and menu URLs reference the
+       **inner** app slug, not the repo. For every child that contains
+       ``src/apps/*`` or ``apps/*``, we descend and use the inner dirs
+       as buckets.
+
+    The two shapes can coexist — for a repo without nested apps the
+    repo itself stays as the bucket.
+    """
+    out: list[tuple[str, str]] = []
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return out
+    for entry in sorted(os.listdir(frontends_root)):
+        child = os.path.join(frontends_root, entry)
+        if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
+            continue
+        nested_parent = None
+        for rel in ("src/apps", "svc/apps", "apps", "src/pages", "svc/pages", "packages"):
+            cand = os.path.join(child, rel)
+            if os.path.isdir(cand):
+                inner_dirs = [
+                    d for d in sorted(os.listdir(cand))
+                    if os.path.isdir(os.path.join(cand, d))
+                    and not d.startswith(".") and d != "node_modules"
+                ]
+                if inner_dirs:
+                    nested_parent = cand
+                    for d in inner_dirs:
+                        out.append((d, os.path.join(cand, d)))
+                    break
+        if nested_parent is None:
+            out.append((entry, child))
+    return out
+
+
 def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None,
                                   strip_patterns=None,
                                   route_prefix: str | None = None,
@@ -260,34 +303,25 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
-    If ``frontends_root`` points at a single mono-repo (i.e. few direct
-    children) the helper transparently drills into ``src/apps/`` /
-    ``apps/`` / ``packages/`` so each individual app becomes a proper
-    bucket. See :func:`_resolve_app_buckets_root`.
+    Bucket enumeration delegates to :func:`_enumerate_buckets` so both
+    flat (``frontends_root/<app>``) and nested
+    (``frontends_root/<repo>/src/apps/<app>``) layouts work.
 
     ``allowed_apps`` (optional) restricts scanning to the named buckets
     (lowercase matched). Used by the menu-driven analyze path so apps
-    that aren't referenced from any menu entry are skipped entirely —
-    massive win on 29-app monorepos where only ~15 apps are actually
-    menu-driven.
+    that aren't referenced from any menu entry are skipped entirely.
 
     Returns a 5-tuple
-    ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``:
-
-    * ``merged_map`` / ``by_frontend`` — React/Polymer route → component file
-      (legacy direct-match path, unchanged semantics).
-    * ``api_by_frontend`` — ``{frontend_name_lower: {normalized_api_url: [file, ...]}}``
-      built by :func:`legacy_react_api_scanner.build_api_url_index`. Used
-      by the 2-hop matcher so a controller endpoint URL can be linked to
-      the screen(s) that call it. Bucket keys are stored lowercase to
-      match case-insensitive menu URL slugs.
-    * ``triggers_by_frontend`` — same lowercased key space; maps URL →
-      button labels.
+    ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``.
+    Bucket keys are stored lowercase to match case-insensitive menu
+    URL slugs.
     """
     if not frontends_root or not os.path.isdir(frontends_root):
         return {}, "unknown", {}, {}, {}
 
-    frontends_root = _resolve_app_buckets_root(frontends_root)
+    buckets = _enumerate_buckets(frontends_root)
+    if not buckets:
+        return {}, "unknown", {}, {}, {}
 
     merged_map = {}
     by_frontend: dict[str, dict] = {}
@@ -300,12 +334,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
 
     allowed_lower = {a.lower() for a in allowed_apps} if allowed_apps else None
 
-    for entry in sorted(os.listdir(frontends_root)):
-        child = os.path.join(frontends_root, entry)
-        if not os.path.isdir(child):
-            continue
-        if entry.startswith(".") or entry == "node_modules":
-            continue
+    for entry, child in buckets:
         entry_lower = entry.lower()
         if allowed_lower is not None and entry_lower not in allowed_lower:
             skipped.append(entry)
@@ -324,8 +353,6 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             by_frontend[entry_lower] = annotated
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
-        # Build API URL index for every sub-project (even if no routes
-        # declared — some projects put all navigation elsewhere).
         try:
             api_idx = build_api_url_index(child, patterns=patterns,
                                            strip_patterns=strip_patterns)
@@ -333,9 +360,6 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             logger.warning("build_api_url_index %s 실패: %s", entry, e)
             api_idx = {}
         if api_idx:
-            # Prepend bucket name so report paths are readable as
-            # <frontend_name>/<relative_file> — analogous to how we treat
-            # routes in the merged_map.
             api_by_frontend[entry_lower] = {
                 url: [f"{entry}/{f}" for f in files]
                 for url, files in api_idx.items()
@@ -359,6 +383,6 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
         logger.info("Frontend multi-repo: %d buckets skipped (not referenced by menu): %s",
                     len(skipped),
                     ", ".join(skipped[:10]) + (" ..." if len(skipped) > 10 else ""))
-    logger.info("Frontend multi-repo: %d sub-projects scanned, %d total routes, framework=%s",
-                len(detected_frameworks), len(merged_map), overall_fw)
+    logger.info("Frontend multi-repo: %d sub-projects scanned (of %d total), %d total routes, framework=%s",
+                len(detected_frameworks), len(buckets), len(merged_map), overall_fw)
     return merged_map, overall_fw, by_frontend, api_by_frontend, triggers_by_frontend
