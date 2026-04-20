@@ -194,20 +194,22 @@ _URL_PROMPT_TEMPLATE = """
 
 ### 응답 JSON 에 아래 `url` 키를 추가하세요
 
+**엄격한 규칙**: 아래 스키마의 값은 *플레이스홀더* 입니다. 위 샘플에서 **실제로 관찰된** 형태만 채워 넣으세요. 관찰 못 했으면 빈 리스트 / null. 샘플에 없는 regex 나 prefix 를 추측해서 쓰지 마세요.
+
 ```json
 {{
   "url": {{
-    "url_prefix_strip": ["정규화 직전 메뉴/라우트 URL 에서 제거할 정규식들. 예: '^/apps/[^/]+', '^/api/v\\\\d+'"],
-    "react_route_prefix": "React 라우트에만 앞에 붙여야 맞는 공통 prefix. 없으면 null",
-    "menu_url_scheme": "path_only | full_url | app_prefixed 중 하나. 메뉴 URL이 어떤 형태인지.",
-    "app_key": {{"source": "path_segment", "index": N}} 또는 {{"source": "query_param", "name": "app"}} 또는 null
+    "url_prefix_strip":    ["<menu/react 샘플에서 실제 관찰된 공통 prefix 를 벗겨낼 정규식들. 예: ^/apps/[^/]+. 관찰되지 않으면 빈 리스트>"],
+    "react_route_prefix":  "<React 라우트에 공통으로 붙는 base prefix 문자열. 없으면 null>",
+    "menu_url_scheme":     "<path_only | full_url | app_prefixed 중 샘플과 일치하는 것>",
+    "app_key":             {{"source": "<path_segment | query_param>", "index": <N>, "name": "<query_param 일 때 key 이름>"}}
   }}
 }}
 ```
 
-주의:
 - `url_prefix_strip` 은 각 항목이 **유효한 Python re 정규식** 이어야 합니다. 역슬래시는 YAML/JSON 문자열에서 두 번 씁니다 (`\\d`).
-- 매칭되는 패턴이 없으면 해당 필드에 빈 리스트/null 을 돌려주세요.
+- 매칭되는 패턴이 없으면 해당 필드에 빈 리스트 / null 을 돌려주세요.
+- `app_key` 가 없으면 `null` 로.
 """
 
 
@@ -328,24 +330,25 @@ _FRONTEND_PROMPT = """
 ### 대표 컴포넌트 파일 ({n_comp}개, API 호출/버튼 있는 것 위주)
 {component_samples}
 
-### 응답 JSON
+### 응답 형식
+
+**엄격한 규칙**: 아래 스키마의 값은 *플레이스홀더* 입니다. 위 샘플에서 **실제로 관찰된** 값만 채워 넣으세요. 관찰 못 했으면 빈 리스트 / 빈 문자열 / null. 샘플에 없는 메서드·파일명·컴포넌트명을 추측해서 쓰지 마세요.
 
 ```json
 {{
   "frontend": {{
-    "router_files": ["src/routes.tsx"],                        // 앱별 라우터 선언 파일 경로 패턴
-    "route_library": "react-router-v6 | react-router-v5 | vaadin-router | polymer | custom",
-    "api_call_methods": ["axios.get", "axios.post", "httpClient.post", "api.fetch"],   // 이 프로젝트에서 실제로 쓰는 API 호출 메서드 (커스텀 래퍼 포함)
-    "api_url_const_files": ["src/constants/urls.ts"],          // URL 상수 모음 파일 (있으면)
-    "button_components": ["Button", "IconButton", "ActionButton"],   // 버튼 컴포넌트 네이밍
-    "button_label_props": ["children", "label", "title"],      // 버튼 라벨이 들어가는 prop
-    "notes": "기타 특이사항"
+    "router_files":        ["<실제 샘플에서 route 선언이 발견된 파일 상대경로. 없으면 빈 리스트>"],
+    "route_library":       "<react-router-v5 | react-router-v6 | vaadin-router | polymer | custom | 빈 문자열>",
+    "api_call_methods":    ["<대표 컴포넌트 샘플에서 HTTP 호출에 사용된 메서드 dotted name. 예: receiver.method 형태. 관찰된 것만>"],
+    "api_url_const_files": ["<URL 문자열이 상수로 선언된 파일 경로. 샘플에 명시된 것만>"],
+    "button_components":   ["<샘플 JSX 에서 button 역할로 쓰이는 컴포넌트 태그 이름>"],
+    "button_label_props":  ["<버튼 라벨이 들어가는 prop 이름 (children / label / title 등)>"],
+    "notes":               "<기타 특이사항>"
   }}
 }}
 ```
 
-- `api_call_methods` 는 **실제 샘플에서 관찰된** 호출 형태여야 합니다. 추측 금지.
-- 해당 섹션이 없는 프로젝트면 빈 리스트 / 빈 문자열.
+자가점검: 채워 넣은 각 값이 위 샘플 텍스트에 실제로 등장하는지 다시 확인하세요. 등장하지 않으면 제거.
 """
 
 
