@@ -676,8 +676,11 @@ _DEFAULT_FRONTEND_SECTION = {
     "api_call_methods": [],
     # URL 상수 정의 파일 (2-pass 해석용). 예: src/constants/urls.ts
     "api_url_const_files": [],
-    # 버튼으로 추정할 컴포넌트 이름 목록
-    "button_components": ["Button", "IconButton", "ActionButton"],
+    # 버튼으로 추정할 컴포넌트 이름 목록 — 기본 empty. discover-patterns 가
+    # 실제 샘플에서 관찰된 값으로 채우거나, 분석기의 내장 `Button`/`button`
+    # 기본 감지만으로 동작한다. 여기 가짜 네이밍을 넣어두면 LLM fallback 과
+    # 헷갈리기 쉬워 기본값을 비워 둔다.
+    "button_components": [],
     # 버튼 라벨이 들어갈 prop 이름 후보
     "button_label_props": ["children", "label", "title"],
     "notes": "",
