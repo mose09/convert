@@ -77,6 +77,10 @@ def _build_call_regex(methods: list[str]) -> re.Pattern:
     We match either full dotted form or the leaf call. The URL argument
     has to look like a path (leading ``/`` or ``http``) so we don't pick
     up every ``array.get(idx)`` style call.
+
+    The final regex is case-insensitive so a method declared as
+    ``axios.get`` in patterns.yaml also matches ``Axios.get`` / ``AXIOS.GET``
+    in source. Mixed-case variants are common in legacy codebases.
     """
     dotted_names = [m for m in methods if "." in m]
     bare_names = [m for m in methods if "." not in m]
@@ -88,9 +92,6 @@ def _build_call_regex(methods: list[str]) -> re.Pattern:
     if not alts:
         return None  # type: ignore[return-value]
     alt = "|".join(sorted(set(alts), key=len, reverse=True))
-    # Match `(axios.get|fetch|httpClient.post) ( <string-literal> , ...)`
-    # Non-URL first-arg (like a plain variable) is treated as a relay and
-    # captured with group name 'var' so the 2-pass resolver can fill it in.
     return re.compile(
         rf"""\b(?P<method>{alt})\s*\(
              \s*(?:
@@ -98,7 +99,7 @@ def _build_call_regex(methods: list[str]) -> re.Pattern:
                  | (?P<var>\w+)
              )
          """,
-        re.VERBOSE,
+        re.VERBOSE | re.IGNORECASE,
     )
 
 
