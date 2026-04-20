@@ -164,8 +164,12 @@ def _clean_sql(sql: str) -> str:
     # Remove CDATA markers
     sql = re.sub(r'<!\[CDATA\[', '', sql)
     sql = re.sub(r'\]\]>', '', sql)
-    # Remove XML tags that might remain
-    sql = re.sub(r'<[^>]+>', ' ', sql)
+    # Remove XML tags that might remain. Require the char after `<` to
+    # be an XML-tag opener (`/`, `!`, `?`, or letter) so SQL operators
+    # such as `a < b`, `a <= b`, `a <> b` are NOT mistaken for tags —
+    # otherwise `<[^>]+>` would greedily eat from `<=` up to the next
+    # `>` and devour real table names in between.
+    sql = re.sub(r'<(?=[/!?A-Za-z])[^>]*>', ' ', sql)
     # Normalize whitespace
     sql = re.sub(r'\s+', ' ', sql).strip()
     return sql
