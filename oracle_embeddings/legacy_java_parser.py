@@ -611,6 +611,11 @@ def _extract_sql_calls(content: str) -> list[dict]:
         prefix = ns_constants.get(var, "")
         if not prefix:
             continue
+        # Require a proper namespace.id boundary (dot) between the
+        # resolved prefix and suffix — see _collect_body_sql_calls for
+        # the detailed rationale.
+        if not prefix.endswith(".") and not suffix.startswith("."):
+            continue
         sqlid = prefix + suffix
         namespace, _, sql_id = sqlid.rpartition(".")
         if not namespace:
@@ -1455,6 +1460,15 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
         suffix = m.group("suffix")
         prefix = ns_constants.get(var, "")
         if not prefix:
+            continue
+        # Sanity: the var + "suffix" concatenation must produce a
+        # well-formed "namespace.id" string. If neither side carries the
+        # "." separator, the resolved prefix is probably already a full
+        # sqlid (e.g. `FIND_X = "scaStat.findX"` used as `FIND_X + "Y"`)
+        # — concatenating would yield garbage like
+        # "scaStat.findXY" which then misses every statement index and
+        # pollutes the row via namespace-level fallback.
+        if not prefix.endswith(".") and not suffix.startswith("."):
             continue
         sqlid = prefix + suffix
         namespace, _, sql_id = sqlid.rpartition(".")
