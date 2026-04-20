@@ -155,9 +155,13 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
         f.write("## Program Detail\n\n")
         f.write("| " + " | ".join(label for label, _ in cols) + " |\n")
         f.write("|" + "|".join(["---"] * len(cols)) + "|\n")
-        for r in rows:
+        for idx, r in enumerate(rows, 1):
             f.write(
-                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in cols) + " |\n"
+                "| " + " | ".join(
+                    str(idx) if key == "__row_no__"
+                    else _md_escape(r.get(key, ""))
+                    for _, key in cols
+                ) + " |\n"
             )
         f.write("\n")
 
@@ -273,7 +277,11 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     # Sheet 2: Programs (main deliverable)
     ws = wb.create_sheet("Programs")
     cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _SINGLE_COLUMNS_NO_MENU
-    headers = ["No"] + [label for label, _ in cols]
+    has_row_no_col = any(k == "__row_no__" for _, k in cols)
+    if has_row_no_col:
+        headers = [label for label, _ in cols]
+    else:
+        headers = ["No"] + [label for label, _ in cols]
     _write_header(ws, headers)
     for i, r in enumerate(rows, 2):
         fill = None
@@ -281,7 +289,11 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
             fill = yellow_fill
         elif not r.get("query_xml") and not r.get("related_tables"):
             fill = gray_fill
-        _write_row(ws, i, [i - 1] + [r.get(key, "") for _, key in cols], fill=fill)
+        if has_row_no_col:
+            values = [i - 1 if k == "__row_no__" else r.get(k, "") for _, k in cols]
+        else:
+            values = [i - 1] + [r.get(k, "") for _, k in cols]
+        _write_row(ws, i, values, fill=fill)
     ws.freeze_panes = "A2"
     _auto_width(ws)
 
@@ -379,20 +391,24 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
 # ---------------------------------------------------------------------------
 
 # Column definitions: menu-first vs no-menu layouts.
-# When menu data is present, hierarchy columns go first so users see
-# "메뉴에서 호출한 메소드" flow. Without menu, backend-focused layout.
+#
+# 메뉴가 있을 때는 **메뉴 → 프론트 → 백엔드 → SQL/RFC** 순서로 좌→우 를
+# 읽어 내려가도록 배치한다. 맨 앞 "No" 는 렌더 시점에 자동 번호 부여.
 _BATCH_COLUMNS_WITH_MENU = [
+    ("No",                "__row_no__"),
+    ("메뉴1뎁스",         "main_menu"),
+    ("메뉴2뎁스",         "sub_menu"),
+    ("메뉴3뎁스",         "tab"),
+    ("Menu path",         "menu_path"),
+    ("Menu URL",          "menu_url"),
+    ("Frontend project",  "frontend_project"),
+    ("Frontend screen",   "presentation_layer"),
     ("Backend project",   "backend_project"),
     ("Backend framework", "backend_framework"),
-    ("Menu path",         "menu_path"),
-    ("Main",              "main_menu"),
-    ("Sub",               "sub_menu"),
-    ("Tab",               "tab"),
     ("Program",           "program_name"),
     ("HTTP",              "http_method"),
-    ("URL",               "url"),
-    ("File",              "file_name"),
-    ("React",             "presentation_layer"),
+    ("Controller URL",    "url"),
+    ("Controller file",   "file_name"),
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
@@ -419,15 +435,18 @@ _BATCH_COLUMNS_NO_MENU = [
 ]
 
 _SINGLE_COLUMNS_WITH_MENU = [
+    ("No",                "__row_no__"),
+    ("메뉴1뎁스",         "main_menu"),
+    ("메뉴2뎁스",         "sub_menu"),
+    ("메뉴3뎁스",         "tab"),
     ("Menu path",         "menu_path"),
-    ("Main",              "main_menu"),
-    ("Sub",               "sub_menu"),
-    ("Tab",               "tab"),
+    ("Menu URL",          "menu_url"),
+    ("Frontend project",  "frontend_project"),
+    ("Frontend screen",   "presentation_layer"),
     ("Program",           "program_name"),
     ("HTTP",              "http_method"),
-    ("URL",               "url"),
-    ("File",              "file_name"),
-    ("React",             "presentation_layer"),
+    ("Controller URL",    "url"),
+    ("Controller file",   "file_name"),
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
@@ -528,9 +547,13 @@ def save_legacy_batch_markdown(result: dict, output_dir: str, menu_only: bool = 
         f.write("## Program Detail\n\n")
         f.write("| " + " | ".join(label for label, _ in batch_cols) + " |\n")
         f.write("|" + "|".join(["---"] * len(batch_cols)) + "|\n")
-        for r in rows:
+        for idx, r in enumerate(rows, 1):
             f.write(
-                "| " + " | ".join(_md_escape(r.get(key, "")) for _, key in batch_cols) + " |\n"
+                "| " + " | ".join(
+                    str(idx) if key == "__row_no__"
+                    else _md_escape(r.get(key, ""))
+                    for _, key in batch_cols
+                ) + " |\n"
             )
         f.write("\n")
 
@@ -655,7 +678,11 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     # Sheet 3: Programs (the requested column order)
     ws = wb.create_sheet("Programs")
     batch_cols = _BATCH_COLUMNS_WITH_MENU if _has_menu_data(rows) else _BATCH_COLUMNS_NO_MENU
-    headers = ["No"] + [label for label, _ in batch_cols]
+    has_row_no_col = any(k == "__row_no__" for _, k in batch_cols)
+    if has_row_no_col:
+        headers = [label for label, _ in batch_cols]
+    else:
+        headers = ["No"] + [label for label, _ in batch_cols]
     _write_header(ws, headers)
     for i, r in enumerate(rows, 2):
         fill = None
@@ -663,7 +690,10 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
             fill = yellow_fill
         elif not r.get("query_xml") and not r.get("related_tables"):
             fill = gray_fill
-        values = [i - 1] + [r.get(key, "") for _, key in batch_cols]
+        if has_row_no_col:
+            values = [i - 1 if k == "__row_no__" else r.get(k, "") for _, k in batch_cols]
+        else:
+            values = [i - 1] + [r.get(k, "") for _, k in batch_cols]
         _write_row(ws, i, values, fill=fill)
     ws.freeze_panes = "A2"
     _auto_width(ws)

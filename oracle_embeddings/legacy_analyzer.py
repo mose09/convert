@@ -953,7 +953,9 @@ def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[st
 def _build_row(endpoint: dict, controller: dict, indexes: dict,
                mybatis_idx: dict, menu_entry: dict | None,
                react_file: str | None, base_dirs: dict,
-               rfc_depth: int = 2) -> dict:
+               rfc_depth: int = 2,
+               menu_raw_url: str = "",
+               react_entry: dict | None = None) -> dict:
     """Assemble a single program-row dict for one controller endpoint.
 
     Resolution runs against the **controller method's own body** when
@@ -992,11 +994,13 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "sub_menu": (menu_entry or {}).get("sub_menu", ""),
         "tab": (menu_entry or {}).get("tab", ""),
         "menu_path": (menu_entry or {}).get("menu_path", ""),
+        "menu_url": menu_raw_url or (menu_entry or {}).get("url", ""),
         "program_id": (menu_entry or {}).get("program_id", ""),
         "program_name": (menu_entry or {}).get("program_name", "") or endpoint["method_name"],
         "http_method": endpoint["http_method"],
         "url": endpoint["full_url"],
         "file_name": _rel(controller["filepath"], backend_dir),
+        "frontend_project": (react_entry or {}).get("frontend_name", ""),
         "presentation_layer": _rel(react_file or "", frontend_dir),
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
@@ -1243,9 +1247,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if react_entry is None:
                 react_entry = react_url_map.get(key)
             react_file = (react_entry or {}).get("file_path", "")
+            raw_menu_url = menu_raw_by_key.get(key, "") if menu_entry else ""
             row = _build_row(
                 ep, controller, indexes, mybatis_idx,
                 menu_entry, react_file, base_dirs, rfc_depth=rfc_depth,
+                menu_raw_url=raw_menu_url,
+                react_entry=react_entry,
             )
             rows.append(row)
             if not row["matched"]:
