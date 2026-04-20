@@ -502,7 +502,8 @@ def _heuristic_frontend_section(packages: list[dict], router_samples: list[dict]
     Emits:
       - route_library: from react-router-dom major version
       - router_files : unique basenames of files where router declarations were found
-      - api_call_methods : union of regex hits over sample content
+      - api_call_methods : union of regex hits over sample content (case-insensitive)
+      - button_components : capitalized JSX tags following the ``<X ... onClick=`` pattern
     """
     section = dict(_DEFAULT_FRONTEND_SECTION)
     # route_library from deps
@@ -533,19 +534,43 @@ def _heuristic_frontend_section(packages: list[dict], router_samples: list[dict]
             router_files.append(bn)
     section["router_files"] = router_files[:6]
 
-    # api_call_methods: scan snippets for axios.X / fetch(
+    # api_call_methods: scan snippets for axios.X / fetch( — case-insensitive
+    # so Axios.post / AXIOS.GET / Httpclient.request all collapse to a
+    # single normalized "<receiver>.<method>" entry.
     call_hits: set[str] = set()
+    api_re = re.compile(r"\b(axios|fetch|api|http|request|client|httpclient|axioshelper)\s*\.\s*(\w+)\s*\(",
+                         re.IGNORECASE)
     for s in component_samples:
-        for m in re.finditer(r"\b(axios|fetch|api|http|request|client)\s*\.\s*(\w+)\s*\(", s.get("snippet", "")):
-            call_hits.add(f"{m.group(1)}.{m.group(2)}")
-        if re.search(r"\bfetch\s*\(", s.get("snippet", "")):
+        snippet = s.get("snippet", "") or ""
+        for m in api_re.finditer(snippet):
+            recv = m.group(1).lower()  # canonicalize to lowercase receiver
+            method = m.group(2).lower()
+            if method in {"then", "catch", "finally", "config"}:
+                continue
+            call_hits.add(f"{recv}.{method}")
+        if re.search(r"\bfetch\s*\(", snippet, re.IGNORECASE):
             call_hits.add("fetch")
     section["api_call_methods"] = sorted(call_hits)[:20]
+
+    # button_components: capitalized JSX tag that follows an onClick=
+    # attribute. Conservative — only counts tags actually wired to a
+    # handler so static decoration tags (Icon, Card) don't pollute.
+    btn_hits: set[str] = set()
+    btn_re = re.compile(r"<([A-Z]\w*)\b[^>]*?\bon(?:Click|Submit)\s*=", re.DOTALL)
+    for s in component_samples:
+        for m in btn_re.finditer(s.get("snippet", "") or ""):
+            btn_hits.add(m.group(1))
+    section["button_components"] = sorted(btn_hits)[:10]
     return section
 
 
 def _merge_frontend_section(llm_fe: dict | None, fallback: dict) -> dict:
-    """Overlay LLM-provided frontend section onto heuristic fallback."""
+    """Overlay LLM-provided frontend section onto heuristic fallback.
+
+    LLM 이 명시적으로 빈 리스트(``[]``) / 빈 문자열을 돌려주면 그건 "값
+    없음" 신호이므로 fallback 의 값을 보존한다. 이전엔 LLM 의 빈 리스트가
+    heuristic 결과를 덮어씌워 모처럼 찾은 axios.X 정보가 날아갔다.
+    """
     merged = dict(_DEFAULT_FRONTEND_SECTION)
     for k, v in (fallback or {}).items():
         if v is not None:
@@ -555,11 +580,11 @@ def _merge_frontend_section(llm_fe: dict | None, fallback: dict) -> dict:
     for k in ("router_files", "api_call_methods", "api_url_const_files",
               "button_components", "button_label_props"):
         v = llm_fe.get(k)
-        if isinstance(v, list):
+        if isinstance(v, list) and v:
             merged[k] = [str(x) for x in v if x]
     for k in ("route_library", "notes"):
         v = llm_fe.get(k)
-        if isinstance(v, str):
+        if isinstance(v, str) and v:
             merged[k] = v
     return merged
 
@@ -616,8 +641,9 @@ def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
             merged[k] = v
     if not isinstance(llm_url, dict):
         return merged
-    # Accept known keys only
-    if isinstance(llm_url.get("url_prefix_strip"), list):
+    # Accept known keys only. LLM 이 빈 리스트/빈 문자열을 돌려줘도
+    # 이는 "관찰 못 함" 신호이므로 fallback 값을 보존한다 (덮어쓰지 않음).
+    if isinstance(llm_url.get("url_prefix_strip"), list) and llm_url["url_prefix_strip"]:
         good = []
         for pat in llm_url["url_prefix_strip"]:
             if not pat:
@@ -627,10 +653,12 @@ def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
                 good.append(pat)
             except re.error as e:
                 logger.warning("LLM이 반환한 url_prefix_strip 정규식 무효 (%r): %s", pat, e)
-        merged["url_prefix_strip"] = good
+        if good:
+            merged["url_prefix_strip"] = good
     if "react_route_prefix" in llm_url:
         v = llm_url["react_route_prefix"]
-        merged["react_route_prefix"] = v if isinstance(v, str) and v else None
+        if isinstance(v, str) and v:
+            merged["react_route_prefix"] = v
     if "menu_url_scheme" in llm_url:
         v = llm_url["menu_url_scheme"]
         if v in ("path_only", "full_url", "app_prefixed"):
