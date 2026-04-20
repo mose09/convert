@@ -207,6 +207,11 @@ _URL_PROMPT_TEMPLATE = """
 }}
 ```
 
+**`app_key.index` 계산 규칙 (혼동 주의)**:
+- 프로토콜·호스트 제거 후, 남은 path 를 `/` 로 split 해서 **빈 원소를 제외한 1-based 인덱스**.
+- 예: `http://host/apps/hypm_cbmModeling` → path 는 `/apps/hypm_cbmModeling` → segments `["apps", "hypm_cbmModeling"]` → `apps` 는 index **1**, `hypm_cbmModeling` 는 index **2**.
+- 앱 슬러그가 `/apps/<slug>` 의 두 번째 segment 면 **`index: 2`**. `/admin/apps/<slug>` 같은 3-depth 면 `index: 3`.
+
 - `url_prefix_strip` 은 각 항목이 **유효한 Python re 정규식** 이어야 합니다. 역슬래시는 YAML/JSON 문자열에서 두 번 씁니다 (`\\d`).
 - 매칭되는 패턴이 없으면 해당 필드에 빈 리스트 / null 을 돌려주세요.
 - `app_key` 가 없으면 `null` 로.
