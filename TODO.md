@@ -1,3 +1,16 @@
+# TODO: menu-driven 스캔 — 메뉴 참조 앱/URL 로 프론트·체인 해석 범위 축소 (완료)
+
+- [x] `build_frontend_url_map_multi(allowed_apps=None)` — 주어지면 해당 버킷만 스캔 (skip 로그)
+- [x] `analyze_legacy` 에서 `menu_apps` = {app_key_spec 로 뽑은 menu 슬러그} 계산 → `allowed_apps` 로 frontend 빌더에 주입
+- [x] `interesting_urls` = 메뉴-참조 앱 버킷들의 api_url 합집합 + 메뉴 직접 URL 집합
+- [x] `--menu-only` skip 조건을 "직접 menu_entry" → "interesting_urls 에 포함되는가" 로 교체 → 2-홉 매칭된 endpoint 도 살아남음
+- [x] `analyze_legacy_batch` 에서 프론트 인덱싱을 **batch 최상위로 hoist** → 백엔드 29 회 반복 스캔 제거. `precomputed_frontend` 파라미터로 analyze_legacy 에 주입
+- [x] stats 카운트 버그 수정: `matched = len(rows) - len(unmatched)` 가 skip-stub 때문에 틀어지던 것을 `sum(r["matched"])` 기반으로 정확화
+- [x] mock: 3 앱 중 2 앱만 메뉴에 있을 때 1 앱 스캔 스킵 + Endpoints: 3 (matched: 2, unmatched: 1). batch mock: 프론트 한 번 스캔 + be1 만 매칭
+- [x] conventional commit + `claude/push-previous-changes-4P5x8` push
+
+---
+
 # TODO: LLM JSON 파싱 실패 대응 — 2-call 분리 + 대표 레포 지정 (완료)
 
 - [x] `_call_llm` 이 JSON 파싱 실패 시 원본 응답을 `output/legacy_analysis/pattern_llm_raw_<label>.txt` 로 덤프

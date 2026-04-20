@@ -1050,7 +1050,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    frontend_framework: str | None = None,
                    patterns: dict | None = None,
                    frontends_root: bool = False,
-                   menu_only: bool = False) -> dict:
+                   menu_only: bool = False,
+                   precomputed_frontend: dict | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1186,6 +1187,22 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         print(f"  URL conventions: strip={len(url_strip)} "
               f"route_prefix={route_prefix!r} app_key={app_key_spec}")
 
+    # Menu-driven scan: extract the set of app slugs referenced by any
+    # menu entry so the frontend scanner can skip unreferenced buckets.
+    # `None` means "no app_key configured" → scan everything (legacy).
+    menu_apps: set[str] | None = None
+    if app_key_spec:
+        slugs = set()
+        for r in menu_rows or []:
+            raw = r.get("url", "")
+            s = _extract_app_key(raw, app_key_spec)
+            if s:
+                slugs.add(s)
+        menu_apps = slugs if slugs else None
+        if menu_apps and menu_only:
+            print(f"  Menu-driven scope: {len(menu_apps)} apps referenced by menu "
+                  f"({sorted(menu_apps)[:5]}{'...' if len(menu_apps) > 5 else ''})")
+
     react_url_map = {}
     by_frontend: dict[str, dict] = {}
     api_by_frontend: dict[str, dict] = {}
@@ -1193,7 +1210,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     single_api_index: dict[str, list[str]] = {}
     single_triggers: dict[str, list[str]] = {}
     detected_frontend = "unknown"
-    if frontend_dir:
+    if precomputed_frontend:
+        # Batch mode hoists this work above the per-backend loop.
+        react_url_map = precomputed_frontend.get("react_url_map") or {}
+        detected_frontend = precomputed_frontend.get("detected_frontend") or "unknown"
+        by_frontend = precomputed_frontend.get("by_frontend") or {}
+        api_by_frontend = precomputed_frontend.get("api_by_frontend") or {}
+        triggers_by_frontend = precomputed_frontend.get("triggers_by_frontend") or {}
+        single_api_index = precomputed_frontend.get("single_api_index") or {}
+        single_triggers = precomputed_frontend.get("single_triggers") or {}
+    elif frontend_dir:
         try:
             from .legacy_frontend import (
                 build_frontend_url_map, build_frontend_url_map_multi,
@@ -1202,11 +1228,15 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             is_multi = frontends_root is not None
             if is_multi:
                 print(f"  Frontends root: {frontend_dir}")
+                # Menu-driven narrowing: skip apps not referenced by menu.
+                # Only apply when menu_only is active so full audits still
+                # scan everything.
+                allowed = menu_apps if (menu_only and menu_apps) else None
                 (react_url_map, detected_frontend, by_frontend,
                  api_by_frontend, triggers_by_frontend) = build_frontend_url_map_multi(
                     frontend_dir, framework=frontend_framework,
                     strip_patterns=url_strip, route_prefix=route_prefix,
-                    patterns=patterns,
+                    patterns=patterns, allowed_apps=allowed,
                 )
             else:
                 print(f"  Frontend dir: {frontend_dir}")
@@ -1259,6 +1289,19 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     controller_urls = set()
     skipped_no_menu = 0
 
+    # Menu-driven "interesting URL" set. An endpoint is a candidate when
+    # either (a) its URL directly matches a menu URL, or (b) it's an API
+    # URL called from any React file under a menu-referenced app bucket
+    # (2-hop). In --menu-only we use this to cheaply skip chain
+    # resolution for endpoints that can never feed a Program Detail row.
+    interesting_urls: set[str] = set(menu_url_index.keys())
+    for _app, _idx in api_by_frontend.items():
+        interesting_urls.update(_idx.keys())
+    if single_api_index:
+        interesting_urls.update(single_api_index.keys())
+    if menu_only:
+        print(f"  Menu-driven interesting URLs: {len(interesting_urls)}")
+
     # Iterate every controller endpoint
     for controller in indexes["controllers_by_fqcn"].values():
         if controller.get("abstract"):
@@ -1271,8 +1314,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             menu_entry = menu_url_index.get(key)
 
             # menu_only optimization: skip expensive chain resolution
-            # for endpoints that don't match any menu URL.
-            if menu_only and not menu_entry:
+            # for endpoints that aren't in the interesting URL set. This
+            # includes both direct menu matches and 2-hop candidates
+            # (URLs called from any menu-referenced app's React files).
+            if menu_only and not menu_entry and key not in interesting_urls:
                 skipped_no_menu += 1
                 unmatched.append({
                     "backend_project": base_dirs.get("backend_project", ""),
@@ -1403,9 +1448,15 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "mappers": len(indexes["mappers_by_fqcn"]),
         "mapper_xml_files": mybatis_result.get("mapper_count", 0),
         "mapper_xml_namespaces": len(xml_namespaces),
-        "endpoints": len(rows),
-        "matched": len(rows) - len(unmatched),
-        "unmatched": len(unmatched),
+        # `endpoints` counts every controller endpoint the analyzer
+        # considered (rows + the lightweight skip-stubs in unmatched),
+        # so a 29-backend batch with --menu-only still reports the true
+        # endpoint total. `matched` is derived from the row-level flag
+        # because 2-hop promotion can turn an otherwise-unmatched row
+        # into a matched one.
+        "endpoints": len(rows) + skipped_no_menu,
+        "matched": sum(1 for r in rows if r.get("matched")),
+        "unmatched": (len(rows) - sum(1 for r in rows if r.get("matched"))) + skipped_no_menu,
         "orphan_menus": len(orphan_menus),
         "with_react": sum(1 for r in rows if r["presentation_layer"]),
         "with_rfc": sum(1 for r in rows if r["rfc"]),
@@ -1488,6 +1539,61 @@ def analyze_legacy_batch(backends_root: str,
     for name, path in projects:
         print(f"    - {name}  ({path})")
 
+    # Pre-compute the frontend index ONCE up front. Previously each
+    # analyze_legacy call re-scanned frontend_dir, which meant 29×
+    # redundant work on a monorepo with 29 backends. Hoisting it here
+    # also lets menu-driven narrowing apply to the whole batch.
+    precomputed_frontend: dict | None = None
+    if frontend_dir:
+        from .legacy_frontend import (
+            build_frontend_url_map, build_frontend_url_map_multi,
+            build_frontend_api_index,
+        )
+        url_section = (patterns or {}).get("url") or {}
+        strip = url_section.get("url_prefix_strip") or []
+        rp = url_section.get("react_route_prefix")
+        app_key_spec = url_section.get("app_key")
+        menu_apps: set[str] | None = None
+        if app_key_spec:
+            slugs = {_extract_app_key(r.get("url", ""), app_key_spec) for r in (menu_rows or [])}
+            slugs = {s for s in slugs if s}
+            menu_apps = slugs or None
+        allowed = menu_apps if (menu_only and menu_apps) else None
+        print(f"\n=== Scanning frontend (batch-wide, once) ===")
+        if frontends_root:
+            (react_map, det_fw, by_fe,
+             api_fe, trig_fe) = build_frontend_url_map_multi(
+                frontend_dir, framework=frontend_framework,
+                strip_patterns=strip, route_prefix=rp,
+                patterns=patterns, allowed_apps=allowed,
+            )
+            single_api, single_trig = {}, {}
+        else:
+            react_map, det_fw = build_frontend_url_map(
+                frontend_dir, framework=frontend_framework,
+                strip_patterns=strip, route_prefix=rp,
+            )
+            by_fe = {}
+            api_fe, trig_fe = {}, {}
+            single_api, single_trig = build_frontend_api_index(
+                frontend_dir, patterns=patterns, strip_patterns=strip,
+            )
+        precomputed_frontend = {
+            "react_url_map": react_map,
+            "detected_frontend": det_fw,
+            "by_frontend": by_fe,
+            "api_by_frontend": api_fe,
+            "triggers_by_frontend": trig_fe,
+            "single_api_index": single_api,
+            "single_triggers": single_trig,
+        }
+        total_api = sum(len(v) for v in api_fe.values()) if api_fe else len(single_api)
+        total_trig = sum(len(v) for v in trig_fe.values()) if trig_fe else len(single_trig)
+        print(f"  Frontend framework:      {det_fw}")
+        print(f"  Frontend routes:         {len(react_map)}")
+        print(f"  Frontend API calls:      {total_api} across {len(api_fe) or (1 if single_api else 0)} buckets")
+        print(f"  Button triggers:         {total_trig}")
+
     all_rows = []
     all_unmatched = []
     all_orphans = []
@@ -1505,6 +1611,7 @@ def analyze_legacy_batch(backends_root: str,
             patterns=patterns,
             frontends_root=frontends_root,
             menu_only=menu_only,
+            precomputed_frontend=precomputed_frontend,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

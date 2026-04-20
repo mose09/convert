@@ -256,6 +256,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   strip_patterns=None,
                                   route_prefix: str | None = None,
                                   patterns: dict | None = None,
+                                  allowed_apps: set[str] | None = None,
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
@@ -263,6 +264,12 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     children) the helper transparently drills into ``src/apps/`` /
     ``apps/`` / ``packages/`` so each individual app becomes a proper
     bucket. See :func:`_resolve_app_buckets_root`.
+
+    ``allowed_apps`` (optional) restricts scanning to the named buckets
+    (lowercase matched). Used by the menu-driven analyze path so apps
+    that aren't referenced from any menu entry are skipped entirely —
+    massive win on 29-app monorepos where only ~15 apps are actually
+    menu-driven.
 
     Returns a 5-tuple
     ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``:
@@ -287,8 +294,11 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     api_by_frontend: dict[str, dict] = {}
     triggers_by_frontend: dict[str, dict] = {}
     detected_frameworks = []
+    skipped: list[str] = []
 
     from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
+
+    allowed_lower = {a.lower() for a in allowed_apps} if allowed_apps else None
 
     for entry in sorted(os.listdir(frontends_root)):
         child = os.path.join(frontends_root, entry)
@@ -297,6 +307,9 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
         if entry.startswith(".") or entry == "node_modules":
             continue
         entry_lower = entry.lower()
+        if allowed_lower is not None and entry_lower not in allowed_lower:
+            skipped.append(entry)
+            continue
         url_map, fw = build_frontend_url_map(
             child, framework=framework,
             strip_patterns=strip_patterns, route_prefix=route_prefix,
@@ -342,6 +355,10 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     if len(set(detected_frameworks)) > 1:
         overall_fw = "mixed"
 
-    logger.info("Frontend multi-repo: %d sub-projects, %d total routes, framework=%s",
+    if skipped:
+        logger.info("Frontend multi-repo: %d buckets skipped (not referenced by menu): %s",
+                    len(skipped),
+                    ", ".join(skipped[:10]) + (" ..." if len(skipped) > 10 else ""))
+    logger.info("Frontend multi-repo: %d sub-projects scanned, %d total routes, framework=%s",
                 len(detected_frameworks), len(merged_map), overall_fw)
     return merged_map, overall_fw, by_frontend, api_by_frontend, triggers_by_frontend
