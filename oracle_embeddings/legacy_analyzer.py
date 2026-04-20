@@ -1293,6 +1293,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 raw_menu_url = menu_raw_by_key.get(key, menu_entry.get("url", ""))
                 if app_key_spec:
                     app_slug = _extract_app_key(raw_menu_url, app_key_spec)
+            # _extract_app_key returns lowercase; buckets are also stored
+            # lowercase by build_frontend_url_map_multi. Case parity ⇒
+            # direct .get() lookup works regardless of original casing.
+            app_slug_lower = app_slug.lower() if app_slug else ""
 
             # Step 2 — 2-hop match via API-call index. If direct menu
             # match failed (menu URL ≠ controller URL — the common case
@@ -1304,11 +1308,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             two_hop_app = ""
             if api_by_frontend:
                 # Prefer the pre-known app bucket (from direct match).
-                if app_slug:
-                    files = (api_by_frontend.get(app_slug) or {}).get(key) or []
+                if app_slug_lower:
+                    files = (api_by_frontend.get(app_slug_lower) or {}).get(key) or []
                     if files:
                         screen_files = list(files)
-                        two_hop_app = app_slug
+                        two_hop_app = app_slug_lower
                 if not screen_files:
                     for app_name, idx in api_by_frontend.items():
                         files = idx.get(key)
@@ -1327,25 +1331,26 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     menu_entry = promoted
                     raw_menu_url = menu_entry.get("url", "")
                     app_slug = two_hop_app
+                    app_slug_lower = two_hop_app
 
             # react_entry (for frontend_project metadata + direct-match
             # presentation_layer) — prefer the resolved app's bucket.
             react_entry = None
-            if app_slug and by_frontend:
-                react_entry = (by_frontend.get(app_slug) or {}).get(key)
+            if app_slug_lower and by_frontend:
+                react_entry = (by_frontend.get(app_slug_lower) or {}).get(key)
             if react_entry is None:
                 react_entry = react_url_map.get(key)
             # If 2-hop supplied an app_slug but the Router didn't index
             # any routes (common: custom routing or menu hits app root),
             # synthesise a minimal react_entry so Frontend project column
             # isn't empty.
-            if react_entry is None and app_slug:
-                react_entry = {"frontend_name": app_slug, "file_path": ""}
+            if react_entry is None and app_slug_lower:
+                react_entry = {"frontend_name": app_slug_lower, "file_path": ""}
 
             # Button labels — same bucketing logic as screen files.
             trigger_labels: list[str] = []
             if triggers_by_frontend:
-                bucket = app_slug or two_hop_app
+                bucket = app_slug_lower or two_hop_app
                 if bucket:
                     trigger_labels = list((triggers_by_frontend.get(bucket) or {}).get(key) or [])
             elif single_triggers:

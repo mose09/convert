@@ -207,6 +207,51 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
     return {}, "unknown"
 
 
+_NESTED_APP_CANDIDATES = (
+    "src/apps", "apps", "packages", "src/pages", "projects", "src/projects",
+)
+
+
+def _resolve_app_buckets_root(frontends_root: str) -> str:
+    """Return the directory whose immediate children should be app buckets.
+
+    Mono-repo conventions often nest individual apps under a subpath like
+    ``src/apps/<app>`` rather than having each app be a top-level sibling
+    under ``frontends_root``. If the given root has too few immediate
+    child directories to look like an "app container" (no app-per-dir
+    structure), we probe a small set of common nested paths and use the
+    first one that has >= 2 child directories.
+
+    Returns the adjusted path, or the original ``frontends_root`` if no
+    drill-down applies.
+    """
+    if not frontends_root or not os.path.isdir(frontends_root):
+        return frontends_root
+
+    def _app_like_children(p: str) -> int:
+        try:
+            return sum(
+                1 for n in os.listdir(p)
+                if os.path.isdir(os.path.join(p, n))
+                and not n.startswith(".")
+                and n != "node_modules"
+            )
+        except Exception:
+            return 0
+
+    # If root already has >= 3 app-like children, use it as-is.
+    if _app_like_children(frontends_root) >= 3:
+        return frontends_root
+
+    for rel in _NESTED_APP_CANDIDATES:
+        cand = os.path.join(frontends_root, rel)
+        if os.path.isdir(cand) and _app_like_children(cand) >= 2:
+            logger.info("frontends-root drill-down: %s → %s", frontends_root, cand)
+            return cand
+
+    return frontends_root
+
+
 def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None,
                                   strip_patterns=None,
                                   route_prefix: str | None = None,
@@ -214,30 +259,28 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
-    Each immediate child directory that contains a ``package.json`` or
-    source files is treated as a separate frontend project. URL maps
-    from all sub-projects are merged (first-wins for duplicate URLs).
+    If ``frontends_root`` points at a single mono-repo (i.e. few direct
+    children) the helper transparently drills into ``src/apps/`` /
+    ``apps/`` / ``packages/`` so each individual app becomes a proper
+    bucket. See :func:`_resolve_app_buckets_root`.
 
     Returns a 5-tuple
     ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``:
 
     * ``merged_map`` / ``by_frontend`` — React/Polymer route → component file
       (legacy direct-match path, unchanged semantics).
-    * ``api_by_frontend`` — ``{frontend_name: {normalized_api_url: [file, ...]}}``
+    * ``api_by_frontend`` — ``{frontend_name_lower: {normalized_api_url: [file, ...]}}``
       built by :func:`legacy_react_api_scanner.build_api_url_index`. Used
       by the 2-hop matcher so a controller endpoint URL can be linked to
-      the screen(s) that call it.
-    * ``triggers_by_frontend`` — ``{frontend_name: {normalized_api_url: [button_label, ...]}}``
-      best-effort button label → API URL association. Populated by
-      :func:`legacy_react_api_scanner.extract_button_triggers`.
-
-    Each value in every ``by_frontend`` map carries a ``frontend_name``
-    key so callers know where a route originated — this enables
-    multi-app disambiguation via an ``app_key`` extracted from the menu
-    URL.
+      the screen(s) that call it. Bucket keys are stored lowercase to
+      match case-insensitive menu URL slugs.
+    * ``triggers_by_frontend`` — same lowercased key space; maps URL →
+      button labels.
     """
     if not frontends_root or not os.path.isdir(frontends_root):
         return {}, "unknown", {}, {}, {}
+
+    frontends_root = _resolve_app_buckets_root(frontends_root)
 
     merged_map = {}
     by_frontend: dict[str, dict] = {}
@@ -253,6 +296,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             continue
         if entry.startswith(".") or entry == "node_modules":
             continue
+        entry_lower = entry.lower()
         url_map, fw = build_frontend_url_map(
             child, framework=framework,
             strip_patterns=strip_patterns, route_prefix=route_prefix,
@@ -264,7 +308,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                 tagged["frontend_name"] = entry
                 annotated[key] = tagged
                 merged_map.setdefault(key, tagged)
-            by_frontend[entry] = annotated
+            by_frontend[entry_lower] = annotated
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
         # Build API URL index for every sub-project (even if no routes
@@ -279,7 +323,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             # Prepend bucket name so report paths are readable as
             # <frontend_name>/<relative_file> — analogous to how we treat
             # routes in the merged_map.
-            api_by_frontend[entry] = {
+            api_by_frontend[entry_lower] = {
                 url: [f"{entry}/{f}" for f in files]
                 for url, files in api_idx.items()
             }
@@ -291,7 +335,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                 logger.warning("extract_button_triggers %s 실패: %s", entry, e)
                 trig = {}
             if trig:
-                triggers_by_frontend[entry] = trig
+                triggers_by_frontend[entry_lower] = trig
                 logger.info("Frontend sub-project %s: %d button triggers", entry, len(trig))
 
     overall_fw = detected_frameworks[0] if detected_frameworks else "unknown"
