@@ -235,5 +235,5 @@
 - [x] Step 12: XML 산출물 (AS-IS 주석 보존 + 메타데이터 블록)
 - [x] Step 13: `llm_fallback.py` + `--llm-fallback` 옵션
 - [x] Step 14: `migrate-sql` 커맨드 통합 + 회귀 테스트
-- [ ] Step 15: README / CLAUDE.md 업데이트
+- [x] Step 15: README / CLAUDE.md 업데이트
 

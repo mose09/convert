@@ -22,6 +22,9 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
 | `discover-patterns` | LLM 으로 프로젝트 패턴 자동 발견 (analyze-legacy 사전 단계) | X | O |
 | `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
+| `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
+| `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 | X | 선택 |
+| `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -630,6 +633,88 @@ Query XML, Tables, RFC`
 
 매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
 행은 **회색**으로 하이라이트됩니다.
+
+### 12. SQL Migration — AS-IS → TO-BE 스키마 기반 쿼리 변환
+
+Oracle 11g 에서 Oracle 23ai 로 스키마가 바뀐 환경에 맞춰 기존 MyBatis 쿼리를
+일괄 변환합니다. 3-tier 구조: **DSL 매핑 (우선) → LLM fallback (복잡 케이스) →
+수동 큐 (신뢰도 < 0.7)**. 검증도 2-stage: **Stage A** (sqlglot static),
+**Stage B** (TO-BE DB 에서 parse-only). 스펙은 [`docs/migration/spec.md`](docs/migration/spec.md).
+
+**1) 매핑 파일 작성** (`input/column_mapping.yaml` — 템플릿 제공):
+
+```yaml
+tables:
+  - as_is: CUST
+    to_be: CUSTOMER_MASTER
+    type: rename
+
+columns:
+  - as_is: { table: CUST, column: CUST_NM }
+    to_be: { table: CUSTOMER_MASTER, column: CUSTOMER_NAME }
+  - as_is: { table: CUST, column: REG_DT, type: "VARCHAR2(8)" }
+    to_be: { table: CUSTOMER_MASTER, column: REGISTER_DATE, type: "DATE" }
+    transform:
+      read:  "TO_DATE({src}, 'YYYYMMDD')"
+      where: "TO_DATE({src}, 'YYYYMMDD')"
+  - as_is: { table: CUST, column: USE_YN }
+    to_be: { table: CUSTOMER_MASTER, column: IS_ACTIVE, type: "NUMBER(1)" }
+    value_map: { "Y": 1, "N": 0 }
+```
+
+지원 케이스: **1:1 rename / 타입 변환 / 컬럼 분할 (1:N) / 컬럼 병합 (N:1) /
+값 재매핑 / 삭제**.
+
+**2) 사전 영향분석 (실제 변환 안 함)**:
+
+```powershell
+python main.py migration-impact `
+  --mybatis-dir C:\work\mapper `
+  --mapping input\column_mapping.yaml `
+  --as-is-schema .\output\스키마.md `
+  --to-be-schema .\output\to_be_schema.md
+```
+
+출력: `output/sql_migration/impact_report_TIMESTAMP.xlsx` (5 시트 — Summary /
+Table Impact / Column Impact / Affected Statements / Validation).
+
+**3) 실제 변환 + Stage A 검증**:
+
+```powershell
+python main.py migrate-sql `
+  --mybatis-dir C:\work\mapper `
+  --mapping input\column_mapping.yaml `
+  --to-be-schema .\output\to_be_schema.md `
+  --terms-md .\output\terms_dictionary.md `
+  --emit-column-comments `
+  --llm-fallback
+```
+
+출력:
+- `output/sql_migration/sql_migration_TIMESTAMP.xlsx` — 5 시트 (Summary /
+  Conversions (18컬럼) / Validation Errors / Unresolved Queue / Mapping Coverage)
+- `output/sql_migration/converted/<원본 경로>.xml` — 구조 보존 치환된 XML.
+  각 statement 위에 `MIGRATION` 메타데이터 블록 + `AS-IS (original)` 주석.
+
+주요 플래그:
+- `--emit-column-comments`: `SELECT CUSTOMER_NAME /* 사용자명 */` 식 한글 주석 삽입
+- `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
+- `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
+- `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+
+**4) Stage B 검증 — TO-BE DB 에서 parse-only**:
+
+```powershell
+python main.py validate-migration `
+  --converted-dir .\output\sql_migration\converted `
+  --dsn to_be_host:1521/newdb `
+  --parallel 10
+```
+
+`cursor.parse()` 로 실행 없이 구문 + 스키마 검증만. `--dry-run` 으로 DB 없이
+statement 수집 구조만 확인 가능.
+
+---
 
 ### 6. 벡터 DB 임베딩 + RAG ERD
 

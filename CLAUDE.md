@@ -16,7 +16,7 @@
 - Python CLI 기반
 - 레포: `github.com/mose09/convert`, 작업 브랜치: `claude/push-previous-changes-4P5x8`
 
-## 주요 커맨드 (18종)
+## 주요 커맨드 (21종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -32,6 +32,9 @@
 | `audit-standards` | 기존 스키마 전체를 용어사전 기준으로 전수 감사 | X | X |
 | `analyze-legacy` | **AS-IS 소스 분석 (핵심)** — Controller→Service→XML→Table→RFC 체인 | X | 선택 |
 | `discover-patterns` | **LLM이 프로젝트 구조/패턴 자동 추출 → patterns.yaml** | O | X |
+| `migration-impact` | **SQL Migration 사전 영향분석** — column_mapping.yaml × AS-IS 쿼리 | X | X |
+| `migrate-sql` | **AS-IS MyBatis XML → TO-BE 스키마용 일괄 변환 + 5시트 Excel 리포트** | 선택 | X |
+| `validate-migration` | **변환 XML 의 TO-BE SQL 을 parse-only 검증 (Stage B)** | X | O |
 
 ## 주요 모듈 (analyze-legacy 파이프라인)
 
@@ -47,6 +50,42 @@
 | `oracle_embeddings/legacy_util.py` | 공유 유틸 (`normalize_url` 등). |
 | `oracle_embeddings/legacy_pattern_discovery.py` | **LLM 기반 프로젝트 패턴 추출**. stereotype별 샘플 ~40개 클래스 요약 → `patterns.yaml` 생성. 코드 특화 모델 별도 env (`PATTERN_LLM_*`) 지원. |
 | `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace/statement 4종 인덱스, Oracle comma-FROM + `(+)` outer join, composite JOIN. `scan_mybatis_dir`는 `.git/.gradle/.idea/.svn/.hg/.next/node_modules`만 스킵 (빌드 산출물명 `target/build/bin/out/dist`는 monorepo에서 실제 프로젝트일 수 있어 스킵 안 함 — `_is_sql_mapper`가 false positive 걸러줌). namespace 변수 2-pass 해석 (`sqlSession.selectList(namespace + "findXxx", ...)`). |
+
+## 주요 모듈 (SQL Migration 파이프라인 — `oracle_embeddings/migration/`)
+
+스펙: `docs/migration/spec.md`. 3-tier 변환 (DSL → LLM → 수동) + 2-stage 검증
+(Stage A sqlglot / Stage B DBMS parse). sqlglot + lxml 의존성.
+
+| 파일 | 역할 |
+|------|------|
+| `mapping_model.py` | dataclass 정의 (ColumnRef/SplitTarget/TableMapping/ColumnMapping/TransformSpec/MappingOptions/Mapping/ChangeItem/RewriteResult) + LoaderError. |
+| `mapping_loader.py` | `column_mapping.yaml` 로드 + 다중 에러 collect 후 LoaderErrorGroup. location 경로 포함 (예: `columns[3].transform.read`). sqlglot.parse_one 으로 transform 표현식 검증. |
+| `impact_analyzer.py` | **migration-impact** 커맨드 — 매핑 파일 × AS-IS 쿼리 영향 리포트 (5 시트: Summary/Table Impact/Column Impact/Affected Statements/Validation). `load_schema_tables` 공유 유틸. |
+| `sql_rewriter.py` | `rewrite_sql(sql, mapping)` → SqlRewriteOutcome. sqlglot AST → 8개 transformer 순차 적용 → re-emit. `mask_mybatis_placeholders` / `unmask_mybatis_placeholders` 로 `#{x}`/`${x}` parse 회피 (공개 API, validator_static/comment_injector 가 재사용). DEFAULT_PIPELINE = [TableRename, ColumnRename, ColumnSplit, ColumnMerge, TypeConversion, ValueMapping, JoinPathRewriter, DroppedColumnChecker]. |
+| `transformers/base.py` | Transformer ABC + TransformerResult + RewriteContext. `build_alias_map` (alias/table_name → AS-IS table upper) 는 TableRename 후에도 AS-IS 역해석 가능. |
+| `transformers/table_rename.py` | rename kind 테이블 노드 교체 + 같은 이름 qualifier 를 쓰는 Column 도 업데이트. split/merge/drop 은 needs_llm. |
+| `transformers/column_rename.py` | exp.Column 순회 (Pass A) + INSERT column list 의 exp.Schema.expressions 내 exp.Identifier (Pass B). rename kind 만 처리. |
+| `transformers/type_conversion.py` | `transform.read/write/where` 템플릿을 컨텍스트별로 적용 — WHERE/JOIN ON → where, UPDATE SET LHS/INSERT col list → write, 나머지 → read. |
+| `transformers/value_mapping.py` | 컬럼 rename + EQ/NEQ/IN 에서 인접 리터럴 value_map 치환. boolean/number/string 리터럴 타입 보존. |
+| `transformers/column_split.py` | SELECT projection 에서만 `reverse` 표현식 치환. 다른 컨텍스트는 needs_llm. |
+| `transformers/column_merge.py` | MVP 는 flag-only needs_llm. |
+| `transformers/join_path_rewriter.py` | split/merge 테이블 JOIN 감지 시 needs_llm (experimental). |
+| `transformers/dropped_column_checker.py` | kind=drop 컬럼 참조 감지 → warning (tree 수정 없음 → AUTO_WARN). |
+| `dynamic_sql_expander.py` | MyBatis 동적 태그 (`<if>/<choose>/<where>/<set>/<trim>/<foreach>/<include>/<bind>`) → 정적 SQL 경로 전개. Level 1 (max/min), Level 2 (choose alternatives), Level 3 (foreach n=2). `build_sql_includes(root)` + `expand_paths(stmt, sql_includes, max_paths, level)` 공개 API. |
+| `xml_rewriter.py` | MyBatis mapper XML 단위 통합 변환. `rewrite_xml(path, mapping)` → 각 statement 최대경로 전개 → rewrite_sql → 전체 트리에 word-boundary 치환 (type_wrap/value/split 같은 복합 변환은 text substitution 범위 밖, 메타데이터 블록에만 기록). `annotate_statements` 로 MIGRATION 메타 블록 + AS-IS 주석 삽입. `serialize_tree` 로 pretty_print=False 저장. |
+| `bind_dummifier.py` | validator_db 전처리. `#{x}` → `:x` (Oracle bind), `${x}` → `DUMMY_IDENT`. jdbcType 힌트 strip, nested path 의 첫 token 사용. |
+| `validator_static.py` | Stage A — sqlglot parse + Table/Column 스키마 존재 확인. CTE/pseudocol (ROWNUM/SYSDATE/USER/DUAL) 화이트리스트. qualifier 해석 실패/ambiguous → warning. |
+| `validator_db.py` | Stage B — oracledb `cursor.parse()` (lazy import). `validate_db_batch(items, dsn, user, password, parallel)` 는 워커당 conn 1개 병렬, caller 순서대로 재정렬. `write_validation_report` 로 2 시트 xlsx. |
+| `comment_injector.py` | `inject_comments(sql, ko_lookup, scopes)` — sqlglot `Column.add_comments()` 로 한글 주석 부착. scope 분류기 (select/update/insert/where/join). INSERT 헤더는 exp.Identifier → exp.Column 으로 swap 후 주석. |
+| `llm_fallback.py` | `llm_rewrite(as_is_sql, mapping, partial_outcome, config)` — needs_llm 상태 statement 를 OpenAI 호환 엔드포인트로 JSON 변환. relevant mapping 만 프롬프트에 포함 (token 억제). confidence < 0.7 또는 needs_human_review=true → UNRESOLVED. |
+| `migration_report.py` | `write_migration_report(results, mapping, output_path, ...)` — 5 시트 Excel (Summary / Conversions 18컬럼 / Validation Errors / Unresolved Queue / Mapping Coverage). 상태별 하이라이트 (빨강=UNRESOLVED/PARSE_FAIL/Stage B 실패, 노랑=AUTO_WARN/NEEDS_LLM, 회색=AUTO 변경없음). |
+
+**매핑 템플릿 / 산출물**:
+- `input/column_mapping_template.yaml`: 스펙 §4 의 7 예제 (rename/type/split/merge/value_map/drop/split-discriminator) 그대로
+- `output/sql_migration/converted/<rel>.xml`: 변환 XML (구조 보존)
+- `output/sql_migration/sql_migration_TIMESTAMP.xlsx`: 5 시트 리포트
+- `output/sql_migration/impact_report_TIMESTAMP.xlsx`: 사전 영향분석 리포트
+- `output/sql_migration/validation_report_TIMESTAMP.xlsx`: Stage B 리포트
 
 ## 공유 유틸 (중복 구현 금지)
 
