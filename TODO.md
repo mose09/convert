@@ -214,3 +214,26 @@
 ## 마무리
 - [x] 자체 테스트 (Bug #1, #2, #5, #6, #8)
 - [x] Commit and push
+
+---
+
+# TODO: SQL Migration (AS-IS → TO-BE) — docs/migration/spec.md §13 순서
+
+스펙: `docs/migration/spec.md`. 리스크 낮은 순서로 15 단계.
+
+- [x] Step 1: `oracle_embeddings/migration/{mapping_model.py, mapping_loader.py}` + `input/column_mapping_template.yaml` + `requirements.txt` 에 sqlglot 추가
+- [ ] Step 2: `migration-impact` 커맨드 — 매핑 파일 검증 + 영향 리포트만 (변환 X)
+- [ ] Step 3: `sql_rewriter.py` + `ColumnRenameTransformer` + `TableRenameTransformer`
+- [ ] Step 4: `dynamic_sql_expander.py` — Level 1 (max/min 2 경로)
+- [ ] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환
+- [ ] Step 6: `validator_static.py` — sqlglot static 검증
+- [ ] Step 7: `migration_report.py` — Excel 5 시트
+- [ ] Step 8: `bind_dummifier.py` + `validator_db.py` + `validate-migration` 커맨드
+- [ ] Step 9: 나머지 transformer 6 종 (TypeConversion / ColumnSplit / ColumnMerge / ValueMapping / JoinPathRewriter / DroppedColumnChecker)
+- [ ] Step 10: dynamic_sql_expander — Level 2 (컬럼 커버리지), Level 3 (foreach n=0,1,2 샘플링)
+- [ ] Step 11: `comment_injector.py` — 한글 주석 삽입
+- [ ] Step 12: XML 산출물 (AS-IS 주석 보존 + 메타데이터 블록)
+- [ ] Step 13: `llm_fallback.py` + `--llm-fallback` 옵션
+- [ ] Step 14: `migrate-sql` 커맨드 통합 + 회귀 테스트
+- [ ] Step 15: README / CLAUDE.md 업데이트
+

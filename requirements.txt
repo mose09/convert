@@ -6,3 +6,7 @@ openpyxl>=3.1.0
 # 벡터 DB & RAG ERD 생성 시 필요
 chromadb>=0.5.0
 openai>=1.0.0
+
+# SQL Migration (migrate-sql / migration-impact / validate-migration)
+sqlglot>=23.0.0
+lxml>=5.0.0
