@@ -1,10 +1,10 @@
-# TODO: 브랜치 전략 정비 — `main` 기준 GitHub Flow 도입 (진행중)
+# TODO: 브랜치 전략 정비 — `main` 기준 GitHub Flow 도입 (완료)
 
 - [x] 현재 tip(`1231b82`)에서 `main` 브랜치 생성
-- [ ] `CLAUDE.md` 갱신: 작업 브랜치 표기/재개 체크리스트를 `main` 기반으로 수정
-- [ ] `main` 원격 푸시 (`git push -u origin main`)
-- [ ] GitHub 레포 기본 브랜치(Default branch) 를 `main` 으로 변경 — **사용자 수동** (Settings → Branches)
-- [ ] 구 브랜치 정리: 머지/백업 후 `claude/*` 원격 브랜치 삭제 — **사용자 확인 후 진행**
+- [x] `CLAUDE.md` 갱신: 작업 브랜치 표기/재개 체크리스트를 `main` 기반으로 수정
+- [x] `main` 원격 푸시 (`git push -u origin main`)
+- [x] GitHub 레포 기본 브랜치(Default branch) 를 `main` 으로 변경 (사용자 수동 처리)
+- [x] 구 브랜치 정리 (사용자 수동 처리): `claude/{analyze-project-setup-gj7Y4, connection-check-DKKMR, project-review-sCuTm, review-project-setup-5Em4H, review-context-files-J4rok}` 원격 삭제. `claude/push-previous-changes-4P5x8` 은 의도적으로 유지.
 
 ---
 
