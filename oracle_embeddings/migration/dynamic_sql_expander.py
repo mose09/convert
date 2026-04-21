@@ -437,6 +437,8 @@ def _render_include(
     includes: Dict[str, etree._Element],
     include_stack: Set[str],
     counter: "_Counter",
+    choose_override: Dict[int, int],
+    foreach_items: int,
 ) -> List[str]:
     refid = elem.get("refid")
     if not refid:
@@ -457,6 +459,8 @@ def _render_include(
             includes=includes,
             include_stack=include_stack,
             counter=counter,
+            choose_override=choose_override,
+            foreach_items=foreach_items,
         )
     finally:
         include_stack.discard(refid)

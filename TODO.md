@@ -234,6 +234,6 @@
 - [x] Step 11: `comment_injector.py` — 한글 주석 삽입
 - [x] Step 12: XML 산출물 (AS-IS 주석 보존 + 메타데이터 블록)
 - [x] Step 13: `llm_fallback.py` + `--llm-fallback` 옵션
-- [ ] Step 14: `migrate-sql` 커맨드 통합 + 회귀 테스트
+- [x] Step 14: `migrate-sql` 커맨드 통합 + 회귀 테스트
 - [ ] Step 15: README / CLAUDE.md 업데이트
 

@@ -942,6 +942,212 @@ def cmd_convert_menu(args):
     print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
 
 
+def cmd_migrate_sql(args):
+    """column_mapping.yaml 기반으로 MyBatis XML 전체를 TO-BE 스키마용으로 변환.
+
+    Stage A (sqlglot static) 는 항상 실행. --llm-fallback 이면 NEEDS_LLM 상태
+    statement 를 LLM 으로 보조 변환 시도. 산출물: output/sql_migration/
+    converted/<경로>.xml (--output-format 에 xml 포함) + Excel 5 시트 리포트.
+    """
+    import os
+    from datetime import datetime as _dt
+    from pathlib import Path
+
+    from oracle_embeddings.migration.comment_injector import inject_comments
+    from oracle_embeddings.migration.impact_analyzer import load_schema_tables
+    from oracle_embeddings.migration.llm_fallback import llm_rewrite
+    from oracle_embeddings.migration.mapping_loader import load_mapping
+    from oracle_embeddings.migration.migration_report import (
+        write_migration_report,
+    )
+    from oracle_embeddings.migration.validator_static import validate_static
+    from oracle_embeddings.migration.xml_rewriter import (
+        annotate_statements, rewrite_xml, serialize_tree,
+    )
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    mybatis_dir = Path(args.mybatis_dir)
+    mapping_path = Path(args.mapping)
+    to_be_schema_path = Path(args.to_be_schema)
+    terms_md = Path(args.terms_md) if args.terms_md else None
+
+    if not mybatis_dir.is_dir():
+        print(f"Error: --mybatis-dir 없음: {mybatis_dir}")
+        return
+    if not mapping_path.is_file():
+        print(f"Error: --mapping 파일 없음: {mapping_path}")
+        return
+    if not to_be_schema_path.is_file():
+        print(f"Error: --to-be-schema 파일 없음: {to_be_schema_path}")
+        return
+
+    formats = {f.strip().lower() for f in (args.output_format or "excel,xml").split(",")}
+    emit_excel = "excel" in formats
+    emit_xml = "xml" in formats
+
+    to_be_schema_tables = load_schema_tables(to_be_schema_path)
+    try:
+        mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
+    except Exception as exc:
+        print(f"Error: 매핑 파일 로드 실패:\n{exc}")
+        return
+
+    # Korean comment lookup for --emit-column-comments
+    ko_lookup: dict = {}
+    if args.emit_column_comments:
+        ko_lookup = _build_ko_lookup(to_be_schema_path, terms_md)
+        print(f"Korean comment lookup: {len(ko_lookup)} entries")
+
+    # Collect XML files
+    xml_files = sorted(mybatis_dir.rglob("*.xml"))
+    print(f"Scanning {len(xml_files)} XML file(s) under {mybatis_dir}...")
+
+    all_results = []
+    out_root = Path("output/sql_migration")
+    converted_root = out_root / "converted"
+
+    for xml_path in xml_files:
+        out = rewrite_xml(xml_path, mapping)
+        if out.parse_error:
+            print(f"  skip (parse err): {xml_path}: {out.parse_error}")
+            continue
+
+        for rr in out.results:
+            # Stage A
+            if rr.to_be_sql:
+                vr = validate_static(rr.to_be_sql, to_be_schema_tables)
+                rr.stage_a_pass = vr.ok
+                if not vr.ok and not rr.parse_error:
+                    rr.parse_error = "; ".join(
+                        f"[{i.code}] {i.message}" for i in vr.errors
+                    )
+
+            # LLM fallback
+            if args.llm_fallback and rr.status == "NEEDS_LLM":
+                outcome_stub = _make_partial_outcome(rr)
+                llm_out = llm_rewrite(
+                    rr.as_is_sql,
+                    mapping,
+                    partial_outcome=outcome_stub,
+                    config=config,
+                )
+                if llm_out.error:
+                    rr.warnings.append(f"LLM fallback error: {llm_out.error}")
+                elif llm_out.converted_sql:
+                    rr.to_be_sql = llm_out.converted_sql
+                    rr.llm_confidence = llm_out.confidence
+                    rr.llm_reasoning = llm_out.review_reason
+                    rr.conversion_method = "LLM"
+                    rr.applied_transformers.append("LLMFallback")
+                    if llm_out.needs_human_review:
+                        rr.status = "UNRESOLVED"
+                    else:
+                        rr.status = "AUTO_WARN"
+                    # Re-run Stage A on the LLM output
+                    vr = validate_static(llm_out.converted_sql, to_be_schema_tables)
+                    rr.stage_a_pass = vr.ok
+                    if not vr.ok:
+                        rr.parse_error = "; ".join(
+                            f"[{i.code}] {i.message}" for i in vr.errors
+                        )
+
+            # Korean comments
+            if args.emit_column_comments and rr.to_be_sql and ko_lookup:
+                scopes = mapping.options.comment_scope
+                rr.to_be_sql = inject_comments(
+                    rr.to_be_sql, ko_lookup, scopes=scopes,
+                )
+
+        all_results.extend(out.results)
+
+        if emit_xml and not args.dry_run and out.tree is not None:
+            annotate_statements(
+                out.tree, out.results,
+                preserve_as_is=not args.no_xml_preserve_as_is,
+            )
+            rel = xml_path.relative_to(mybatis_dir)
+            out_path = converted_root / rel
+            serialize_tree(out.tree, out_path)
+
+    # Stats
+    from collections import Counter
+    status_count = Counter(r.status for r in all_results)
+    total = len(all_results)
+    auto = status_count.get("AUTO", 0)
+    auto_warn = status_count.get("AUTO_WARN", 0)
+    needs_llm = status_count.get("NEEDS_LLM", 0)
+    unresolved = status_count.get("UNRESOLVED", 0)
+    parse_fail = status_count.get("PARSE_FAIL", 0)
+
+    print()
+    print(f"Converted {total} statement(s): "
+          f"AUTO={auto} AUTO_WARN={auto_warn} NEEDS_LLM={needs_llm} "
+          f"UNRESOLVED={unresolved} PARSE_FAIL={parse_fail}")
+    stage_a_passed = sum(1 for r in all_results if r.stage_a_pass)
+    stage_a_ran = sum(1 for r in all_results if r.stage_a_pass is not None)
+    if stage_a_ran:
+        print(f"Stage A: {stage_a_passed}/{stage_a_ran} pass "
+              f"({stage_a_passed / stage_a_ran * 100:.1f}%)")
+
+    if emit_excel:
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        report_path = out_root / f"sql_migration_{ts}.xlsx"
+        write_migration_report(
+            all_results, mapping, report_path,
+            mybatis_dir=mybatis_dir,
+            mapping_path=mapping_path,
+        )
+        print(f"Excel report: {report_path}")
+    if emit_xml and not args.dry_run:
+        print(f"Converted XML: {converted_root}")
+    elif args.dry_run:
+        print("(--dry-run: XML 파일은 작성되지 않음)")
+
+
+def _build_ko_lookup(to_be_schema_path, terms_md):
+    """Assemble ``{TABLE.COL: 한글}`` from TO-BE schema.md (column comments)
+    plus an optional terms_dictionary.md (Korean gloss)."""
+    from oracle_embeddings.md_parser import parse_schema_md
+    out: dict = {}
+    schema = parse_schema_md(str(to_be_schema_path))
+    for tbl in schema["tables"]:
+        for col in tbl["columns"]:
+            c = col.get("comment")
+            if c:
+                out[f"{tbl['name'].upper()}.{col['column_name'].upper()}"] = c
+    if terms_md and terms_md.is_file():
+        try:
+            import re
+            text = terms_md.read_text(encoding="utf-8")
+            for m in re.finditer(
+                r"^\|\s*[^|]*\|\s*([A-Z_][A-Z0-9_]*)\s*\|\s*([^|]+?)\s*\|",
+                text, flags=re.MULTILINE,
+            ):
+                col = m.group(1).upper()
+                ko = m.group(2).strip()
+                if ko and col:
+                    out.setdefault(col, ko)
+        except Exception:
+            pass
+    return out
+
+
+def _make_partial_outcome(rr):
+    """Adapt a RewriteResult into a lightweight SqlRewriteOutcome for
+    llm_fallback.llm_rewrite (it only reads warnings + to_be_sql)."""
+    from oracle_embeddings.migration.sql_rewriter import SqlRewriteOutcome
+    return SqlRewriteOutcome(
+        as_is_sql=rr.as_is_sql,
+        to_be_sql=rr.to_be_sql,
+        status=rr.status,
+        applied_transformers=list(rr.applied_transformers),
+        changed_items=list(rr.changed_items),
+        warnings=list(rr.warnings),
+    )
+
+
 def cmd_validate_migration(args):
     """변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 로 검증 (Stage B).
 
@@ -1491,6 +1697,30 @@ def main():
     cm_parser.add_argument("--no-llm", action="store_true",
                            help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
 
+    # migrate-sql command
+    ms_parser = subparsers.add_parser(
+        "migrate-sql",
+        help="column_mapping.yaml 기반 MyBatis XML → TO-BE 스키마용 변환 + Stage A 검증 + 산출물 생성",
+    )
+    ms_parser.add_argument("--mybatis-dir", required=True,
+                           help="AS-IS MyBatis mapper XML 디렉토리")
+    ms_parser.add_argument("--mapping", required=True,
+                           help="column_mapping.yaml 경로")
+    ms_parser.add_argument("--to-be-schema", required=True,
+                           help="TO-BE 스키마 .md (schema 커맨드 결과물)")
+    ms_parser.add_argument("--terms-md",
+                           help="(선택) terms_dictionary.md — 한글 주석 삽입용")
+    ms_parser.add_argument("--output-format", default="excel,xml",
+                           help="쉼표 구분 (기본: excel,xml)")
+    ms_parser.add_argument("--emit-column-comments", action="store_true",
+                           help="변환된 SELECT 컬럼에 /* 한글 */ 주석 삽입 (기본 off)")
+    ms_parser.add_argument("--no-xml-preserve-as-is", action="store_true",
+                           help="AS-IS 주석 보존 비활성화 (기본 preserve)")
+    ms_parser.add_argument("--llm-fallback", action="store_true",
+                           help="NEEDS_LLM 상태 statement 를 LLM 으로 보조 변환")
+    ms_parser.add_argument("--dry-run", action="store_true",
+                           help="XML 파일은 쓰지 않고 리포트만 생성")
+
     # validate-migration command (Stage B)
     vm_parser = subparsers.add_parser(
         "validate-migration",
@@ -1578,6 +1808,8 @@ def main():
         cmd_convert_menu(args)
     elif args.command == "migration-impact":
         cmd_migration_impact(args)
+    elif args.command == "migrate-sql":
+        cmd_migrate_sql(args)
     elif args.command == "validate-migration":
         cmd_validate_migration(args)
     elif args.command == "all":
