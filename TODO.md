@@ -1,3 +1,12 @@
+# TODO: 머지 후 피처 브랜치 수동 삭제 규칙 박기 (완료)
+
+- [x] CLAUDE.md 커밋 규칙 섹션에 "머지 직후 원격+로컬 삭제" 명시
+- [x] CLAUDE.md 재개 체크리스트에 `git fetch --prune` + 세션 종료 절차 추가
+- [x] 본 변경 자체를 피처 브랜치 (`claude/manual-cleanup-rule`) 에서 진행해 새 워크플로우 시연
+- [x] 머지 후 원격 + 로컬 브랜치 삭제로 디스시플린 검증
+
+---
+
 # TODO: 브랜치 전략 정비 — `main` 기준 GitHub Flow 도입 (완료)
 
 - [x] 현재 tip(`1231b82`)에서 `main` 브랜치 생성
