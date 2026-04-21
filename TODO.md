@@ -225,7 +225,7 @@
 - [x] Step 2: `migration-impact` 커맨드 — 매핑 파일 검증 + 영향 리포트만 (변환 X)
 - [x] Step 3: `sql_rewriter.py` + `ColumnRenameTransformer` + `TableRenameTransformer`
 - [x] Step 4: `dynamic_sql_expander.py` — Level 1 (max/min 2 경로)
-- [ ] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환
+- [x] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환
 - [ ] Step 6: `validator_static.py` — sqlglot static 검증
 - [ ] Step 7: `migration_report.py` — Excel 5 시트
 - [ ] Step 8: `bind_dummifier.py` + `validator_db.py` + `validate-migration` 커맨드
