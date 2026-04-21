@@ -942,6 +942,29 @@ def cmd_convert_menu(args):
     print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
 
 
+def cmd_convert_mapping(args):
+    """AS-IS↔TO-BE 컬럼 매핑 .md → column_mapping.yaml 자동 변환 (LLM 옵션)."""
+    from pathlib import Path as _Path
+    from oracle_embeddings.migration.mapping_converter import convert_mapping_md
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    md_path = _Path(args.mapping_md)
+    if not md_path.is_file():
+        print(f"Error: --mapping-md 파일 없음: {md_path}")
+        return
+    output_path = _Path(args.output or "input/column_mapping.yaml")
+
+    abs_path = convert_mapping_md(
+        md_path, output_path,
+        use_llm=not args.no_llm,
+        config=config,
+    )
+    print(f"\ncolumn_mapping.yaml 저장됨: {abs_path}")
+    print(f"사용 예: python main.py migration-impact --mapping {output_path} ...")
+
+
 def cmd_migrate_sql(args):
     """column_mapping.yaml 기반으로 MyBatis XML 전체를 TO-BE 스키마용으로 변환.
 
@@ -1697,6 +1720,18 @@ def main():
     cm_parser.add_argument("--no-llm", action="store_true",
                            help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
 
+    # convert-mapping command
+    cmap_parser = subparsers.add_parser(
+        "convert-mapping",
+        help="AS-IS↔TO-BE 컬럼 매핑 .md → column_mapping.yaml 자동 변환 (LLM 이 kind/transform 추론)",
+    )
+    cmap_parser.add_argument("--mapping-md", required=True,
+                             help="AS-IS/TO-BE 매핑이 적힌 .md 파일 (임의 양식)")
+    cmap_parser.add_argument("--output",
+                             help="출력 YAML 경로 (기본: input/column_mapping.yaml)")
+    cmap_parser.add_argument("--no-llm", action="store_true",
+                             help="LLM 호출 없이 pipe-table heuristic 만 사용 (폐쇄망/오프라인)")
+
     # migrate-sql command
     ms_parser = subparsers.add_parser(
         "migrate-sql",
@@ -1808,6 +1843,8 @@ def main():
         cmd_convert_menu(args)
     elif args.command == "migration-impact":
         cmd_migration_impact(args)
+    elif args.command == "convert-mapping":
+        cmd_convert_mapping(args)
     elif args.command == "migrate-sql":
         cmd_migrate_sql(args)
     elif args.command == "validate-migration":

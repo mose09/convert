@@ -22,6 +22,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
 | `discover-patterns` | LLM 으로 프로젝트 패턴 자동 발견 (analyze-legacy 사전 단계) | X | O |
 | `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
+| `convert-mapping` | AS-IS↔TO-BE 컬럼 매핑 .md → `column_mapping.yaml` (LLM 이 kind/transform 추론) | 선택 | X |
 | `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
 | `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
@@ -640,6 +641,17 @@ Oracle 11g 에서 Oracle 23ai 로 스키마가 바뀐 환경에 맞춰 기존 My
 일괄 변환합니다. 3-tier 구조: **DSL 매핑 (우선) → LLM fallback (복잡 케이스) →
 수동 큐 (신뢰도 < 0.7)**. 검증도 2-stage: **Stage A** (sqlglot static),
 **Stage B** (TO-BE DB 에서 parse-only). 스펙은 [`docs/migration/spec.md`](docs/migration/spec.md).
+
+**0) (선택) 기존 매핑 .md → YAML 자동 변환**: 팀에 이미 AS-IS↔TO-BE 테이블/컬럼
+매핑 문서가 markdown 으로 있다면 LLM 이 kind (rename / type_convert / split /
+merge / value_map / drop) 를 추론해 YAML 로 변환:
+
+```powershell
+python main.py convert-mapping `
+  --mapping-md .\docs\as_is_to_be_mapping.md `
+  --output .\input\column_mapping.yaml
+# --no-llm 로 heuristic 만 사용 (pipe table 헤더 synonym 매칭)
+```
 
 **1) 매핑 파일 작성** (`input/column_mapping.yaml` — 템플릿 제공):
 

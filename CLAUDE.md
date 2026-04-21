@@ -16,7 +16,7 @@
 - Python CLI 기반
 - 레포: `github.com/mose09/convert`, 작업 브랜치: `claude/push-previous-changes-4P5x8`
 
-## 주요 커맨드 (21종)
+## 주요 커맨드 (22종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -32,6 +32,7 @@
 | `audit-standards` | 기존 스키마 전체를 용어사전 기준으로 전수 감사 | X | X |
 | `analyze-legacy` | **AS-IS 소스 분석 (핵심)** — Controller→Service→XML→Table→RFC 체인 | X | 선택 |
 | `discover-patterns` | **LLM이 프로젝트 구조/패턴 자동 추출 → patterns.yaml** | O | X |
+| `convert-mapping` | **AS-IS↔TO-BE 매핑 .md → column_mapping.yaml** LLM 변환 | 선택 | X |
 | `migration-impact` | **SQL Migration 사전 영향분석** — column_mapping.yaml × AS-IS 쿼리 | X | X |
 | `migrate-sql` | **AS-IS MyBatis XML → TO-BE 스키마용 일괄 변환 + 5시트 Excel 리포트** | 선택 | X |
 | `validate-migration` | **변환 XML 의 TO-BE SQL 을 parse-only 검증 (Stage B)** | X | O |
@@ -61,6 +62,7 @@
 | `mapping_model.py` | dataclass 정의 (ColumnRef/SplitTarget/TableMapping/ColumnMapping/TransformSpec/MappingOptions/Mapping/ChangeItem/RewriteResult) + LoaderError. |
 | `mapping_loader.py` | `column_mapping.yaml` 로드 + 다중 에러 collect 후 LoaderErrorGroup. location 경로 포함 (예: `columns[3].transform.read`). sqlglot.parse_one 으로 transform 표현식 검증. |
 | `impact_analyzer.py` | **migration-impact** 커맨드 — 매핑 파일 × AS-IS 쿼리 영향 리포트 (5 시트: Summary/Table Impact/Column Impact/Affected Statements/Validation). `load_schema_tables` 공유 유틸. |
+| `mapping_converter.py` | **convert-mapping** 커맨드 — 임의 .md 매핑 문서 → column_mapping.yaml. LLM 경로 (`LLM_*` 또는 `PATTERN_LLM_*` env) 에서 kind (rename/type_convert/split/merge/value_map/drop) 자동 분류 + transform 표현식 추론. `--no-llm` 경로는 파이프 테이블 헤더 synonym 매칭 fallback. 결과 YAML 은 곧바로 `mapping_loader.load_mapping_collect` 로 검증 → 에러 리스트 출력. |
 | `sql_rewriter.py` | `rewrite_sql(sql, mapping)` → SqlRewriteOutcome. sqlglot AST → 8개 transformer 순차 적용 → re-emit. `mask_mybatis_placeholders` / `unmask_mybatis_placeholders` 로 `#{x}`/`${x}` parse 회피 (공개 API, validator_static/comment_injector 가 재사용). DEFAULT_PIPELINE = [TableRename, ColumnRename, ColumnSplit, ColumnMerge, TypeConversion, ValueMapping, JoinPathRewriter, DroppedColumnChecker]. |
 | `transformers/base.py` | Transformer ABC + TransformerResult + RewriteContext. `build_alias_map` (alias/table_name → AS-IS table upper) 는 TableRename 후에도 AS-IS 역해석 가능. |
 | `transformers/table_rename.py` | rename kind 테이블 노드 교체 + 같은 이름 qualifier 를 쓰는 Column 도 업데이트. split/merge/drop 은 needs_llm. |
