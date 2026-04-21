@@ -153,6 +153,114 @@ def serialize_tree(tree: etree._ElementTree, out_path: Path) -> None:
     )
 
 
+def annotate_statements(
+    tree: etree._ElementTree,
+    results: List[RewriteResult],
+    *,
+    preserve_as_is: bool = True,
+) -> None:
+    """Prepend a migration metadata comment to each statement (docs spec §12.2).
+
+    Writes two comment blocks at the top of every ``<select>/<insert>/
+    <update>/<delete>`` element:
+
+    1. ``MIGRATION: <sql_id>`` summary (Status / Method / Applied / Changed /
+       Stage A / Stage B / Notes).
+    2. ``AS-IS (original)`` with the max-path AS-IS SQL — only when
+       ``preserve_as_is`` is True.
+
+    UNRESOLVED / NEEDS_LLM rows keep their AS-IS SQL as the active statement
+    body (xml_rewriter left them untouched). The suggested TO-BE from
+    ``rr.to_be_sql`` is emitted inside the metadata block as a ``SUGGESTED``
+    comment so it's visible but never executed.
+    """
+    by_id = {
+        (r.namespace or "", r.sql_id or ""): r for r in results
+    }
+    root = tree.getroot()
+    ns_attr = root.get("namespace", "") or ""
+
+    for stmt in root.iter():
+        tag = _local(stmt.tag)
+        if tag not in _STATEMENT_TAGS:
+            continue
+        rr = by_id.get((ns_attr, stmt.get("id", "") or ""))
+        if rr is None:
+            continue
+
+        # Build comment text(s) and insert at the top of the element (after
+        # the text-node, before the first child).
+        blocks: List[str] = [_format_metadata_block(rr)]
+        if preserve_as_is and rr.as_is_sql:
+            blocks.append(_format_as_is_block(rr.as_is_sql))
+        if rr.status in ("UNRESOLVED", "NEEDS_LLM") and rr.to_be_sql and rr.to_be_sql != rr.as_is_sql:
+            blocks.append(_format_suggested_block(rr.to_be_sql))
+
+        # Insert comments as first children
+        for i, text in enumerate(blocks):
+            comment = etree.Comment(text)
+            stmt.insert(i, comment)
+
+
+# ---------------------------------------------------------------------------
+# Metadata block formatting
+# ---------------------------------------------------------------------------
+
+
+def _format_metadata_block(rr: RewriteResult) -> str:
+    applied = ", ".join(rr.applied_transformers) or "-"
+    changed = _format_changes_short(rr.changed_items)
+    notes = "; ".join(rr.warnings + rr.notes) or "-"
+    stage_a = _tri(rr.stage_a_pass)
+    stage_b = _tri(rr.stage_b_pass)
+    ora = (rr.parse_error or "").strip()[:400] or "-"
+    return (
+        "\n"
+        f"  ========== MIGRATION: {rr.sql_id} ==========\n"
+        f"  Status           : {rr.status}\n"
+        f"  Method           : {rr.conversion_method}\n"
+        f"  Applied          : {applied}\n"
+        f"  Changed          : {changed}\n"
+        f"  Dynamic paths    : {rr.dynamic_paths_expanded}\n"
+        f"  Stage A (static) : {stage_a}\n"
+        f"  Stage B (parse)  : {stage_b}\n"
+        f"  ORA              : {ora}\n"
+        f"  Notes            : {notes}\n"
+        f"  ========================================================\n  "
+    )
+
+
+def _format_as_is_block(as_is_sql: str) -> str:
+    return "\n  AS-IS (original)\n  " + as_is_sql.strip().replace("\n", "\n  ") + "\n  "
+
+
+def _format_suggested_block(to_be_sql: str) -> str:
+    return (
+        "\n  SUGGESTED TO-BE (do not execute — review required)\n  "
+        + to_be_sql.strip().replace("\n", "\n  ")
+        + "\n  "
+    )
+
+
+def _format_changes_short(items: List["ChangeItem"]) -> str:  # type: ignore[name-defined]
+    if not items:
+        return "-"
+    parts = []
+    for c in items[:8]:
+        parts.append(f"{c.as_is}→{c.to_be}")
+    if len(items) > 8:
+        parts.append(f"... (+{len(items) - 8} more)")
+    return ", ".join(parts)
+
+
+def _tri(v) -> str:
+    if v is True:
+        return "PASS"
+    if v is False:
+        return "FAIL"
+    return "-"
+
+
 # ---------------------------------------------------------------------------
 # Per-statement rewrite
 # ---------------------------------------------------------------------------
@@ -225,15 +333,23 @@ def _compile_substitutions(
     for c in changes:
         if c.kind == "table":
             pairs.setdefault((c.as_is.upper(), c.to_be.upper()), None)
-        elif c.kind == "column":
-            # column names after the last dot
-            try:
-                _, c_old = c.as_is.rsplit(".", 1)
-                _, c_new = c.to_be.rsplit(".", 1)
-            except ValueError:
-                continue
-            if c_old.upper() != c_new.upper():
-                pairs.setdefault((c_old.upper(), c_new.upper()), None)
+            continue
+        if c.kind != "column":
+            # type_wrap / value / join_path can't be expressed as 1:1 text
+            # substitution — they need a structural rewrite that would erase
+            # MyBatis dynamic tags. The metadata comment block (Step 12) tells
+            # the user what the full TO-BE looks like instead.
+            continue
+        # column kind — only 1:1 renames; skip split/merge targets (commas)
+        if "," in c.to_be:
+            continue
+        try:
+            _, c_old = c.as_is.rsplit(".", 1)
+            _, c_new = c.to_be.rsplit(".", 1)
+        except ValueError:
+            continue
+        if c_old.upper() != c_new.upper():
+            pairs.setdefault((c_old.upper(), c_new.upper()), None)
 
     # Longer identifiers first so ``CUST_NM`` wins over the substring ``CUST``
     # — otherwise ``CUST_NM`` would get partially substituted.
