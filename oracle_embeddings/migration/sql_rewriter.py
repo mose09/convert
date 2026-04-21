@@ -113,7 +113,7 @@ def rewrite_sql(
     # is acceptable. We replace each occurrence with a unique bareword token
     # (``MBP_0``, ``MBP_1`` …) that parses cleanly as an identifier, then
     # restore the originals after re-emit.
-    safe_sql, mbp_tokens = _mask_mybatis_placeholders(sql)
+    safe_sql, mbp_tokens = mask_mybatis_placeholders(sql)
 
     try:
         tree = sqlglot.parse_one(safe_sql, dialect="oracle")
@@ -177,7 +177,7 @@ def rewrite_sql(
             needs_llm=needs_llm_overall,
         )
 
-    to_be_sql = _unmask_mybatis_placeholders(to_be_sql, mbp_tokens)
+    to_be_sql = unmask_mybatis_placeholders(to_be_sql, mbp_tokens)
 
     status = _determine_status(all_changes, all_warnings, needs_llm_overall)
 
@@ -212,11 +212,13 @@ def _determine_status(
 _MYBATIS_PLACEHOLDER_RE = re.compile(r"[#$]\{[^{}]+\}")
 
 
-def _mask_mybatis_placeholders(sql: str) -> Tuple[str, Dict[str, str]]:
+def mask_mybatis_placeholders(sql: str) -> Tuple[str, Dict[str, str]]:
     """Swap each MyBatis OGNL placeholder for a unique bareword token.
 
     Returns ``(safe_sql, {token: original})``. Tokens use ``MBP_`` (MyBatis
     Placeholder) to avoid colliding with real identifiers.
+    Exposed as public API so :mod:`validator_static` and other consumers can
+    reuse the same masking convention (tokens prefixed with ``MBP_``).
     """
     tokens: Dict[str, str] = {}
 
@@ -230,7 +232,7 @@ def _mask_mybatis_placeholders(sql: str) -> Tuple[str, Dict[str, str]]:
     return safe, tokens
 
 
-def _unmask_mybatis_placeholders(sql: str, tokens: Dict[str, str]) -> str:
+def unmask_mybatis_placeholders(sql: str, tokens: Dict[str, str]) -> str:
     for token, original in tokens.items():
         sql = sql.replace(token, original)
     return sql
