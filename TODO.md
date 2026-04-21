@@ -1,3 +1,16 @@
+# TODO: 배치 리포트에 RFC Calls + Tables Cross-Reference 시트 추가 (완료)
+
+- [x] 단일 백엔드 모드의 두 시트 구조 확인
+- [x] `save_legacy_batch_excel` 에 Sheet 5/6 신규 추가:
+      - RFC Calls: `RFC | Backend project | Program | Controller | URL | File`
+      - Tables Cross-Reference: `Table | # Programs | # Projects | Projects | Programs`
+- [x] 2-프로젝트 mock (`/tmp/mock_batch/{be_a,be_b}`) 으로 검증:
+      - `Z_ORDER_LIST` 가 be_a + be_b 양쪽에서 호출됨 2줄로 집계 ✓
+      - `ORDERS` 테이블이 2개 프로젝트에서 참조됨 (`# Projects=2`) ✓
+- [x] 단일 모드 로직은 미변경 → 회귀 없음
+
+---
+
 # TODO: PR 기반 squash-merge 워크플로우 확정 (완료)
 
 - [x] GitHub 레포 설정: Auto-delete head branches ON + Allow squash merging ONLY (사용자 처리)

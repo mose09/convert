@@ -698,6 +698,52 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
         ])
     _auto_width(ws)
 
+    # Sheet 5: RFC Calls (cross-reference across projects)
+    ws = wb.create_sheet("RFC Calls")
+    _write_header(ws, ["RFC", "Backend project", "Program", "Controller", "URL", "File"])
+    rfc_row = 2
+    for r in rows:
+        if not r.get("rfc"):
+            continue
+        for name in [s.strip() for s in r["rfc"].split(",") if s.strip()]:
+            _write_row(ws, rfc_row, [
+                name,
+                r.get("backend_project", ""),
+                r.get("program_name", ""),
+                r.get("controller_class", ""),
+                r.get("url", ""),
+                r.get("file_name", ""),
+            ])
+            rfc_row += 1
+    _auto_width(ws)
+
+    # Sheet 6: Tables Cross-Reference (across projects)
+    ws = wb.create_sheet("Tables Cross-Reference")
+    _write_header(ws, ["Table", "# Programs", "# Projects", "Projects", "Programs"])
+    table_to_programs: dict[str, list[str]] = {}
+    table_to_projects: dict[str, list[str]] = {}
+    for r in rows:
+        if not r.get("related_tables"):
+            continue
+        program = r.get("program_name", "")
+        project = r.get("backend_project", "")
+        for t in [s.strip() for s in r["related_tables"].split(",") if s.strip()]:
+            table_to_programs.setdefault(t, []).append(program)
+            if project:
+                table_to_projects.setdefault(t, []).append(project)
+    for i, (table, progs) in enumerate(sorted(table_to_programs.items()), 2):
+        progs_sorted = sorted(set(progs))
+        projs_sorted = sorted(set(table_to_projects.get(table, [])))
+        prog_preview = ", ".join(progs_sorted[:10])
+        if len(progs_sorted) > 10:
+            prog_preview += f", … (+{len(progs_sorted) - 10})"
+        proj_preview = ", ".join(projs_sorted)
+        _write_row(ws, i, [
+            table, len(progs_sorted), len(projs_sorted),
+            proj_preview, prog_preview,
+        ])
+    _auto_width(ws)
+
     wb.save(filepath)
     logger.info("Legacy batch excel saved: %s", filepath)
     return filepath
