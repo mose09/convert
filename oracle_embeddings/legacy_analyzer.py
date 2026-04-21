@@ -1026,12 +1026,14 @@ def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
     match multiple endpoints expand into multiple rows (one per
     endpoint) but those rows stay clustered in their menu's position.
 
-    Only rows with ``matched=True`` are included — unmatched endpoints
-    continue to be listed separately in Unmatched Controllers.
+    When ``menu_rows`` is empty (e.g. ``--skip-menu``) there is no
+    "menu order" to enforce — return the rows as-is (matched + unmatched)
+    so the backend-only report retains all endpoint rows.
     """
     if not menu_rows:
-        # No menu → return matched rows as-is (legacy-ish path).
-        return [r for r in rows if r.get("matched")]
+        # --skip-menu or no menu loaded: preserve all rows for legacy
+        # backend-only reporting.
+        return list(rows)
 
     matched_by_url: dict[str, list[dict]] = {}
     for r in rows:
@@ -1557,7 +1559,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # and performs its own reorder, so per-backend reorder is skipped
     # to avoid duplicated placeholders.
     if skip_menu_reorder:
-        display_rows = [r for r in rows if r.get("matched")]
+        # Batch will reorder globally. Pass rows through untouched so
+        # the aggregator sees both matched and unmatched entries and
+        # can decide based on the global menu_rows.
+        display_rows = list(rows)
     else:
         display_rows = _reorder_rows_by_menu(rows, menu_rows, base_dirs)
 
