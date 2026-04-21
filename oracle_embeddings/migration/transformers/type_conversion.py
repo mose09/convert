@@ -117,7 +117,7 @@ def _classify_context(col: exp.Column) -> str:
         # Update.expressions is the SET list; each is an EQ with col on left.
         # We also cover WHERE via the earlier check.
         eq = col.find_ancestor(exp.EQ)
-        if eq is not None and eq in update.args.get("expressions", []) or []:
+        if eq is not None and eq in update.args.get("expressions", []):
             return "write"
         # Inside SET RHS → read
     insert = col.find_ancestor(exp.Insert)

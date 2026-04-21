@@ -161,7 +161,12 @@ def rewrite_sql(
             )
             continue
         tree = result.tree
-        applied.append(t.name)
+        # Only record transformer in ``applied_transformers`` when it actually
+        # did something — either produced changes, emitted warnings, or
+        # escalated to LLM. Previously every pipeline step was logged which
+        # made the Conversions sheet show all 8 names regardless of impact.
+        if result.changes or result.warnings or result.needs_llm:
+            applied.append(t.name)
         all_changes.extend(result.changes)
         all_warnings.extend(result.warnings)
         if result.needs_llm:

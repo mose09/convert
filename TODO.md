@@ -237,3 +237,49 @@
 - [x] Step 14: `migrate-sql` 커맨드 통합 + 회귀 테스트
 - [x] Step 15: README / CLAUDE.md 업데이트
 
+---
+
+# TODO: SQL Migration — 코드 리뷰 미해결 항목
+
+스펙 반영은 끝났지만 리뷰에서 발견된 개선 사항. 우선순위 순.
+
+## 🔴 실질 버그 (기능 영향 있음)
+
+- [ ] **B2. `transformers/type_conversion.py` — UPDATE SET / INSERT VALUES 의
+      write template 을 LHS 컬럼이 아닌 RHS 값에 적용**
+      현재: `UPDATE T SET TO_CHAR(NEW_COL, 'YYYYMMDD') = #{dt}` (문법 에러)
+      기대: `UPDATE T SET NEW_COL = TO_DATE(#{dt}, 'YYYYMMDD')`
+      구현 노트:
+      - Pass A — UPDATE SET: `eq.left` 가 col 이면 rename 만 + `eq.right`
+        에 `write` template 적용 (`{src}` → 원 RHS sql())
+      - Pass B — INSERT: Schema.expressions 컬럼 rename + 각 Tuple 의 같은
+        인덱스 값에 `write` template 적용. VALUES 가 SELECT subquery 면
+        skip + warning (position 매칭 불가)
+      - Pass C — 나머지 (SELECT/WHERE) 는 기존대로 col 을 wrap
+      - `_classify_context` 는 'write' 분기 제거 — A/B 가 모두 처리
+
+## 🟡 엣지 케이스 (실환경 드물)
+
+- [ ] **E1. `xml_rewriter.py` 텍스트 치환이 SQL 문자열 리터럴 내부에도 적용**
+      → sqlglot token 단위로 쪼갠 뒤 identifier 토큰만 치환
+- [ ] **E2. `sql_rewriter.mask_mybatis_placeholders` 의 `MBP_N` prefix 충돌**
+      → 더 희박한 prefix (`__MBP_{n}__`) 로 교체
+- [ ] **E3. `llm_fallback._extract_json_block` brace-in-prose fragile**
+      → 브레이스 카운팅 파서 도입
+- [ ] **E4. `validator_static` CTE 본문 컬럼 일괄 warning — 정밀도 향상 여지**
+      (Stage B 가 실 판정이라 현재는 OK)
+- [ ] **E5. `dynamic_sql_expander` Level 2 중첩 `<choose>` 대안 미탐색**
+      (경로 폭발 우려로 의도적 제한)
+
+## 🟢 코드 품질
+
+- [ ] **Q2. `migration_report._coverage_lookup` O(n×m)** → pre-grouping 으로
+      O(n+m)
+- [ ] **Q3. `mapping_loader._SENTINEL`** → Optional 타입 + explicit None
+      비교로 대체
+- [ ] **Q4. `impact_analyzer._scan_statements` 반복 regex** → sqlglot AST
+      한 번 파싱 후 재사용
+- [ ] **Q5. Stage A 실패 행 빨강 하이라이트 추가** (현재 Stage B 실패만 빨강)
+- [ ] **Q6. XML 메타데이터 블록 위치** — body text "뒤" 가 아닌 "앞" 으로 이동
+      (spec §12.2 예제와 일치시키기)
+

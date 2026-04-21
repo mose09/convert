@@ -141,7 +141,7 @@ def _column_scope(col: exp.Column) -> Optional[str]:
         eq = col.find_ancestor(exp.EQ)
         if eq is not None:
             # LHS of EQ under Update.expressions → SET target = "update" scope
-            if eq in (update.args.get("expressions", []) or []):
+            if eq in update.args.get("expressions", []):
                 if eq.left is col or _contains(eq.left, col):
                     return "update"
         # Otherwise treat as write-ish read
