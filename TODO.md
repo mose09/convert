@@ -1,3 +1,20 @@
+# TODO: bare method self-call 체인 추적 (완료)
+
+- [x] 원인: `_FIELD_CALL_RE` 는 `receiver.method(` 만 매칭 → `this.` 없이
+      직접 호출하는 같은 클래스 helper (`saveX(); deleteY();`) 는 파서가
+      수집하지 않아 체인 walker 가 helper 안의 SQL/RFC 를 놓침. Vert.x 레거시
+      ServiceImpl 에서 흔한 패턴.
+- [x] 패치: `_BARE_CALL_RE` + `_BARE_CALL_SKIP` 추가 + `_collect_body_field_calls`
+      확장. Bare call 은 synthetic `receiver="this"` 로 emit → 기존 same-class
+      resolver 경로 (`_find_method_in_class`) 재사용. False-positive 는
+      키워드/`new X(` skip + resolve 시 실제 메서드 매칭으로 이중 필터.
+- [x] 검증 (method-scope): mock_bare_calls 에서 Spring endpoint `save()` →
+      `saveInformNoteDetailList()` → bare `deleteInformNoteItemList()` +
+      `insertInformNoteDetailRows()` 체인이 모두 추적됨. Tables/RFC/SQL 누락 없음.
+- [x] 회귀: mock_batch (2-프로젝트) 출력 동일.
+
+---
+
 # TODO: 배치 리포트에 RFC Calls + Tables Cross-Reference 시트 추가 (완료)
 
 - [x] 단일 백엔드 모드의 두 시트 구조 확인
