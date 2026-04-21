@@ -224,7 +224,7 @@
 - [x] Step 1: `oracle_embeddings/migration/{mapping_model.py, mapping_loader.py}` + `input/column_mapping_template.yaml` + `requirements.txt` 에 sqlglot 추가
 - [x] Step 2: `migration-impact` 커맨드 — 매핑 파일 검증 + 영향 리포트만 (변환 X)
 - [x] Step 3: `sql_rewriter.py` + `ColumnRenameTransformer` + `TableRenameTransformer`
-- [ ] Step 4: `dynamic_sql_expander.py` — Level 1 (max/min 2 경로)
+- [x] Step 4: `dynamic_sql_expander.py` — Level 1 (max/min 2 경로)
 - [ ] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환
 - [ ] Step 6: `validator_static.py` — sqlglot static 검증
 - [ ] Step 7: `migration_report.py` — Excel 5 시트

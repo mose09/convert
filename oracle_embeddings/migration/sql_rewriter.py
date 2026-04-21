@@ -21,8 +21,9 @@ Design notes
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -107,8 +108,15 @@ def rewrite_sql(
 
     pipeline = pipeline if pipeline is not None else DEFAULT_PIPELINE
 
+    # Escape MyBatis OGNL placeholders so sqlglot can parse. sqlglot rejects
+    # ``#{foo}`` outright and turns ``${foo}`` into a struct literal — neither
+    # is acceptable. We replace each occurrence with a unique bareword token
+    # (``MBP_0``, ``MBP_1`` …) that parses cleanly as an identifier, then
+    # restore the originals after re-emit.
+    safe_sql, mbp_tokens = _mask_mybatis_placeholders(sql)
+
     try:
-        tree = sqlglot.parse_one(sql, dialect="oracle")
+        tree = sqlglot.parse_one(safe_sql, dialect="oracle")
     except ParseError as exc:
         return SqlRewriteOutcome(
             as_is_sql=sql,
@@ -169,6 +177,8 @@ def rewrite_sql(
             needs_llm=needs_llm_overall,
         )
 
+    to_be_sql = _unmask_mybatis_placeholders(to_be_sql, mbp_tokens)
+
     status = _determine_status(all_changes, all_warnings, needs_llm_overall)
 
     return SqlRewriteOutcome(
@@ -197,6 +207,33 @@ def _determine_status(
     if warnings:
         return "AUTO_WARN"
     return "AUTO"
+
+
+_MYBATIS_PLACEHOLDER_RE = re.compile(r"[#$]\{[^{}]+\}")
+
+
+def _mask_mybatis_placeholders(sql: str) -> Tuple[str, Dict[str, str]]:
+    """Swap each MyBatis OGNL placeholder for a unique bareword token.
+
+    Returns ``(safe_sql, {token: original})``. Tokens use ``MBP_`` (MyBatis
+    Placeholder) to avoid colliding with real identifiers.
+    """
+    tokens: Dict[str, str] = {}
+
+    def _sub(match: "re.Match[str]") -> str:
+        i = len(tokens)
+        token = f"MBP_{i}"
+        tokens[token] = match.group(0)
+        return token
+
+    safe = _MYBATIS_PLACEHOLDER_RE.sub(_sub, sql)
+    return safe, tokens
+
+
+def _unmask_mybatis_placeholders(sql: str, tokens: Dict[str, str]) -> str:
+    for token, original in tokens.items():
+        sql = sql.replace(token, original)
+    return sql
 
 
 def _aggregate_changes(changes: List[ChangeItem]) -> List[ChangeItem]:
