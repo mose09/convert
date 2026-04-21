@@ -14,7 +14,8 @@
 - Windows PC에서 실행
 - Oracle 11g (thick mode)
 - Python CLI 기반
-- 레포: `github.com/mose09/convert`, 작업 브랜치: `claude/push-previous-changes-4P5x8`
+- 레포: `github.com/mose09/convert`
+- **브랜치 전략**: GitHub Flow — `main` 은 항상 안정 상태. 각 Claude 세션/작업은 `claude/<task>-<id>` 피처 브랜치에서 진행 후 `main` 으로 머지. 푸시 완료된 세션 브랜치는 머지 후 정리.
 
 ## 주요 커맨드 (22종)
 
@@ -223,7 +224,8 @@ python main.py analyze-legacy \
 - 제목 50~70자, 본문은 **왜** 중심 + **검증 방법** 요약. 변경 목록은 bullet로.
 - 멀티라인 메시지는 항상 `git commit -m "$(cat <<'EOF' ... EOF)"` HEREDOC 형식으로 작성해 마크다운/개행 깨짐 방지.
 - `--no-verify`, `--amend`는 사용자가 명시적으로 요청한 경우에만.
-- 커밋 후 반드시 `git push -u origin <branch>`로 원격에 반영. 네트워크 실패 시에만 재시도.
+- 피처 브랜치에서 작업·커밋 후 `git push -u origin <branch>`. 완료되면 `main` 으로 머지 (fast-forward 선호) → `main` 도 `git push origin main`.
+- 네트워크 실패 시에만 재시도.
 - 회귀 테스트 mock 최소 6~8개 돌려서 method-scope / endpoint 수치 확인 후 커밋.
 
 ## 코딩 스타일 관행
@@ -241,9 +243,12 @@ python main.py analyze-legacy \
 ```bash
 cd /path/to/convert
 git fetch origin
-git checkout claude/push-previous-changes-4P5x8
-git pull
+git checkout main
+git pull origin main
 git log --oneline -10          # 최근 커밋 확인
+
+# 새 작업은 피처 브랜치에서
+git checkout -b claude/<task>-<id>
 
 # 최신 코드 반영 검증
 python -c "from oracle_embeddings.mybatis_parser import _MYBATIS_SKIP_DIRS; print(_MYBATIS_SKIP_DIRS)"

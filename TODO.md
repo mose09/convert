@@ -1,3 +1,13 @@
+# TODO: 브랜치 전략 정비 — `main` 기준 GitHub Flow 도입 (진행중)
+
+- [x] 현재 tip(`1231b82`)에서 `main` 브랜치 생성
+- [ ] `CLAUDE.md` 갱신: 작업 브랜치 표기/재개 체크리스트를 `main` 기반으로 수정
+- [ ] `main` 원격 푸시 (`git push -u origin main`)
+- [ ] GitHub 레포 기본 브랜치(Default branch) 를 `main` 으로 변경 — **사용자 수동** (Settings → Branches)
+- [ ] 구 브랜치 정리: 머지/백업 후 `claude/*` 원격 브랜치 삭제 — **사용자 확인 후 진행**
+
+---
+
 # TODO: menu-driven 스캔 — 메뉴 참조 앱/URL 로 프론트·체인 해석 범위 축소 (완료)
 
 - [x] `build_frontend_url_map_multi(allowed_apps=None)` — 주어지면 해당 버킷만 스캔 (skip 로그)
