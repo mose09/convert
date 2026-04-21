@@ -31,11 +31,17 @@ from sqlglot.errors import ParseError
 
 from .mapping_model import ChangeItem, Mapping, Status
 from .transformers import (
+    ColumnMergeTransformer,
     ColumnRenameTransformer,
+    ColumnSplitTransformer,
+    DroppedColumnChecker,
+    JoinPathRewriter,
     RewriteContext,
     TableRenameTransformer,
     Transformer,
     TransformerResult,
+    TypeConversionTransformer,
+    ValueMappingTransformer,
 )
 from .transformers.base import build_alias_map
 
@@ -47,9 +53,12 @@ from .transformers.base import build_alias_map
 DEFAULT_PIPELINE: List[Transformer] = [
     TableRenameTransformer(),
     ColumnRenameTransformer(),
-    # Additional transformers (TypeConversion / ColumnSplit / ColumnMerge /
-    # ValueMapping / JoinPathRewriter / DroppedColumnChecker) are appended
-    # in their respective Steps. Keep the ordering defined in spec §6.
+    ColumnSplitTransformer(),
+    ColumnMergeTransformer(),
+    TypeConversionTransformer(),
+    ValueMappingTransformer(),
+    JoinPathRewriter(),
+    DroppedColumnChecker(),
 ]
 
 
