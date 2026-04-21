@@ -495,10 +495,15 @@ _DEFAULT_SQL_RECEIVERS = (
     "|sqlMapClient|SqlMapClient"
     r"|\w*[Dd]ao|\w*SQL|\w*Sql|\w*[Tt]emplate|queryRunner"
 )
+# Longer variants come first so `selectList` is preferred over `select`
+# when the regex engine tries alternatives left-to-right. Plain `select`
+# covers MyBatis SqlSession ResultHandler API `select(id, param, bounds, rh)`
+# which is common in legacy code.
 _DEFAULT_SQL_OPS = (
-    "selectList|selectOne|selectMap|selectPage|selectCount"
+    "selectList|selectOne|selectMap|selectPage|selectCount|selectCursor"
     "|queryForList|queryForObject|queryForMap"
-    "|insert|update|delete|save|execute|call|query"
+    "|insertBatch|updateBatch|deleteBatch"
+    "|insert|update|delete|save|execute|call|query|select"
 )
 
 
