@@ -520,6 +520,49 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 if alias and alias.upper() not in SQL_KEYWORDS:
                     aliases_in_stmt.add(alias)
 
+        # FROM (subquery) alias, T1 alias, T2 alias, ... form.
+        # The strict comma-FROM regex above requires the first operand to
+        # be a simple table, so when FROM opens with a subquery the
+        # sibling tables in the comma list are missed entirely. Walk the
+        # balanced parens after each `FROM (` to find the subquery close,
+        # then consume the trailing comma list.
+        for m in re.finditer(r'\bFROM\s*\(', sql):
+            i = m.end() - 1  # points at '('
+            depth = 1
+            i += 1
+            n = len(sql)
+            while i < n and depth > 0:
+                ch = sql[i]
+                if ch == '(':
+                    depth += 1
+                elif ch == ')':
+                    depth -= 1
+                i += 1
+            if depth != 0:
+                continue  # malformed — skip
+            tail = sql[i:]
+            tm = re.match(
+                r'\s*(?:AS\s+)?(?P<sq_alias>\w+)(?P<rest>(?:\s*,\s*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
+                tail, re.IGNORECASE,
+            )
+            if not tm:
+                continue
+            # subquery alias is already collected by the subquery-alias
+            # pass above — only need to process the comma-tail.
+            rest = tm.group("rest") or ""
+            for inner in re.finditer(r',\s*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest):
+                tbl = inner.group(1)
+                alias = inner.group(2)
+                if tbl.upper() in SQL_KEYWORDS:
+                    continue
+                if tbl in aliases_in_stmt:
+                    continue
+                if tbl not in comma_tables:
+                    comma_tables.append(tbl)
+                tables.add(tbl)
+                if alias and alias.upper() not in SQL_KEYWORDS:
+                    aliases_in_stmt.add(alias)
+
         # Identify main table (FROM 바로 뒤) vs join tables
         main_table = _extract_main_table(sql, aliases_in_stmt)
         join_tables = set()
