@@ -7,3 +7,8 @@ vectordb/
 dist/
 build/
 .venv/
+
+# input/ 사용자 작성 파일 (column_mapping.yaml / menu.md / menu.xlsx) 은
+# 로컬 only — 템플릿 (*_template.*) 만 추적.
+input/*
+!input/*_template.*

@@ -128,12 +128,17 @@
 
 ### .env (핵심 값, 실제 값은 개인 환경에)
 ```bash
-# Oracle (11g → thick mode 필수)
+# Oracle AS-IS (11g → thick mode 필수). schema/analyze-legacy/migration-impact 사용
 ORACLE_USER=<user>
 ORACLE_PASSWORD=<password>
 ORACLE_DSN=host:1521/service
 ORACLE_SCHEMA_OWNER=<owner>
 ORACLE_INSTANT_CLIENT_DIR=C:/oracle/instantclient_19_25
+
+# Oracle TO-BE (validate-migration 의 Stage B parse 검증). 미설정 시 위 ORACLE_* 로 fallback
+ORACLE_TOBE_DSN=newhost:1521/NEWDB
+ORACLE_TOBE_USER=<tobe_user>
+ORACLE_TOBE_PASSWORD=<tobe_password>
 
 # 일반 LLM (terms, enrich-schema, standardize 등)
 LLM_API_BASE=<사내 LLM 게이트웨이>/v1

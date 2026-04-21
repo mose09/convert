@@ -1237,19 +1237,32 @@ def cmd_validate_migration(args):
             for it in items
         ]
     else:
-        user = args.user or os.environ.get("ORACLE_USER", "")
-        password = args.password or os.environ.get("ORACLE_PASSWORD", "")
+        # TO-BE 우선, 미설정 시 AS-IS env (ORACLE_*) 로 fallback. CLI 가 항상 우선.
+        dsn = args.dsn or os.environ.get("ORACLE_TOBE_DSN", "")
+        user = (
+            args.user
+            or os.environ.get("ORACLE_TOBE_USER")
+            or os.environ.get("ORACLE_USER", "")
+        )
+        password = (
+            args.password
+            or os.environ.get("ORACLE_TOBE_PASSWORD")
+            or os.environ.get("ORACLE_PASSWORD", "")
+        )
         instant_dir = (
             args.instant_client_dir
             or os.environ.get("ORACLE_INSTANT_CLIENT_DIR")
         )
-        if not password:
-            print("Error: ORACLE_PASSWORD env var 또는 --password 필요")
+        if not dsn:
+            print("Error: --dsn 또는 ORACLE_TOBE_DSN env 필요")
             return
-        print(f"Connecting to {args.dsn} as {user} (parallel={args.parallel})...")
+        if not password:
+            print("Error: --password 또는 ORACLE_TOBE_PASSWORD/ORACLE_PASSWORD env 필요")
+            return
+        print(f"Connecting to {dsn} as {user} (parallel={args.parallel})...")
         results = validate_db_batch(
             items,
-            dsn=args.dsn,
+            dsn=dsn,
             user=user,
             password=password,
             parallel=args.parallel,
@@ -1765,11 +1778,12 @@ def main():
                            help="migrate-sql 이 만든 변환 XML 디렉토리")
     vm_parser.add_argument("--dsn",
                            help="TO-BE Oracle DSN (host:1521/service). "
+                                "ORACLE_TOBE_DSN env 로 대체 가능. "
                                 "--dry-run 아닐 때 필수")
     vm_parser.add_argument("--user",
-                           help="(선택) ORACLE_USER env 로 대체 가능")
+                           help="(선택) ORACLE_TOBE_USER → ORACLE_USER env 로 fallback")
     vm_parser.add_argument("--password",
-                           help="(선택) ORACLE_PASSWORD env 로 대체 가능")
+                           help="(선택) ORACLE_TOBE_PASSWORD → ORACLE_PASSWORD env 로 fallback")
     vm_parser.add_argument("--instant-client-dir",
                            help="(선택) thick 모드 client lib 경로 "
                                 "(ORACLE_INSTANT_CLIENT_DIR env 로 대체 가능)")
