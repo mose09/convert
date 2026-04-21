@@ -222,7 +222,7 @@
 스펙: `docs/migration/spec.md`. 리스크 낮은 순서로 15 단계.
 
 - [x] Step 1: `oracle_embeddings/migration/{mapping_model.py, mapping_loader.py}` + `input/column_mapping_template.yaml` + `requirements.txt` 에 sqlglot 추가
-- [ ] Step 2: `migration-impact` 커맨드 — 매핑 파일 검증 + 영향 리포트만 (변환 X)
+- [x] Step 2: `migration-impact` 커맨드 — 매핑 파일 검증 + 영향 리포트만 (변환 X)
 - [ ] Step 3: `sql_rewriter.py` + `ColumnRenameTransformer` + `TableRenameTransformer`
 - [ ] Step 4: `dynamic_sql_expander.py` — Level 1 (max/min 2 경로)
 - [ ] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환

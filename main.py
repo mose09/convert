@@ -942,6 +942,52 @@ def cmd_convert_menu(args):
     print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
 
 
+def cmd_migration_impact(args):
+    """column_mapping.yaml 가 AS-IS MyBatis 쿼리에 얼마나 영향을 주는지 사전 분석.
+
+    변환은 안 함 — 매핑 파일 문법 검증 + 스키마 대조 + 영향 리포트만.
+    """
+    from pathlib import Path
+    from datetime import datetime as _dt
+    from oracle_embeddings.migration.impact_analyzer import (
+        analyze_impact, print_impact_summary, write_impact_excel,
+    )
+
+    mybatis_dir = Path(args.mybatis_dir)
+    mapping_path = Path(args.mapping)
+    as_is_schema = Path(args.as_is_schema)
+    to_be_schema = Path(args.to_be_schema) if args.to_be_schema else None
+
+    if not mybatis_dir.is_dir():
+        print(f"Error: --mybatis-dir 디렉토리 없음: {mybatis_dir}")
+        return
+    if not mapping_path.is_file():
+        print(f"Error: --mapping 파일 없음: {mapping_path}")
+        return
+    if not as_is_schema.is_file():
+        print(f"Error: --as-is-schema 파일 없음: {as_is_schema}")
+        return
+    if to_be_schema is not None and not to_be_schema.is_file():
+        print(f"Error: --to-be-schema 파일 없음: {to_be_schema}")
+        return
+
+    report = analyze_impact(
+        mybatis_dir=mybatis_dir,
+        mapping_path=mapping_path,
+        as_is_schema_path=as_is_schema,
+        to_be_schema_path=to_be_schema,
+    )
+    print_impact_summary(report)
+
+    if args.output:
+        output_path = Path(args.output)
+    else:
+        ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+        output_path = Path("output/sql_migration") / f"impact_report_{ts}.xlsx"
+    write_impact_excel(report, output_path)
+    print(f"\nExcel report: {output_path}")
+
+
 def cmd_discover_patterns(args):
     """Discover project-specific patterns using LLM."""
     from oracle_embeddings.legacy_pattern_discovery import discover_patterns, save_patterns
@@ -1346,6 +1392,22 @@ def main():
     cm_parser.add_argument("--no-llm", action="store_true",
                            help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
 
+    # migration-impact command
+    mi_parser = subparsers.add_parser(
+        "migration-impact",
+        help="SQL Migration 사전 영향분석 (column_mapping.yaml 검증 + AS-IS 쿼리 영향 리포트)",
+    )
+    mi_parser.add_argument("--mybatis-dir", required=True,
+                           help="MyBatis mapper XML 디렉토리")
+    mi_parser.add_argument("--mapping", required=True,
+                           help="column_mapping.yaml 경로 (input/column_mapping_template.yaml 참고)")
+    mi_parser.add_argument("--as-is-schema", required=True,
+                           help="AS-IS 스키마 .md (schema 커맨드 결과물)")
+    mi_parser.add_argument("--to-be-schema",
+                           help="(선택) TO-BE 스키마 .md — 지정 시 매핑 타겟 검증")
+    mi_parser.add_argument("--output",
+                           help="출력 Excel 경로 (기본: output/sql_migration/impact_report_TIMESTAMP.xlsx)")
+
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
@@ -1391,6 +1453,8 @@ def main():
         cmd_discover_patterns(args)
     elif args.command == "convert-menu":
         cmd_convert_menu(args)
+    elif args.command == "migration-impact":
+        cmd_migration_impact(args)
     elif args.command == "all":
         cmd_all(args)
     else:
