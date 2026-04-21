@@ -980,6 +980,76 @@ def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[st
     return paths
 
 
+def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
+    """Placeholder row for a menu entry that didn't match any endpoint.
+
+    Only the **menu-side** columns carry data. Frontend / backend /
+    chain fields are empty so the Program Detail sheet shows every
+    menu.md entry while flagging un-implemented ones as a gap.
+    """
+    return {
+        "backend_project": "",
+        "backend_framework": "",
+        "main_menu": menu_entry.get("main_menu", ""),
+        "sub_menu": menu_entry.get("sub_menu", ""),
+        "tab": menu_entry.get("tab", ""),
+        "menu_path": menu_entry.get("menu_path", ""),
+        "menu_url": menu_entry.get("url", ""),
+        "program_id": menu_entry.get("program_id", ""),
+        "program_name": menu_entry.get("program_name", ""),
+        "http_method": "",
+        "url": "",
+        "file_name": "",
+        "frontend_project": "",
+        "presentation_layer": "",
+        "frontend_trigger": "",
+        "controller_class": "",
+        "service_class": "",
+        "service_methods": "",
+        "query_xml": "",
+        "sql_ids": "",
+        "related_tables": "",
+        "rfc": "",
+        "matched": False,
+        "resolved_via": "",
+    }
+
+
+def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
+                           base_dirs: dict) -> list[dict]:
+    """Reorder ``rows`` to follow the **menu.md source order** and
+    emit a menu-only placeholder for every menu entry that wasn't
+    matched to any endpoint.
+
+    The invariant: Program Detail has **one row per menu entry** at
+    minimum (placeholder when no backend mapping). Menu entries that
+    match multiple endpoints expand into multiple rows (one per
+    endpoint) but those rows stay clustered in their menu's position.
+
+    Only rows with ``matched=True`` are included — unmatched endpoints
+    continue to be listed separately in Unmatched Controllers.
+    """
+    if not menu_rows:
+        # No menu → return matched rows as-is (legacy-ish path).
+        return [r for r in rows if r.get("matched")]
+
+    matched_by_url: dict[str, list[dict]] = {}
+    for r in rows:
+        if not r.get("matched"):
+            continue
+        mu = r.get("menu_url", "")
+        matched_by_url.setdefault(mu, []).append(r)
+
+    ordered: list[dict] = []
+    for m in menu_rows:
+        url = m.get("url", "")
+        if url in matched_by_url:
+            ordered.extend(matched_by_url[url])
+        else:
+            ordered.append(_menu_only_row(m, base_dirs))
+    return ordered
+
+
 def _build_row(endpoint: dict, controller: dict, indexes: dict,
                mybatis_idx: dict, menu_entry: dict | None,
                react_file: str | None, base_dirs: dict,
@@ -1062,7 +1132,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    patterns: dict | None = None,
                    frontends_root: bool = False,
                    menu_only: bool = False,
-                   precomputed_frontend: dict | None = None) -> dict:
+                   precomputed_frontend: dict | None = None,
+                   skip_menu_reorder: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1451,6 +1522,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     resolved_class_scope = sum(
         1 for r in rows if r.get("resolved_via") == "class-scope-fallback"
     )
+    # Stats are computed against the raw per-endpoint rows (pre-reorder)
+    # so the menu placeholders we add for display don't inflate matched
+    # counts.
+    matched_count = sum(1 for r in rows if r.get("matched"))
     stats = {
         "backend_framework": framework,
         "frontend_framework": detected_frontend,
@@ -1462,12 +1537,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         # `endpoints` counts every controller endpoint the analyzer
         # considered (rows + the lightweight skip-stubs in unmatched),
         # so a 29-backend batch with --menu-only still reports the true
-        # endpoint total. `matched` is derived from the row-level flag
-        # because 2-hop promotion can turn an otherwise-unmatched row
-        # into a matched one.
+        # endpoint total.
         "endpoints": len(rows) + skipped_no_menu,
-        "matched": sum(1 for r in rows if r.get("matched")),
-        "unmatched": (len(rows) - sum(1 for r in rows if r.get("matched"))) + skipped_no_menu,
+        "matched": matched_count,
+        "unmatched": (len(rows) - matched_count) + skipped_no_menu,
         "orphan_menus": len(orphan_menus),
         "with_react": sum(1 for r in rows if r["presentation_layer"]),
         "with_rfc": sum(1 for r in rows if r["rfc"]),
@@ -1477,8 +1550,19 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     print(f"  Method-scope resolution: {resolved_method_scope}/{len(rows)} "
           f"endpoints (fallback: {resolved_class_scope})")
 
+    # Reorder rows for display to follow menu.md source order + emit
+    # menu-only placeholder for every menu entry without a matching
+    # endpoint. Unmatched endpoints continue to live in `unmatched_controllers`.
+    # In batch mode the caller aggregates matched rows across backends
+    # and performs its own reorder, so per-backend reorder is skipped
+    # to avoid duplicated placeholders.
+    if skip_menu_reorder:
+        display_rows = [r for r in rows if r.get("matched")]
+    else:
+        display_rows = _reorder_rows_by_menu(rows, menu_rows, base_dirs)
+
     return {
-        "rows": rows,
+        "rows": display_rows,
         "unmatched_controllers": unmatched,
         "orphan_menus": orphan_menus,
         "stats": stats,
@@ -1622,6 +1706,7 @@ def analyze_legacy_batch(backends_root: str,
             patterns=patterns,
             frontends_root=frontends_root,
             menu_only=menu_only,
+            skip_menu_reorder=True,  # batch does its own global reorder
             precomputed_frontend=precomputed_frontend,
         )
         # Make sure every row carries the project name even if downstream
@@ -1671,8 +1756,12 @@ def analyze_legacy_batch(backends_root: str,
         ),
     }
 
+    # Global menu-order reorder across backends. Placeholders are
+    # emitted once per un-matched menu entry (not once per backend).
+    display_rows = _reorder_rows_by_menu(all_rows, menu_rows, {})
+
     return {
-        "rows": all_rows,
+        "rows": display_rows,
         "unmatched_controllers": all_unmatched,
         "orphan_menus": all_orphans,
         "stats": aggregated,

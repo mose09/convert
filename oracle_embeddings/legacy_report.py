@@ -90,13 +90,11 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_filename(output_dir, result, ts, "md")
 
-    all_rows = result.get("rows", [])
-    if menu_only:
-        rows = [r for r in all_rows if r.get("matched")]
-        unmatched = [r for r in all_rows if not r.get("matched")]
-    else:
-        rows = all_rows
-        unmatched = result.get("unmatched_controllers", [])
+    # result["rows"] is already menu-ordered (matched rows + menu-only
+    # placeholders for un-matched menu entries). Un-matched endpoints
+    # are in result["unmatched_controllers"]. No more per-report split.
+    rows = result.get("rows", [])
+    unmatched = result.get("unmatched_controllers", [])
     orphans = result.get("orphan_menus", [])
     stats = result.get("stats", {})
 
@@ -206,13 +204,8 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_filename(output_dir, result, ts, "xlsx")
 
-    all_rows = result.get("rows", [])
-    if menu_only:
-        rows = [r for r in all_rows if r.get("matched")]
-        unmatched = [r for r in all_rows if not r.get("matched")]
-    else:
-        rows = all_rows
-        unmatched = result.get("unmatched_controllers", [])
+    rows = result.get("rows", [])
+    unmatched = result.get("unmatched_controllers", [])
     orphans = result.get("orphan_menus", [])
     stats = result.get("stats", {})
 
@@ -490,11 +483,7 @@ def save_legacy_batch_markdown(result: dict, output_dir: str, menu_only: bool = 
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_batch_filename(output_dir, ts, "md")
 
-    all_rows = result.get("rows", [])
-    if menu_only:
-        rows = [r for r in all_rows if r.get("matched")]
-    else:
-        rows = all_rows
+    rows = result.get("rows", [])
     stats = result.get("stats", {})
     per_project = result.get("per_project_stats", {}) or {}
     project_frameworks = result.get("project_frameworks", {}) or {}
@@ -587,13 +576,8 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filepath = _build_batch_filename(output_dir, ts, "xlsx")
 
-    all_rows = result.get("rows", [])
-    if menu_only:
-        rows = [r for r in all_rows if r.get("matched")]
-        unmatched = [r for r in all_rows if not r.get("matched")]
-    else:
-        rows = all_rows
-        unmatched = result.get("unmatched_controllers", [])
+    rows = result.get("rows", [])
+    unmatched = result.get("unmatched_controllers", [])
     stats = result.get("stats", {})
     per_project = result.get("per_project_stats", {}) or {}
     project_frameworks = result.get("project_frameworks", {}) or {}
