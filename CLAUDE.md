@@ -224,13 +224,9 @@ python main.py analyze-legacy \
 - 제목 50~70자, 본문은 **왜** 중심 + **검증 방법** 요약. 변경 목록은 bullet로.
 - 멀티라인 메시지는 항상 `git commit -m "$(cat <<'EOF' ... EOF)"` HEREDOC 형식으로 작성해 마크다운/개행 깨짐 방지.
 - `--no-verify`, `--amend`는 사용자가 명시적으로 요청한 경우에만.
-- 피처 브랜치에서 작업·커밋 후 `git push -u origin <branch>`. 완료되면 `main` 으로 머지 (fast-forward 선호) → `main` 도 `git push origin main`.
-- **머지 직후 피처 브랜치 수동 삭제** (auto-delete 안 씀):
-  ```bash
-  git push origin --delete claude/<task>     # 원격 삭제
-  git branch -d claude/<task>                # 로컬 삭제
-  ```
-  깜빡 잊었으면 다음 세션 시작 시 `git fetch --prune` 으로 정리.
+- 피처 브랜치에서 작업·커밋 후 `git push -u origin <branch>`. 완료되면 **GitHub PR 을 squash-merge** (`Allow squash merging` 만 켜둠). 직푸시 금지.
+- 머지는 Claude 가 GitHub MCP (`mcp__github__create_pull_request` → `mcp__github__merge_pull_request`, `merge_method="squash"`) 로 일괄 처리 가능.
+- Auto-delete head branches 활성화 상태 → PR 머지 직후 원격 피처 브랜치 자동 삭제. 로컬은 세션 종료 절차에서 정리.
 - 네트워크 실패 시에만 재시도.
 - 회귀 테스트 mock 최소 6~8개 돌려서 method-scope / endpoint 수치 확인 후 커밋.
 
@@ -263,13 +259,18 @@ python -c "from oracle_embeddings.mybatis_parser import _MYBATIS_SKIP_DIRS; prin
 
 세션 종료 시 (작업 완료 후):
 ```bash
-git checkout main
-git merge --ff-only claude/<task>-<id>
-git push origin main
+# 피처 브랜치 push 까지는 로컬에서
+git push -u origin claude/<task>-<id>
 
-# 피처 브랜치 정리 (auto-delete 안 씀)
-git push origin --delete claude/<task>-<id>
-git branch -d claude/<task>-<id>
+# PR 생성 + squash-merge 는 Claude 가 GitHub MCP 로 처리
+# (create_pull_request → merge_pull_request merge_method=squash)
+# 머지 직후 GitHub 가 원격 피처 브랜치 자동 삭제 (auto-delete 설정)
+
+# 로컬 정리
+git fetch origin --prune
+git checkout main
+git pull origin main
+git branch -D claude/<task>-<id>    # squash 는 fully-merged 판정 안 돼서 -D
 ```
 
 이전 세션이 400 에러로 중단됐어도 **모든 작업이 커밋·푸시 완료된 상태**이므로 이 CLAUDE.md + `git log` + `TODO.md`만 있으면 끊김 없이 이어갈 수 있음.

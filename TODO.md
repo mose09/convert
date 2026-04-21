@@ -1,4 +1,13 @@
-# TODO: 머지 후 피처 브랜치 수동 삭제 규칙 박기 (완료)
+# TODO: PR 기반 squash-merge 워크플로우 확정 (완료)
+
+- [x] GitHub 레포 설정: Auto-delete head branches ON + Allow squash merging ONLY (사용자 처리)
+- [x] CLAUDE.md 커밋 규칙 섹션: 직푸시 금지 + PR squash-merge 명시 + MCP 도구 경로 기재
+- [x] CLAUDE.md 재개 체크리스트 (세션 종료 절차): PR 경유 + `git branch -D` 사용 반영
+- [x] 본 변경 자체를 PR 로 시연 (`claude/pr-workflow-docs` → squash-merge → auto-delete)
+
+---
+
+# TODO: 머지 후 피처 브랜치 수동 삭제 규칙 박기 (완료, PR 워크플로우로 대체)
 
 - [x] CLAUDE.md 커밋 규칙 섹션에 "머지 직후 원격+로컬 삭제" 명시
 - [x] CLAUDE.md 재개 체크리스트에 `git fetch --prune` + 세션 종료 절차 추가
