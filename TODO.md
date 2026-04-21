@@ -228,7 +228,7 @@
 - [x] Step 5: `xml_rewriter.py` — lxml 기반 구조 보존 치환
 - [x] Step 6: `validator_static.py` — sqlglot static 검증
 - [x] Step 7: `migration_report.py` — Excel 5 시트
-- [ ] Step 8: `bind_dummifier.py` + `validator_db.py` + `validate-migration` 커맨드
+- [x] Step 8: `bind_dummifier.py` + `validator_db.py` + `validate-migration` 커맨드
 - [ ] Step 9: 나머지 transformer 6 종 (TypeConversion / ColumnSplit / ColumnMerge / ValueMapping / JoinPathRewriter / DroppedColumnChecker)
 - [ ] Step 10: dynamic_sql_expander — Level 2 (컬럼 커버리지), Level 3 (foreach n=0,1,2 샘플링)
 - [ ] Step 11: `comment_injector.py` — 한글 주석 삽입

@@ -942,6 +942,105 @@ def cmd_convert_menu(args):
     print(f"사용 예: python main.py analyze-legacy --menu-md {output} ...")
 
 
+def cmd_validate_migration(args):
+    """변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 로 검증 (Stage B).
+
+    cursor.parse() 로 실행 없이 구문 + 스키마 검증만 수행. 기본 10 parallel.
+    --dry-run 로 DB 접속 없이 statement 카운트만 확인 가능.
+    """
+    import os
+    from datetime import datetime as _dt
+    from pathlib import Path
+    from typing import Dict, Tuple
+
+    from lxml import etree
+
+    from oracle_embeddings.migration.dynamic_sql_expander import (
+        build_sql_includes, expand_paths,
+    )
+    from oracle_embeddings.migration.validator_db import (
+        BatchItem, BatchResult, validate_db_batch, write_validation_report,
+    )
+    from oracle_embeddings.migration.validator_static import ValidationResult
+    from oracle_embeddings.mybatis_parser import _read_file_safe
+
+    load_dotenv()
+
+    converted_dir = Path(args.converted_dir)
+    if not converted_dir.is_dir():
+        print(f"Error: --converted-dir 없음: {converted_dir}")
+        return
+
+    items = []
+    stmt_meta: Dict[Tuple[str, ...], Dict] = {}
+    xml_files = sorted(converted_dir.rglob("*.xml"))
+    print(f"Scanning {len(xml_files)} XML files...")
+
+    for xml_path in xml_files:
+        try:
+            text = _read_file_safe(str(xml_path))
+            root = etree.fromstring(text.encode("utf-8"))
+        except Exception as e:
+            print(f"  skip {xml_path}: {e}")
+            continue
+        namespace = root.get("namespace", "") or ""
+        sql_includes = build_sql_includes(root)
+        for elem in root.iter():
+            tag = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
+            if tag not in ("select", "insert", "update", "delete"):
+                continue
+            sql_id = elem.get("id", "") or ""
+            paths = expand_paths(elem, sql_includes=sql_includes)
+            if not paths:
+                continue
+            sql = paths[0].rendered_sql
+            rel = str(xml_path.relative_to(converted_dir))
+            key = (rel, namespace, sql_id)
+            items.append(BatchItem(key=key, sql=sql))
+            stmt_meta[key] = {"sql": sql}
+
+    print(f"Collected {len(items)} statement(s)")
+
+    if args.dry_run:
+        print("--dry-run: DB 접속 skip; 리포트만 생성")
+        results = [
+            BatchResult(key=it.key, result=ValidationResult(ok=True))
+            for it in items
+        ]
+    else:
+        user = args.user or os.environ.get("ORACLE_USER", "")
+        password = args.password or os.environ.get("ORACLE_PASSWORD", "")
+        instant_dir = (
+            args.instant_client_dir
+            or os.environ.get("ORACLE_INSTANT_CLIENT_DIR")
+        )
+        if not password:
+            print("Error: ORACLE_PASSWORD env var 또는 --password 필요")
+            return
+        print(f"Connecting to {args.dsn} as {user} (parallel={args.parallel})...")
+        results = validate_db_batch(
+            items,
+            dsn=args.dsn,
+            user=user,
+            password=password,
+            parallel=args.parallel,
+            thick_mode=True,
+            oracle_client_dir=instant_dir,
+        )
+
+    passed = sum(1 for r in results if r.result.ok)
+    failed = len(results) - passed
+    print(f"\nStage B: {passed} pass / {failed} fail / {len(results)} total")
+
+    output = (
+        Path(args.report)
+        if args.report
+        else converted_dir.parent / f"validation_report_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    )
+    write_validation_report(results, stmt_meta, output)
+    print(f"Report: {output}")
+
+
 def cmd_migration_impact(args):
     """column_mapping.yaml 가 AS-IS MyBatis 쿼리에 얼마나 영향을 주는지 사전 분석.
 
@@ -1392,6 +1491,30 @@ def main():
     cm_parser.add_argument("--no-llm", action="store_true",
                            help="LLM 호출 없이 헤더 동의어만으로 변환 (폐쇄망/오프라인)")
 
+    # validate-migration command (Stage B)
+    vm_parser = subparsers.add_parser(
+        "validate-migration",
+        help="변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B)",
+    )
+    vm_parser.add_argument("--converted-dir", required=True,
+                           help="migrate-sql 이 만든 변환 XML 디렉토리")
+    vm_parser.add_argument("--dsn",
+                           help="TO-BE Oracle DSN (host:1521/service). "
+                                "--dry-run 아닐 때 필수")
+    vm_parser.add_argument("--user",
+                           help="(선택) ORACLE_USER env 로 대체 가능")
+    vm_parser.add_argument("--password",
+                           help="(선택) ORACLE_PASSWORD env 로 대체 가능")
+    vm_parser.add_argument("--instant-client-dir",
+                           help="(선택) thick 모드 client lib 경로 "
+                                "(ORACLE_INSTANT_CLIENT_DIR env 로 대체 가능)")
+    vm_parser.add_argument("--parallel", type=int, default=10,
+                           help="worker thread 수 (기본 10)")
+    vm_parser.add_argument("--report",
+                           help="출력 Excel 경로 (기본: <converted-dir 상위>/validation_report_TIMESTAMP.xlsx)")
+    vm_parser.add_argument("--dry-run", action="store_true",
+                           help="DB 접속 skip, statement 수집/리포트만 생성")
+
     # migration-impact command
     mi_parser = subparsers.add_parser(
         "migration-impact",
@@ -1455,6 +1578,8 @@ def main():
         cmd_convert_menu(args)
     elif args.command == "migration-impact":
         cmd_migration_impact(args)
+    elif args.command == "validate-migration":
+        cmd_validate_migration(args)
     elif args.command == "all":
         cmd_all(args)
     else:
