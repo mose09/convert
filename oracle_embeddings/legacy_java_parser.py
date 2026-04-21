@@ -1224,6 +1224,31 @@ _METHOD_SIG_RE = re.compile(
 # class's autowired_fields so false positives on utility calls are safe.
 _FIELD_CALL_RE = re.compile(r"\b(?P<receiver>\w+)\s*\.\s*(?P<method>\w+)\s*\(")
 
+# Bare (no receiver) method call pattern inside method bodies. Vert.x /
+# 레거시 ServiceImpl 코드는 같은 클래스의 helper 메서드를 ``this.`` 없이
+# 바로 호출하는 경우가 흔하다 (``saveInformNoteDetailList(dataset)``).
+# 이런 호출은 ``_FIELD_CALL_RE`` 가 잡지 못하므로 분석기의 체인 walker 가
+# helper 안의 SQL/RFC 를 놓친다. 우리는 bare call 도 ``receiver="this"``
+# 로 synthetic 하게 수집해서 기존 same-class resolver 경로를 재사용한다.
+#
+# False-positive 억제는 두 단계로:
+#   1. 여기서 Java 키워드 / ``new X(`` 생성자 호출을 skip
+#   2. resolve 시 ``_find_method_in_class`` 가 같은 클래스에 실제로 그
+#      이름의 메서드가 없으면 조용히 drop (static import 된 util,
+#      type cast 형태 등)
+_BARE_CALL_RE = re.compile(r"(?<!\.)\b(?P<method>\w+)\s*\(")
+
+_BARE_CALL_SKIP = frozenset({
+    # 제어 흐름 키워드 (괄호가 따라옴)
+    "if", "while", "for", "switch", "catch", "return", "throw", "assert",
+    "synchronized", "try", "do", "else", "yield",
+    # 생성자 / 참조 키워드
+    "new", "super", "this",
+    # 원시 타입 (cast context 등 드문 경우 대비)
+    "int", "long", "short", "byte", "char", "boolean", "float", "double", "void",
+    "instanceof",
+})
+
 # Nested type declaration (inner class / interface / enum). When we see
 # one of these in the outer class body we must skip its entire ``{...}``
 # block so its methods are NOT picked up as top-level methods of the
@@ -1494,11 +1519,18 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
 
 
 def _collect_body_field_calls(body: str) -> list[dict]:
-    """Collect ``receiver.method(`` patterns inside a method body.
+    """Collect ``receiver.method(`` + bare ``method(`` calls inside a body.
 
-    The analyzer filters receiver names against the class's
-    ``autowired_fields`` so static/utility calls that happen to match
-    this pattern are ignored downstream.
+    Explicit ``receiver.method()`` calls are returned with the receiver
+    as the field name. **Bare** ``method()`` calls (no receiver, no
+    ``this.`` prefix) are returned with synthetic ``receiver="this"`` so
+    the analyzer's same-class resolver handles them uniformly with
+    ``this.method()`` calls — this covers the Vert.x / 레거시 패턴에서
+    같은 클래스의 helper 메서드를 ``this.`` 없이 직접 호출하는 경우.
+
+    False-positive 억제:
+      * 여기서 Java 키워드 / ``new X(`` 생성자 호출 skip
+      * resolve 시 ``_find_method_in_class`` 가 실제 메서드가 아니면 drop
     """
     results = []
     seen = set()
@@ -1512,6 +1544,23 @@ def _collect_body_field_calls(body: str) -> list[dict]:
             continue
         seen.add(key)
         results.append({"receiver": recv, "method": meth})
+
+    for m in _BARE_CALL_RE.finditer(body):
+        name = m.group("method")
+        if name in _METHOD_NAME_RESERVED or name in _BARE_CALL_SKIP:
+            continue
+        # ``new X(`` 형태에서 ``X`` 만 bare call 처럼 매칭되는 케이스 제외.
+        # ``new`` 자체는 _BARE_CALL_SKIP 로 걸렀지만 뒤따르는 타입명은
+        # 여전히 매칭되기 때문에 앞 8글자 문맥을 확인.
+        start = m.start()
+        pre = body[max(0, start - 8):start]
+        if re.search(r"\bnew\s+$", pre):
+            continue
+        key = ("this", name)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append({"receiver": "this", "method": name})
     return results
 
 
