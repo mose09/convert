@@ -421,8 +421,23 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 if table not in SQL_KEYWORDS and table not in aliases_in_stmt:
                     tables.add(table)
 
-        # Tables without alias
-        for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)(?:\s*(?:WHERE|ON|,|\)|$))', sql):
+        # Tables without alias. The follow-up alternation needs word
+        # boundaries around WHERE / ON / JOIN etc. so that `\w+`
+        # backtracking doesn't split names that happen to END with
+        # those letters — e.g. ``SCA_SHEET_QUESTION SA WHERE`` would
+        # otherwise backtrack to ``SCA_SHEET_QUESTI`` + ``ON`` and emit
+        # the truncated form as a second (fake) table.
+        _TABLE_END_KEYWORDS = (
+            "WHERE", "ON", "JOIN",
+            "INNER", "LEFT", "RIGHT", "FULL", "CROSS", "OUTER", "NATURAL",
+            "GROUP", "ORDER", "HAVING", "UNION", "MINUS", "INTERSECT",
+            "START", "CONNECT", "FETCH", "WITH", "AS",
+        )
+        _follow_alt = "|".join(_TABLE_END_KEYWORDS)
+        for match in re.finditer(
+            rf'(?:FROM|JOIN)\s+(\w+)(?=\s*[,\)]|\s+(?:{_follow_alt})\b|\s*$)',
+            sql,
+        ):
             table = match.group(1)
             if table not in SQL_KEYWORDS and table not in aliases_in_stmt:
                 tables.add(table)
