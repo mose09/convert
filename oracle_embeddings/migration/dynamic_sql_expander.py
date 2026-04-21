@@ -83,27 +83,83 @@ def expand_paths(
     stmt_elem: etree._Element,
     *,
     sql_includes: Optional[Dict[str, etree._Element]] = None,
-    max_paths: int = 10,          # reserved for Level 2/3
+    max_paths: int = 10,
+    level: int = 2,
 ) -> List[ExpandedPath]:
-    """Return Level 1 max/min paths for ``stmt_elem``.
+    """Return representative static SQL paths for ``stmt_elem``.
 
-    ``stmt_elem`` is expected to be a ``<select>`` / ``<insert>`` /
-    ``<update>`` / ``<delete>`` / ``<sql>`` element (lxml). Passing any other
-    element renders whatever is inside — useful for unit tests.
+    ``level`` controls how aggressively the alternatives are sampled:
+
+    * ``1``: max (all ``<if>`` true, first ``<when>`` wins, foreach n=1)
+      plus min (all ``<if>`` false, ``<otherwise>`` wins, foreach n=0).
+    * ``2``: adds one path per non-first ``<when>`` / ``<otherwise>`` branch
+      of every ``<choose>`` so each branch's columns are exercised.
+    * ``3``: additionally adds a ``foreach n=2`` sample — useful for catching
+      separator handling issues.
+
+    Duplicate renderings (common when a ``<choose>`` branch produces the same
+    SQL as an earlier path) are dropped. The final list is capped at
+    ``max_paths`` entries.
     """
 
     includes = sql_includes if sql_includes is not None else {}
 
+    paths: List[ExpandedPath] = []
+
     maximum = _render(stmt_elem, activate_all=True, includes=includes)
     maximum.label = "max"
+    paths.append(maximum)
+
     minimum = _render(stmt_elem, activate_all=False, includes=includes)
     minimum.label = "min"
+    paths.append(minimum)
 
-    paths = [maximum]
-    # If min is identical to max there's no value in returning duplicate.
-    if minimum.rendered_sql != maximum.rendered_sql:
-        paths.append(minimum)
-    return paths
+    if level >= 2:
+        chooses = [
+            c for c in stmt_elem.iter() if _local(c.tag) == "choose"
+        ]
+        for c_idx, choose in enumerate(chooses):
+            whens = [w for w in choose if _local(w.tag) == "when"]
+            otherwise = [w for w in choose if _local(w.tag) == "otherwise"]
+            # Max already exercises whens[0]; add branches >= 1 and <otherwise>.
+            for w_idx in range(1, len(whens)):
+                p = _render(
+                    stmt_elem, activate_all=True, includes=includes,
+                    choose_override={id(choose): w_idx},
+                )
+                p.label = f"choose[{c_idx}]/when[{w_idx}]"
+                paths.append(p)
+            if otherwise:
+                p = _render(
+                    stmt_elem, activate_all=True, includes=includes,
+                    choose_override={id(choose): -1},  # -1 = otherwise
+                )
+                p.label = f"choose[{c_idx}]/otherwise"
+                paths.append(p)
+
+    if level >= 3:
+        foreachs = [
+            c for c in stmt_elem.iter() if _local(c.tag) == "foreach"
+        ]
+        if foreachs:
+            p = _render(
+                stmt_elem, activate_all=True, includes=includes,
+                foreach_items=2,
+            )
+            p.label = "foreach[n=2]"
+            paths.append(p)
+
+    # Dedup + cap
+    seen: Dict[str, bool] = {}
+    unique: List[ExpandedPath] = []
+    for p in paths:
+        if p.rendered_sql in seen:
+            continue
+        seen[p.rendered_sql] = True
+        unique.append(p)
+        if len(unique) >= max_paths:
+            break
+    return unique
 
 
 # ---------------------------------------------------------------------------
@@ -116,7 +172,12 @@ def _render(
     *,
     activate_all: bool,
     includes: Dict[str, etree._Element],
+    choose_override: Optional[Dict[int, int]] = None,
+    foreach_items: int = 1,
 ) -> ExpandedPath:
+    """Render one path. ``choose_override`` maps ``id(choose_elem) → branch
+    index`` (``-1`` = ``<otherwise>``). ``foreach_items`` controls how many
+    dummy iterations ``<foreach>`` emits when ``activate_all`` is True."""
     activations: Dict[str, bool] = {}
     parts = _walk(
         elem,
@@ -125,6 +186,8 @@ def _render(
         includes=includes,
         include_stack=set(),
         counter=_Counter(),
+        choose_override=choose_override or {},
+        foreach_items=foreach_items,
     )
     sql = _clean(" ".join(p for p in parts if p))
     return ExpandedPath(rendered_sql=sql, activations=activations)
@@ -138,6 +201,8 @@ def _walk(
     includes: Dict[str, etree._Element],
     include_stack: Set[str],
     counter: "_Counter",
+    choose_override: Dict[int, int],
+    foreach_items: int,
 ) -> List[str]:
     """Walk ``elem`` yielding SQL text chunks.
 
@@ -158,6 +223,8 @@ def _walk(
                 includes=includes,
                 include_stack=include_stack,
                 counter=counter,
+                choose_override=choose_override,
+                foreach_items=foreach_items,
             )
         )
         if child.tail:
@@ -174,6 +241,8 @@ def _render_child(
     includes: Dict[str, etree._Element],
     include_stack: Set[str],
     counter: "_Counter",
+    choose_override: Dict[int, int],
+    foreach_items: int,
 ) -> List[str]:
     kwargs = dict(
         activate_all=activate_all,
@@ -181,6 +250,8 @@ def _render_child(
         includes=includes,
         include_stack=include_stack,
         counter=counter,
+        choose_override=choose_override,
+        foreach_items=foreach_items,
     )
 
     if tag == "if":
@@ -218,6 +289,8 @@ def _render_choose(
     includes: Dict[str, etree._Element],
     include_stack: Set[str],
     counter: "_Counter",
+    choose_override: Dict[int, int],
+    foreach_items: int,
 ) -> List[str]:
     choose_key = counter.emit("choose")
     whens = [c for c in elem if _local(c.tag) == "when"]
@@ -229,15 +302,25 @@ def _render_choose(
         includes=includes,
         include_stack=include_stack,
         counter=counter,
+        choose_override=choose_override,
+        foreach_items=foreach_items,
     )
 
-    # Max mode: first <when> wins. Min mode: <otherwise> wins (or empty).
+    # Max mode: first <when> wins (or override index). Min: <otherwise>.
     if activate_all and whens:
+        override = choose_override.get(id(elem))
+        # override == -1 → take otherwise; valid index → that when; else 0.
+        if override == -1 and otherwise:
+            for i, _ in enumerate(whens):
+                activations[f"{choose_key}/when[{i}]"] = False
+            activations[f"{choose_key}/otherwise"] = True
+            return _walk(otherwise[0], **kwargs)
+        chosen = override if (isinstance(override, int) and 0 <= override < len(whens)) else 0
         for i, w in enumerate(whens):
-            activations[f"{choose_key}/when[{i}]"] = (i == 0)
+            activations[f"{choose_key}/when[{i}]"] = (i == chosen)
         if otherwise:
             activations[f"{choose_key}/otherwise"] = False
-        return _walk(whens[0], **kwargs)
+        return _walk(whens[chosen], **kwargs)
 
     # Min mode
     for i, w in enumerate(whens):
@@ -308,6 +391,8 @@ def _render_foreach(
     includes: Dict[str, etree._Element],
     include_stack: Set[str],
     counter: "_Counter",
+    choose_override: Dict[int, int],
+    foreach_items: int,
 ) -> List[str]:
     fe_key = counter.emit("foreach")
     if not activate_all:
@@ -325,15 +410,22 @@ def _render_foreach(
         includes=includes,
         include_stack=include_stack,
         counter=counter,
+        choose_override=choose_override,
+        foreach_items=foreach_items,
     )
     inner = " ".join(p for p in inner_parts if p).strip()
     if not inner:
         activations[f"{fe_key}[items=1]"] = True
         return [f"{open_}{close_}".strip()] if (open_ or close_) else []
 
-    # Single dummy iteration — enough to exercise inner SQL for Stage A.
-    activations[f"{fe_key}[items=1]"] = True
-    rendered = (open_ + " " + inner + " " + close_).strip()
+    n = max(1, int(foreach_items))
+    activations[f"{fe_key}[items={n}]"] = True
+
+    if n == 1:
+        rendered = (open_ + " " + inner + " " + close_).strip()
+    else:
+        body_list = (" " + separator + " ").join([inner] * n)
+        rendered = (open_ + " " + body_list + " " + close_).strip()
     return [rendered]
 
 

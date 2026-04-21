@@ -230,7 +230,7 @@
 - [x] Step 7: `migration_report.py` — Excel 5 시트
 - [x] Step 8: `bind_dummifier.py` + `validator_db.py` + `validate-migration` 커맨드
 - [x] Step 9: 나머지 transformer 6 종 (TypeConversion / ColumnSplit / ColumnMerge / ValueMapping / JoinPathRewriter / DroppedColumnChecker)
-- [ ] Step 10: dynamic_sql_expander — Level 2 (컬럼 커버리지), Level 3 (foreach n=0,1,2 샘플링)
+- [x] Step 10: dynamic_sql_expander — Level 2 (컬럼 커버리지), Level 3 (foreach n=0,1,2 샘플링)
 - [ ] Step 11: `comment_injector.py` — 한글 주석 삽입
 - [ ] Step 12: XML 산출물 (AS-IS 주석 보존 + 메타데이터 블록)
 - [ ] Step 13: `llm_fallback.py` + `--llm-fallback` 옵션
