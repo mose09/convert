@@ -92,28 +92,35 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: biz 추출 dual-key (row.service_methods / BL 시트 양방향 매칭)
+### 진행 중: `--library-dir` — cross-repo 공용 서비스 인덱스 공유
 
-PR #21 후속. Batch 모드 (`--backends-root`) 에서 Business Logic 시트는
-생성되지만 Programs 시트의 Business Logic 컬럼이 모두 비고 BL 시트의
-Programs 역인덱스도 비는 문제. 원인:
+실제 환경에서 흔한 "메인 레포 (핸들러) + 별도 레포 (공용 서비스)" 구성
+(예: `gipms-main` + `gipms-common`) 에서 메인 레포의 handler 가 common
+레포의 service 를 호출할 때 현재 `--backends-root` 배치 모드는 프로젝트별로
+service 인덱스를 분리해서 cross-repo FQCN 해석 실패. 워크어라운드는
+`--backend-dir C:\parent` 로 부모 디렉토리 통째 스캔이지만, 정규 옵션으로
+라이브러리 경로만 별도 지정 가능하게 추가.
 
-- `collect_chain_methods` 가 iface→impl 로 resolve 후 `out.fqcn = impl` 로
-  정규화 → `biz_map` key 는 ``OrderServiceImpl#save``
-- PR #23 이전의 ``row["service_methods"]`` 는 interface FQCN 이라 key
-  mismatch. PR #23 이후에도 다른 해석 경로로 interface 가 새어들어올
-  가능성 있어 안전장치 필요
+작업 항목:
 
-수정:
-
-- [x] `collect_chain_methods` method dict 에 `original_fqcn` 필드
-- [x] `extract_backend_biz_logic` + cache hit 경로 **dual-key 등록**:
-      impl 키 + interface 키 둘 다 같은 BizResult 참조
-- [x] `biz_detail_sheet_rows` BizResult id dedup + alias 전체로 Programs
-      역인덱스 집계
-- [x] Batch mock 검증 (``/tmp/mock_batch_biz`` 2 프로젝트 × iface+impl):
-      BL 시트 Programs 역인덱스 + Programs 시트 BL 인라인 컬럼 정상
-- [x] Phase A 5/5 + single-mode iface_impl 회귀 통과
+- [x] `_build_indexes`: classes 에 `is_library=True` 표시된 것은
+      controllers_by_fqcn 에서만 제외, services/mappers/by_simple 은 유지
+- [x] `analyze_legacy(library_dirs=[...])`: backend_dir 파싱 후 각 lib_dir
+      에 대해 `parse_all_java` + `parse_all_mappers` 호출해 classes /
+      statements 병합. 각 library class 에 `is_library=True` 주입.
+- [x] `analyze_legacy_batch(library_dirs=[...])`: 동일 library_dirs 를
+      모든 sub-project analyze_legacy 호출에 forwarding → 배치 내 전
+      프로젝트가 동일 라이브러리 공유.
+- [x] CLI `--library-dir <path>` (action=append, 반복 가능). 단일 +
+      배치 모드 둘 다에서 작동.
+- [x] mock 검증 3 종 PASS:
+      * 단일 모드 + library_dir: main UserHandler 가 lib UserService 호출 →
+        service_methods = `com.lib.UserServiceImpl#getUser` ✓, lib 의
+        InternalHandler (Vert.x 상속) 는 controllers 에서 제외됨 ✓
+      * 배치 모드 + library_dir: be_a / be_b 두 sub-project 이 모두 같은
+        lib 서비스 공유, 양쪽 행 모두 service_methods 해석 ✓
+      * 회귀: library_dirs=None / [] → 기존 동작 불변
+- [x] conventional commit + PR + squash-merge
 
 ---
 

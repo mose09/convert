@@ -252,15 +252,23 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
         stereo = c.get("stereotype", "")
         name = c["class_name"]
         has_endpoints = bool(c.get("endpoints"))
+        is_library = bool(c.get("is_library"))
 
-        if stereo in controller_stereos:
-            controllers[fqcn] = c
-        elif has_endpoints:
-            # Promotion: plain class that happens to declare routes. The
-            # endpoint-list was already filtered to match ``framework``
-            # above, so this can't pull in a Spring class into a Vert.x
-            # project or vice versa.
-            controllers[fqcn] = c
+        # Library classes (from --library-dir) participate in service /
+        # mapper / by_simple indexes only — they must NOT become
+        # controllers even if they carry endpoints or a Controller
+        # stereotype. This lets a shared repo (e.g. ``gipms-common``)
+        # expose its services to a main project's chain resolution
+        # without generating duplicate endpoint rows.
+        if not is_library:
+            if stereo in controller_stereos:
+                controllers[fqcn] = c
+            elif has_endpoints:
+                # Promotion: plain class that happens to declare routes. The
+                # endpoint-list was already filtered to match ``framework``
+                # above, so this can't pull in a Spring class into a Vert.x
+                # project or vice versa.
+                controllers[fqcn] = c
         if stereo in ("Service", "Component") or _is_service_name(name):
             services[fqcn] = c
         is_mapper = (stereo in ("Mapper", "Repository")
@@ -1160,7 +1168,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    biz_max_methods: int = 500,
                    biz_max_handlers: int = 300,
                    biz_use_cache: bool = True,
-                   biz_config: dict | None = None) -> dict:
+                   biz_config: dict | None = None,
+                   library_dirs: list[str] | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1205,6 +1214,25 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
               f"{len(patterns.get('sql_receivers', []))} sql receivers)")
 
     classes = parse_all_java(backend_dir)
+
+    # Library repos (``--library-dir``): scanned for .java + MyBatis XMLs
+    # but their classes are flagged ``is_library=True`` so ``_build_indexes``
+    # keeps them OUT of the controller index (no endpoint rows generated).
+    # They still feed services / mappers / by_simple so that the main
+    # project's Controller → Service → Mapper chain can resolve against
+    # shared-repo classes. Use case: ``gipms-main`` (handlers) calls
+    # services from sibling ``gipms-common`` (pure service repo).
+    library_classes: list[dict] = []
+    library_dirs_effective = [d for d in (library_dirs or []) if d]
+    for lib_dir in library_dirs_effective:
+        print(f"  Library dir: {lib_dir}")
+        lib_cls = parse_all_java(lib_dir)
+        for c in lib_cls:
+            c["is_library"] = True
+        library_classes.extend(lib_cls)
+    if library_classes:
+        print(f"  Library classes indexed: {len(library_classes)} (from {len(library_dirs_effective)} lib dirs)")
+        classes.extend(library_classes)
 
     # Apply framework gating to endpoint lists BEFORE counting, so that
     # the "endpoints discovered" diagnostic matches what the role index
@@ -1255,6 +1283,22 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
               f"method-name or call shape)")
 
     mybatis_result = parse_all_mappers(backend_dir)
+    # Also scan library repos for MyBatis XMLs — DAO interfaces in
+    # gipms-common typically have their mapper XMLs colocated, so without
+    # this the service → mapper → tables chain would stop at the DAO
+    # interface. Merge statement lists + re-derive table_usage / joins
+    # as a flat union (namespaces are globally unique by FQCN so no
+    # collision risk).
+    for lib_dir in library_dirs_effective:
+        lib_result = parse_all_mappers(lib_dir)
+        if lib_result.get("statements"):
+            mybatis_result["statements"].extend(lib_result["statements"])
+            mybatis_result["mapper_count"] = (
+                mybatis_result.get("mapper_count", 0) + lib_result.get("mapper_count", 0)
+            )
+            mybatis_result["statement_count"] = (
+                mybatis_result.get("statement_count", 0) + lib_result.get("statement_count", 0)
+            )
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
     xml_namespaces = set(mybatis_idx["namespace_to_xml_files"].keys())
 
@@ -1706,7 +1750,8 @@ def analyze_legacy_batch(backends_root: str,
                         biz_max_methods: int = 500,
                         biz_max_handlers: int = 300,
                         biz_use_cache: bool = True,
-                        biz_config: dict | None = None) -> dict:
+                        biz_config: dict | None = None,
+                        library_dirs: list[str] | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1803,6 +1848,10 @@ def analyze_legacy_batch(backends_root: str,
             biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
+            # Share library dirs across every sub-project in the batch,
+            # so a common service repo is available to all backends for
+            # chain resolution (FQCN, impls, mapper/XML lookup).
+            library_dirs=library_dirs,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

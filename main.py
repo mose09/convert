@@ -1581,6 +1581,7 @@ def cmd_analyze_legacy(args):
     biz_max_handlers = int(getattr(args, "biz_max_handlers", 300))
     biz_use_cache = not bool(getattr(args, "no_biz_cache", False))
     biz_config = config if isinstance(config, dict) else {}
+    library_dirs = list(getattr(args, "library_dirs", None) or [])
 
     if backends_root:
         result = analyze_legacy_batch(
@@ -1599,6 +1600,7 @@ def cmd_analyze_legacy(args):
             biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
+            library_dirs=library_dirs,
         )
     else:
         result = analyze_legacy(
@@ -1616,6 +1618,7 @@ def cmd_analyze_legacy(args):
             biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
+            library_dirs=library_dirs,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1771,6 +1774,14 @@ def main():
     al_parser.add_argument("--include-all", action="store_true",
                            help="With --backends-root: include every direct child "
                                 "directory regardless of build-file detection")
+    al_parser.add_argument("--library-dir", action="append", default=[],
+                           dest="library_dirs",
+                           help="추가 라이브러리 레포 경로 (반복 가능). 해당 경로 하위의 "
+                                ".java / MyBatis XML 은 service / mapper 인덱스에만 포함되고 "
+                                "controller / endpoint 로 emit 되지 않음. 별도 레포의 공용 "
+                                "서비스 (예: gipms-common) 를 메인 레포의 chain 해석에 붙일 때 "
+                                "사용. --backends-root 와 함께 쓰면 모든 하위 프로젝트가 "
+                                "동일 라이브러리를 공유.")
     al_parser.add_argument("--frontend-dir",
                            help="단일 프론트엔드 프로젝트 루트 (React/Polymer, optional)")
     al_parser.add_argument("--frontends-root",
