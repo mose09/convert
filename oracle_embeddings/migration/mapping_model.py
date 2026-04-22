@@ -178,6 +178,25 @@ class ColumnMapping:
 
 
 @dataclass
+class OutputFormat:
+    """TO-BE SQL 출력 포매팅 스타일 (Phase 3).
+
+    style:
+        - ``none``           : sqlglot 기본 (단일 라인). 하위 호환 기본값.
+        - ``korean_legacy``  : 국내 레거시 표준 (6-char keyword 우측정렬,
+                               리딩 콤마, 컬럼 주석 인라인).
+        - ``ansi``           : ANSI-ish (현재 sqlglot ``pretty=True`` fallback).
+    """
+
+    style: str = "none"
+    indent: int = 2
+    keyword_case: str = "upper"
+    leading_comma: bool = True
+    table_comment_prefix: str = "T:"
+    normalize_comment_width: bool = True
+
+
+@dataclass
 class MappingOptions:
     emit_column_comments: bool = False
     comment_scope: List[CommentScope] = field(
@@ -186,6 +205,7 @@ class MappingOptions:
     comment_source: CommentSource = "terms_dictionary"
     comment_format: str = "/* {ko_name} */"
     unknown_table_action: UnknownTableAction = "warn"
+    output_format: OutputFormat = field(default_factory=OutputFormat)
 
 
 @dataclass
