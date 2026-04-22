@@ -98,6 +98,56 @@ def inject_comments(
 
 
 # ---------------------------------------------------------------------------
+# ko_lookup builders
+# ---------------------------------------------------------------------------
+
+
+def build_ko_lookup_from_mapping(mapping) -> Dict[str, str]:
+    """Build ``{TABLE.COL: 한글}`` from a loaded ``Mapping``.
+
+    Walks every ``columns[]`` entry and pulls the **TO-BE side's** ``comment``
+    field (set by Phase 1 의 9-컬럼 flat 매핑 컨버터). Also attaches the
+    table-level comment as a bare ``TABLE`` key (used when the renderer
+    decides to emit table headers / labels).
+
+    The returned dict is in raw form (mixed case, qualified + bare). Pass
+    it to :func:`inject_comments`; ``_normalise_lookup`` upper-cases and
+    de-dupes for the actual matcher.
+
+    Notes
+    -----
+    * split / merge / drop / value_map: 같은 helper 가 처리. split 의 경우
+      여러 to_be ColumnRef 의 comment 를 각각 등록. merge 는 단일 to_be 에
+      등록. drop 은 to_be is None → skip.
+    * Source priority: ``options.comment_source = "mapping_first"`` 모드에서는
+      이 헬퍼가 가장 우선 적용되고 빈 키만 다른 소스로 채워짐 (호출 측이
+      merge 순서를 결정).
+    """
+    out: Dict[str, str] = {}
+    # Table-level comments
+    for tm in mapping.tables:
+        if not tm.comment:
+            continue
+        names = tm.to_be_tables() or tm.as_is_tables()
+        for n in names:
+            if n:
+                out[n.upper()] = tm.comment
+    # Column-level comments — TO-BE side
+    for cm in mapping.columns:
+        for to_be in cm.to_be_refs():
+            comment = getattr(to_be, "comment", None)
+            tbl = getattr(to_be, "table", None)
+            col = getattr(to_be, "column", None)
+            if not (comment and tbl and col):
+                continue
+            qualified = f"{tbl}.{col}".upper()
+            out[qualified] = comment
+            # Plain column-only key (unqualified usage 시) — 명시 mapping 우선
+            out.setdefault(col.upper(), comment)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Internals
 # ---------------------------------------------------------------------------
 
