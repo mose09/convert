@@ -997,6 +997,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "menu_url": menu_entry.get("url", ""),
         "program_id": menu_entry.get("program_id", ""),
         "program_name": menu_entry.get("program_name", ""),
+        "method_name": "",
         "http_method": "",
         "url": "",
         "file_name": "",
@@ -1103,6 +1104,10 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "menu_url": menu_raw_url or (menu_entry or {}).get("url", ""),
         "program_id": (menu_entry or {}).get("program_id", ""),
         "program_name": (menu_entry or {}).get("program_name", "") or endpoint["method_name"],
+        # method_name 은 Controller/Verticle 의 Java 메서드명 원본. program_name 은
+        # 메뉴 매칭 시 메뉴의 화면명으로 덮이기 때문에, biz 추출 등 Java 메서드
+        # 레벨에서 접근해야 하는 소비자는 이 필드를 사용.
+        "method_name": endpoint.get("method_name") or "",
         "http_method": endpoint["http_method"],
         "url": endpoint["full_url"],
         "file_name": _rel(controller["filepath"], backend_dir),
