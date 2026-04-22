@@ -154,6 +154,26 @@ Produce JSON with exactly this shape (omit optional fields when not applicable):
   가 참조하는 AS-IS 테이블마다 대응 entry 필수 — 기본 rename 이면 간단 entry)
 - 애매하면 kind="rename" + 주의사항을 json 루트 "notes" 필드에 남기기
 
+## 9-컬럼 flat 매핑 포맷 (사용자 표준 양식)
+
+입력이 아래 9-컬럼 파이프 테이블이면 한 행 = 한 컬럼 매핑으로 1:1 처리:
+    asis_table | asis_column | asis_column_type
+  | tobe_table | tobe_table_comment
+  | tobe_column | tobe_column_type | tobe_column_comment
+  | remark
+
+처리 규칙:
+- 같은 asis_table 의 첫 행에서 tables[] 항목 1개 생성 (type=rename, to_be 사용)
+- tobe_table_comment / tobe_column_comment 는 comment 필드로 보존
+  (tables[].comment, columns[].to_be.comment) — 추후 한글 주석 자동 삽입용
+- type 페어가 분명한 변환 패턴이면 transform 자동 채우기:
+    VARCHAR2(8)/CHAR(8) ↔ DATE   → TO_DATE/TO_CHAR with 'YYYYMMDD'
+    VARCHAR2(14) → TIMESTAMP      → TO_TIMESTAMP with 'YYYYMMDDHH24MISS'
+    VARCHAR2 ↔ NUMBER             → TO_NUMBER/TO_CHAR
+- remark 에 split / merge / Y/N 매핑 같은 키워드가 보이면 needs_human_review
+  로 분류하지 말고, kind 만 추정한 후 columns[].note 에 원문 remark 를 남겨
+  사용자가 검토하도록 함
+
 ## INPUT (raw markdown)
 {raw_md}
 
@@ -225,17 +245,33 @@ def _extract_and_parse_json(text: str) -> Dict[str, Any]:
 # Header synonyms — case-insensitive, upper applied before matching.
 _HEADER_SYNONYMS = {
     "as_is_table": {"AS-IS 테이블", "AS IS 테이블", "AS-IS TABLE", "ORIGINAL TABLE",
-                    "OLD TABLE", "ASIS TABLE", "AS_IS_TABLE"},
+                    "OLD TABLE", "ASIS TABLE", "AS_IS_TABLE", "ASIS_TABLE",
+                    "기존 테이블", "기존테이블", "현행 테이블", "원본 테이블"},
     "as_is_column": {"AS-IS 컬럼", "AS IS 컬럼", "AS-IS COLUMN", "ORIGINAL COLUMN",
-                     "OLD COLUMN", "ASIS COLUMN", "AS_IS_COLUMN", "AS-IS 칼럼"},
-    "as_is_type": {"AS-IS 타입", "AS-IS TYPE", "OLD TYPE", "ORIGINAL TYPE"},
+                     "OLD COLUMN", "ASIS COLUMN", "AS_IS_COLUMN", "AS-IS 칼럼",
+                     "ASIS_COLUMN", "기존 컬럼", "기존컬럼", "현행 컬럼"},
+    "as_is_type": {"AS-IS 타입", "AS-IS TYPE", "OLD TYPE", "ORIGINAL TYPE",
+                   "ASIS_COLUMN_TYPE", "AS_IS_COLUMN_TYPE", "기존 타입", "기존타입"},
+    "as_is_table_comment": {"ASIS_TABLE_COMMENT", "AS_IS_TABLE_COMMENT",
+                            "AS-IS 테이블 코멘트", "기존 테이블 설명"},
+    "as_is_column_comment": {"ASIS_COLUMN_COMMENT", "AS_IS_COLUMN_COMMENT",
+                             "AS-IS 컬럼 코멘트", "기존 컬럼 설명"},
     "to_be_table": {"TO-BE 테이블", "TO BE 테이블", "TO-BE TABLE", "NEW TABLE",
-                    "TOBE TABLE", "TO_BE_TABLE"},
+                    "TOBE TABLE", "TO_BE_TABLE", "TOBE_TABLE",
+                    "신규 테이블", "신규테이블", "대상 테이블", "변경 테이블"},
     "to_be_column": {"TO-BE 컬럼", "TO BE 컬럼", "TO-BE COLUMN", "NEW COLUMN",
-                     "TOBE COLUMN", "TO_BE_COLUMN", "TO-BE 칼럼"},
-    "to_be_type": {"TO-BE 타입", "TO-BE TYPE", "NEW TYPE"},
+                     "TOBE COLUMN", "TO_BE_COLUMN", "TO-BE 칼럼", "TOBE_COLUMN",
+                     "신규 컬럼", "신규컬럼", "대상 컬럼"},
+    "to_be_type": {"TO-BE 타입", "TO-BE TYPE", "NEW TYPE", "TOBE_COLUMN_TYPE",
+                   "TO_BE_COLUMN_TYPE", "신규 타입", "신규타입"},
+    "to_be_table_comment": {"TOBE_TABLE_COMMENT", "TO_BE_TABLE_COMMENT",
+                            "TO-BE 테이블 코멘트", "신규 테이블 설명",
+                            "테이블 한글", "테이블한글", "테이블설명"},
+    "to_be_column_comment": {"TOBE_COLUMN_COMMENT", "TO_BE_COLUMN_COMMENT",
+                             "TO-BE 컬럼 코멘트", "신규 컬럼 설명",
+                             "컬럼 한글", "컬럼한글", "컬럼설명"},
     "note": {"비고", "NOTE", "NOTES", "DESCRIPTION", "설명", "변환", "RULE",
-             "변환규칙", "변환 규칙"},
+             "변환규칙", "변환 규칙", "REMARK", "REMARKS"},
 }
 
 
@@ -243,8 +279,17 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
     """Parse pipe-table only, no LLM.
 
     Recognised shapes per row: AS-IS table | AS-IS col | TO-BE table | TO-BE col
-    (+ optional types + notes). Everything else becomes kind=rename with a
-    note for the user.
+    (+ optional types, comments, notes). Everything else becomes kind=rename
+    with a note for the user.
+
+    9-컬럼 flat 매핑 포맷 (사용자 워크플로우):
+        | asis_table | asis_column | asis_column_type
+        | tobe_table | tobe_table_comment
+        | tobe_column | tobe_column_type | tobe_column_comment
+        | remark |
+    type 페어가 잘 알려진 변환 패턴 (VARCHAR2(8) → DATE 등) 이면 transform
+    템플릿 자동 추론. 코멘트 필드는 yaml 의 ``comment`` 로 보존되어 추후
+    comment_injector 가 한글 주석 소스로 사용 가능 (Phase 2).
     """
     rows = _extract_pipe_rows(text)
     if not rows:
@@ -279,37 +324,80 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
         if not as_is_tbl or not as_is_col:
             continue
 
-        # Simple table mapping
-        if as_is_tbl not in tables:
-            if not to_be_tbl or to_be_tbl == as_is_tbl:
-                tables[as_is_tbl] = {"type": "rename", "as_is": as_is_tbl, "to_be": as_is_tbl}
-            else:
-                tables[as_is_tbl] = {"type": "rename", "as_is": as_is_tbl, "to_be": to_be_tbl}
+        to_be_table_comment = _cell(r, col_map, "to_be_table_comment")
 
-        if not to_be_col or to_be_col == "-":
-            columns.append({
+        # Simple table mapping (한 번만 등록, table_comment 가 있으면 첨부)
+        if as_is_tbl not in tables:
+            tm: Dict[str, Any] = {
+                "type": "rename",
+                "as_is": as_is_tbl,
+                "to_be": (to_be_tbl or as_is_tbl),
+            }
+            if to_be_table_comment:
+                tm["comment"] = to_be_table_comment
+            tables[as_is_tbl] = tm
+        else:
+            # 이후 행에서 같은 테이블의 코멘트가 비어있지 않게 등장하면 보강
+            if to_be_table_comment and "comment" not in tables[as_is_tbl]:
+                tables[as_is_tbl]["comment"] = to_be_table_comment
+
+        # drop 행
+        if not to_be_col or to_be_col in {"-", "DROP", "삭제"}:
+            entry_drop: Dict[str, Any] = {
                 "kind": "drop",
                 "as_is": {"table": as_is_tbl, "column": as_is_col},
                 "to_be": None,
                 "action": "drop_with_warning",
-            })
+            }
+            note = _cell(r, col_map, "note")
+            if note:
+                entry_drop["note"] = note
+            columns.append(entry_drop)
             continue
 
         as_is_type = _cell(r, col_map, "as_is_type")
         to_be_type = _cell(r, col_map, "to_be_type")
+        to_be_column_comment = _cell(r, col_map, "to_be_column_comment")
+        note = _cell(r, col_map, "note")
 
         entry: Dict[str, Any] = {
             "kind": "rename",
             "as_is": {"table": as_is_tbl, "column": as_is_col},
-            "to_be": {"table": to_be_tbl or as_is_tbl, "column": to_be_col},
+            "to_be": {"table": (to_be_tbl or as_is_tbl), "column": to_be_col},
         }
         if as_is_type:
             entry["as_is"]["type"] = as_is_type
         if to_be_type:
             entry["to_be"]["type"] = to_be_type
+        if to_be_column_comment:
+            entry["to_be"]["comment"] = to_be_column_comment
+
         if as_is_type and to_be_type and as_is_type.upper() != to_be_type.upper():
-            entry["kind"] = "type_convert"
-            entry["transform"] = {"read": "{src}", "where": "{src}"}
+            a_kind, _ = _simplify_type(as_is_type)
+            b_kind, _ = _simplify_type(to_be_type)
+            if a_kind == b_kind:
+                # 같은 base 타입 (예: VARCHAR2(100) → VARCHAR2(200)) 은 길이/
+                # precision 만 다른 케이스이므로 transform 불필요. rename 유지.
+                pass
+            else:
+                entry["kind"] = "type_convert"
+                tx = _infer_type_transform(as_is_type, to_be_type)
+                if tx:
+                    entry["transform"] = tx
+                else:
+                    # 미지원 type 페어. ⚠ 마커로 사용자 검토 필요 표시 +
+                    # 기본 no-op transform 으로 시작 (loader 통과시키기 위함).
+                    entry["transform"] = {
+                        "read":  "{src}",
+                        "write": "{src}",
+                        "where": "{src}",
+                    }
+                    hint = (f"⚠ unrecognised type pair {as_is_type} → {to_be_type}; "
+                            "please supply transform.read / write / where manually.")
+                    note = (note + " | " + hint) if note else hint
+
+        if note:
+            entry["note"] = note
 
         columns.append(entry)
 
@@ -318,8 +406,88 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
         "default_schema": {"as_is": "LEGACY", "to_be": "NEW"},
         "tables": list(tables.values()),
         "columns": columns,
-        "notes": "generated by --no-llm heuristic; please review transform expressions",
+        "notes": "generated by --no-llm heuristic; please review transform expressions"
+                 " and any rows tagged with ⚠",
     }
+
+
+# ---------------------------------------------------------------------------
+# Type-pair → transform template heuristic
+# ---------------------------------------------------------------------------
+#
+# 잘 알려진 Oracle 타입 페어에 대한 기본 변환 템플릿. 폐쇄망 LLM 가
+# 없거나 LLM 응답이 신뢰 어려울 때 fallback. 매칭 실패 시 None 을 반환해
+# 호출 측이 ``⚠`` 마커 단 후 사용자 수동 수정을 요청.
+#
+# 형식:  (as_is_kind, to_be_kind) → transform spec
+#   as_is_kind / to_be_kind 는 ``_simplify_type`` 으로 정규화 (괄호 안의
+#   precision 은 별도 매개로 처리).
+
+
+_TYPE_TRANSFORMS: Dict[Tuple[str, str], Dict[str, str]] = {
+    # 8자리 문자열 (YYYYMMDD) → DATE
+    ("VARCHAR2_8", "DATE"): {
+        "read":  "TO_DATE({src}, 'YYYYMMDD')",
+        "write": "TO_DATE({src}, 'YYYYMMDD')",
+        "where": "TO_CHAR({src}, 'YYYYMMDD')",
+    },
+    ("CHAR_8", "DATE"): {
+        "read":  "TO_DATE({src}, 'YYYYMMDD')",
+        "write": "TO_DATE({src}, 'YYYYMMDD')",
+        "where": "TO_CHAR({src}, 'YYYYMMDD')",
+    },
+    # 14자리 문자열 (YYYYMMDDHHMISS) → TIMESTAMP
+    ("VARCHAR2_14", "TIMESTAMP"): {
+        "read":  "TO_TIMESTAMP({src}, 'YYYYMMDDHH24MISS')",
+        "write": "TO_TIMESTAMP({src}, 'YYYYMMDDHH24MISS')",
+        "where": "TO_CHAR({src}, 'YYYYMMDDHH24MISS')",
+    },
+    # DATE → TIMESTAMP
+    ("DATE", "TIMESTAMP"): {
+        "read":  "CAST({src} AS TIMESTAMP)",
+        "write": "CAST({src} AS TIMESTAMP)",
+        "where": "CAST({src} AS TIMESTAMP)",
+    },
+    # 문자 ↔ 숫자
+    ("VARCHAR2", "NUMBER"): {
+        "read":  "TO_NUMBER({src})",
+        "write": "TO_CHAR({src})",
+        "where": "TO_CHAR({src})",
+    },
+    ("NUMBER", "VARCHAR2"): {
+        "read":  "TO_CHAR({src})",
+        "write": "TO_NUMBER({src})",
+        "where": "TO_NUMBER({src})",
+    },
+    # CHAR ↔ VARCHAR2 는 사실상 no-op — transform 없이 rename 처리하는 게
+    # 깔끔하므로 Empty 가 아닌 None 신호를 위해 여기 등록하지 않음.
+}
+
+
+_TYPE_LEN_RE = re.compile(r"^([A-Z][A-Z0-9_]*)\s*\(\s*(\d+)", re.IGNORECASE)
+
+
+def _simplify_type(t: str) -> Tuple[str, Optional[int]]:
+    """``VARCHAR2(8)`` → ``("VARCHAR2", 8)``, ``DATE`` → ``("DATE", None)``."""
+    if not t:
+        return ("", None)
+    m = _TYPE_LEN_RE.match(t.strip())
+    if m:
+        return (m.group(1).upper(), int(m.group(2)))
+    return (t.strip().upper(), None)
+
+
+def _infer_type_transform(as_is_type: str, to_be_type: str) -> Optional[Dict[str, str]]:
+    """Look up a default transform spec for a type pair, or None on miss."""
+    a_kind, a_len = _simplify_type(as_is_type)
+    b_kind, _ = _simplify_type(to_be_type)
+    # length-aware 키 우선 시도
+    if a_len is not None:
+        keyed = _TYPE_TRANSFORMS.get((f"{a_kind}_{a_len}", b_kind))
+        if keyed:
+            return dict(keyed)
+    # length-agnostic
+    return dict(_TYPE_TRANSFORMS.get((a_kind, b_kind))) if (a_kind, b_kind) in _TYPE_TRANSFORMS else None
 
 
 def _extract_pipe_rows(text: str) -> List[List[str]]:
@@ -428,6 +596,8 @@ def _format_table(t: Dict[str, Any]) -> List[str]:
     out.append(f"  - type: {typ}")
     out.append(f"    as_is: {_scalar(as_is)}")
     out.append(f"    to_be: {_scalar(to_be)}")
+    if t.get("comment"):
+        out.append(f"    comment: {_scalar(t['comment'])}")
     if t.get("discriminator_column"):
         out.append(f"    discriminator_column: {_scalar(t['discriminator_column'])}")
     if t.get("discriminator_map"):
@@ -479,6 +649,11 @@ def _format_column(c: Dict[str, Any]) -> List[str]:
         out.append(f"    default_value: {_scalar(c['default_value'])}")
     if c.get("action") and c["action"] != "convert":
         out.append(f"    action: {c['action']}")
+    if c.get("note"):
+        # 줄바꿈 / 따옴표 정제 후 한 줄 코멘트로 저장
+        note = " ".join(str(c["note"]).split())
+        note = note.replace('"', "'")
+        out.append(f'    note: "{note}"')
     return out
 
 
@@ -491,6 +666,8 @@ def _inline_ref(ref: Any) -> str:
     ]
     if ref.get("type"):
         parts.append(f"type: {_scalar(ref['type'])}")
+    if ref.get("comment"):
+        parts.append(f"comment: {_scalar(ref['comment'])}")
     return "{ " + ", ".join(parts) + " }"
 
 
