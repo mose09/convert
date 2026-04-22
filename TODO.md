@@ -125,6 +125,52 @@
 
 ---
 
+# TODO: analyze-legacy 비즈니스 로직 추출 — Phase A (백엔드 ServiceImpl) 완료
+
+- [x] 신규 모듈 `oracle_embeddings/legacy_biz_extractor.py`
+      (schema + static filter + disk cache + batch LLM + regex fallback +
+      BFS scope collector + row/sheet emit 헬퍼)
+- [x] `_call_llm` 리팩터 — `system_prompt` kwarg 추가, 기본은 기존 pattern
+      discovery prompt (하위 호환). biz_extractor 는 자체 시스템 프롬프트 주입
+- [x] `legacy_pattern_discovery._DEFAULT_PATTERNS` 에 `biz_extraction` 섹션
+      (`backend_skip_methods`, `min_body_chars`, `biz_keyword_hints`,
+      `frontend_validation_props`, `llm_batch_size`, `llm_max_body_chars`)
+      + load_patterns deep-merge 확장
+- [x] `analyze_legacy` / `analyze_legacy_batch` 시그니처에
+      `extract_biz`/`biz_scope`/`biz_max_methods`/`biz_use_cache`/`biz_config`
+      추가. endpoint 체인 해석 직후 `collect_chain_methods` (BFS, self-call
+      transitive closure) → `extract_backend_biz_logic` → `enrich_rows_with_biz`
+- [x] `_build_row` row 에 `biz_summary` / `biz_detail_key` 기본 빈 문자열로
+      사전 할당 (enrichment 는 별도 pass)
+- [x] Result dict 에 `biz_map` 키 노출 (batch 모드는 sub-run map 병합)
+- [x] `legacy_report` 4개 컬럼 정의 (single/batch × with-menu/no-menu)에
+      `Business Logic` 컬럼 추가 (service_methods 다음). `_write_biz_logic_sheet`
+      공용 헬퍼 신설, single + batch 모드 모두 9컬럼 시트 출력 (fallback
+      source 는 노랑 하이라이트)
+- [x] `main.py` CLI 플래그: `--extract-biz-logic` (opt-in, default off),
+      `--biz-scope {backend,frontend,both}` default both, `--biz-max-methods`
+      default 500, `--biz-max-handlers` default 300 (Phase B reserved),
+      `--no-biz-cache`. cmd_analyze_legacy 가 analyze_legacy(_batch) 에
+      forwarding
+- [x] Extractor built-in defaults (`_BUILTIN_DEFAULTS` + `_effective_config`)
+      — patterns.yaml 미지정 시에도 min_body_chars / biz_keyword_hints 등이
+      자동 적용 (분석 누락 방지)
+- [x] 검증 5종 end-to-end PASS (/tmp/test_biz_extract_phaseA.py):
+      * Test A: `--extract-biz-logic` off → biz_map 비고 biz_summary 빈 값
+      * Test B: on + LLM endpoint 죽었을 때 fallback regex summary 가 채워짐,
+        saveOrder + validateDates (bare self-call 도달한 helper) 모두 추출,
+        get* / trivial body 는 skip
+      * Test C: 동일 body 재분석 시 캐시 hit (source=cache)
+      * Test D: Excel 에 `Business Logic` 시트 (9 컬럼: Service#Method /
+        Validations / Biz Rules / State Changes / Calculations /
+        External Calls / Summary / Source / Programs)
+      * Test E: `_is_biz_candidate` 필터 동작 (name skip + length + keyword)
+- [x] 회귀: mock_bare_calls / mock_batch 기존 시나리오 동일 출력
+
+Phase B (프론트 React validation/비즈니스 로직) 와 Phase C (polish) 는 별도 PR.
+
+---
+
 # TODO: bare method self-call 체인 추적 (완료)
 
 - [x] 원인: `_FIELD_CALL_RE` 는 `receiver.method(` 만 매칭 → `this.` 없이

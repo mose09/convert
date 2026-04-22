@@ -678,11 +678,16 @@ def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
 
 
 def _call_llm(prompt: str, config: dict, max_retries: int = 2,
-              label: str = "patterns") -> dict:
+              label: str = "patterns",
+              system_prompt: str | None = None) -> dict:
     """Send prompt to the LLM and parse the JSON response.
 
     Uses ``PATTERN_LLM_*`` env vars first (coding-model recommended),
     falls back to generic ``LLM_*`` / ``config.yaml`` ``llm`` section.
+
+    ``system_prompt`` 은 optional — 미지정 시 패턴 발견용 기본 프롬프트.
+    비즈니스 로직 추출 같은 다른 용도 모듈은 자체 프롬프트를 주입해서
+    재사용 가능 (retry / JSON 추출 / raw dump 인프라는 공유).
 
     On JSON parse failure the raw response is written to
     ``output/legacy_analysis/pattern_llm_raw_<label>.txt`` so the
@@ -704,6 +709,8 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
              or llm_config.get("model", "llama3"))
     client = OpenAI(api_key=api_key, base_url=api_base)
 
+    sys_prompt = system_prompt or _SYSTEM_PROMPT
+
     print(f"  LLM model: {model} (PATTERN_LLM_MODEL 또는 LLM_MODEL)")
     print(f"  LLM endpoint: {api_base}")
     print(f"  LLM request: {label} (prompt {len(prompt)} chars)")
@@ -714,7 +721,7 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
             response = client.chat.completions.create(
                 model=model,
                 messages=[
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": sys_prompt},
                     {"role": "user", "content": prompt},
                 ],
                 temperature=0.1,
@@ -826,6 +833,26 @@ _DEFAULT_PATTERNS = {
     "notes": "",
     "url": dict(_DEFAULT_URL_SECTION),
     "frontend": dict(_DEFAULT_FRONTEND_SECTION),
+    "biz_extraction": {
+        # ServiceImpl 비즈니스 로직 추출 시 skip 할 메서드 이름/패턴
+        # (LLM 비용 절약). ``get*`` / ``set*`` 는 prefix glob 로 매칭.
+        "backend_skip_methods": [
+            "toString", "equals", "hashCode", "get*", "set*",
+        ],
+        # 메서드 body 가 이 글자 수 미만이고 biz 키워드도 없으면 LLM 생략
+        "min_body_chars": 120,
+        # 이 중 하나라도 body 안에 있으면 size 무시하고 LLM 대상
+        "biz_keyword_hints": [
+            "if", "switch", "throw", "validate", "check", "status",
+        ],
+        # React JSX 의 필드 validation props (Phase B 에서 사용)
+        "frontend_validation_props": [
+            "required", "pattern", "minLength", "maxLength", "min", "max", "type",
+        ],
+        # LLM 배치 크기 + per-메서드 body 최대 글자수 (토큰 통제)
+        "llm_batch_size": 6,
+        "llm_max_body_chars": 3500,
+    },
 }
 
 
@@ -868,6 +895,7 @@ def load_patterns(yaml_path: str) -> dict:
     merged = dict(_DEFAULT_PATTERNS)
     merged["url"] = dict(_DEFAULT_URL_SECTION)
     merged["frontend"] = dict(_DEFAULT_FRONTEND_SECTION)
+    merged["biz_extraction"] = dict(_DEFAULT_PATTERNS["biz_extraction"])
     for key, value in loaded.items():
         if value is None:
             continue
@@ -884,6 +912,12 @@ def load_patterns(yaml_path: str) -> dict:
                 if uv is not None:
                     fe_merged[uk] = uv
             merged["frontend"] = fe_merged
+        elif key == "biz_extraction" and isinstance(value, dict):
+            bz_merged = dict(_DEFAULT_PATTERNS["biz_extraction"])
+            for uk, uv in value.items():
+                if uv is not None:
+                    bz_merged[uk] = uv
+            merged["biz_extraction"] = bz_merged
         else:
             merged[key] = value
 

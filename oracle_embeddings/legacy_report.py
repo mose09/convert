@@ -195,6 +195,67 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
     return filepath
 
 
+def _write_biz_logic_sheet(wb, biz_map: dict, rows: list[dict]) -> None:
+    """Common helper — both single + batch modes emit the same layout.
+
+    biz_map: ``{fqcn#method: BizResult}``. rows 는 reverse-index 를 위해 씀
+    (어떤 Program 이 이 메서드를 쓰는지).
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from .legacy_biz_extractor import biz_detail_sheet_rows
+
+    ws = wb.create_sheet("Business Logic")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(
+        start_color="0F3460", end_color="0F3460", fill_type="solid",
+    )
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    headers = [
+        "Service#Method", "Validations", "Biz Rules", "State Changes",
+        "Calculations", "External Calls", "Summary", "Source", "Programs",
+    ]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    sheet_rows = biz_detail_sheet_rows(biz_map, rows)
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    fallback_fill = PatternFill(
+        start_color="FFF2CC", end_color="FFF2CC", fill_type="solid",
+    )
+    for i, r in enumerate(sheet_rows, 2):
+        values = [
+            r["key"], r["validations"], r["biz_rules"], r["state_changes"],
+            r["calculations"], r["external_calls"], r["summary"],
+            r["source"], r["programs"],
+        ]
+        fill = fallback_fill if r["source"] == "fallback" else None
+        for col, v in enumerate(values, 1):
+            cell = ws.cell(row=i, column=col, value=v)
+            cell.border = thin_border
+            cell.alignment = wrap_align
+            if fill is not None:
+                cell.fill = fill
+
+    # Column width — 넓어지기 쉬워서 max 는 60 으로 캡.
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                longest = max(len(line) for line in str(cell.value).split("\n"))
+                max_len = max(max_len, longest)
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
+    ws.freeze_panes = "A2"
+
+
 def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
@@ -374,6 +435,12 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
         _write_row(ws, i, [table, len(progs_sorted), preview])
     _auto_width(ws)
 
+    # Sheet 8: Business Logic (Phase A — opt-in via --extract-biz-logic).
+    # biz_map 이 비어있으면 시트 자체를 만들지 않아 기존 리포트와 동일.
+    biz_map = result.get("biz_map") or {}
+    if biz_map:
+        _write_biz_logic_sheet(wb, biz_map, rows)
+
     wb.save(filepath)
     logger.info("Legacy excel saved: %s", filepath)
     return filepath
@@ -406,6 +473,7 @@ _BATCH_COLUMNS_WITH_MENU = [
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
+    ("Business Logic",    "biz_summary"),
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Table",             "related_tables"),
@@ -422,6 +490,7 @@ _BATCH_COLUMNS_NO_MENU = [
     ("Program",           "program_name"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
+    ("Business Logic",    "biz_summary"),
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Table",             "related_tables"),
@@ -445,6 +514,7 @@ _SINGLE_COLUMNS_WITH_MENU = [
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
+    ("Business Logic",    "biz_summary"),
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Tables",            "related_tables"),
@@ -460,6 +530,7 @@ _SINGLE_COLUMNS_NO_MENU = [
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
+    ("Business Logic",    "biz_summary"),
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Tables",            "related_tables"),
@@ -743,6 +814,11 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
             proj_preview, prog_preview,
         ])
     _auto_width(ws)
+
+    # Sheet 7: Business Logic (Phase A — opt-in).
+    biz_map = result.get("biz_map") or {}
+    if biz_map:
+        _write_biz_logic_sheet(wb, biz_map, rows)
 
     wb.save(filepath)
     logger.info("Legacy batch excel saved: %s", filepath)

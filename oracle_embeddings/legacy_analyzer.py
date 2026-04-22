@@ -1006,6 +1006,8 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "controller_class": "",
         "service_class": "",
         "service_methods": "",
+        "biz_summary": "",
+        "biz_detail_key": "",
         "query_xml": "",
         "sql_ids": "",
         "related_tables": "",
@@ -1117,6 +1119,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
         "service_methods": "; ".join(service_methods),
+        "biz_summary": "",       # Phase A: enrich_rows_with_biz 가 나중에 채움
+        "biz_detail_key": "",    # Phase A: enrich_rows_with_biz 가 나중에 채움
         "query_xml": "; ".join(_rel(p, backend_dir) for p in xml_files),
         "sql_ids": "; ".join(sql_ids),
         "related_tables": ", ".join(tables),
@@ -1135,7 +1139,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    frontends_root: bool = False,
                    menu_only: bool = False,
                    precomputed_frontend: dict | None = None,
-                   skip_menu_reorder: bool = False) -> dict:
+                   skip_menu_reorder: bool = False,
+                   extract_biz: bool = False,
+                   biz_scope: str = "both",
+                   biz_max_methods: int = 500,
+                   biz_use_cache: bool = True,
+                   biz_config: dict | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1518,6 +1527,23 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 "url": m.get("url", ""),
             })
 
+    # Business logic extraction (Phase A: backend only). opt-in via
+    # ``extract_biz=True``. scope 는 이미 _resolve_endpoint_chain 이
+    # 결정한 service_methods 집합을 재사용 (사용자 결정: 엔드포인트 체인에
+    # 걸린 메서드만). biz_map 은 result dict 에 실려 report 가 시트로 emit.
+    biz_map: dict = {}
+    if extract_biz and biz_scope in ("backend", "both"):
+        from . import legacy_biz_extractor as biz
+        targets = biz.collect_chain_methods(rows, indexes)
+        biz_map = biz.extract_backend_biz_logic(
+            targets,
+            patterns or {},
+            max_methods=biz_max_methods,
+            use_cache=biz_use_cache,
+            config=biz_config or {},
+        )
+        biz.enrich_rows_with_biz(rows, biz_map)
+
     resolved_method_scope = sum(
         1 for r in rows if r.get("resolved_via") == "method-scope"
     )
@@ -1576,6 +1602,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "backend_dir": backend_dir,
         "backend_project": backend_project,
         "frontend_dir": frontend_dir or "",
+        "biz_map": biz_map,
     }
 
 
@@ -1624,7 +1651,12 @@ def analyze_legacy_batch(backends_root: str,
                         frontend_framework: str | None = None,
                         patterns: dict | None = None,
                         frontends_root: bool = False,
-                        menu_only: bool = False) -> dict:
+                        menu_only: bool = False,
+                        extract_biz: bool = False,
+                        biz_scope: str = "both",
+                        biz_max_methods: int = 500,
+                        biz_use_cache: bool = True,
+                        biz_config: dict | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1696,6 +1728,7 @@ def analyze_legacy_batch(backends_root: str,
 
     all_rows = []
     all_unmatched = []
+    all_biz_map: dict = {}
     all_orphans = []
     per_project_stats = {}
     project_frameworks = {}
@@ -1713,6 +1746,11 @@ def analyze_legacy_batch(backends_root: str,
             menu_only=menu_only,
             skip_menu_reorder=True,  # batch does its own global reorder
             precomputed_frontend=precomputed_frontend,
+            extract_biz=extract_biz,
+            biz_scope=biz_scope,
+            biz_max_methods=biz_max_methods,
+            biz_use_cache=biz_use_cache,
+            biz_config=biz_config,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.
@@ -1727,6 +1765,9 @@ def analyze_legacy_batch(backends_root: str,
         all_orphans.extend(result.get("orphan_menus", []))
         per_project_stats[name] = result.get("stats", {})
         project_frameworks[name] = result.get("backend_framework", "")
+        sub_biz = result.get("biz_map") or {}
+        if sub_biz:
+            all_biz_map.update(sub_biz)
 
     # Aggregate stats across projects
     def _sum(key):
@@ -1775,4 +1816,5 @@ def analyze_legacy_batch(backends_root: str,
         "backends_root": backends_root,
         "frontend_dir": frontend_dir or "",
         "is_batch": True,
+        "biz_map": all_biz_map,
     }
