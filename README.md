@@ -20,10 +20,10 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
 | `review-sql` | SQL 쿼리 정적 분석 + LLM 리뷰 | X | 선택 |
 | `standardize` | 표준화 분석 리포트 생성 | 선택 | O |
-| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) | 선택 | X |
+| `analyze-legacy` | AS-IS 레거시 소스 통합 분석 (Spring/Vert.x/Nexcore + MyBatis/iBatis + React/Polymer + Menu) + **ServiceImpl 비즈니스 로직 LLM 추출** (opt-in `--extract-biz-logic`) | 선택 | 선택 |
 | `discover-patterns` | LLM 으로 프로젝트 패턴 자동 발견 (analyze-legacy 사전 단계) | X | O |
 | `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
-| `convert-mapping` | AS-IS↔TO-BE 컬럼 매핑 .md → `column_mapping.yaml` (LLM 이 kind/transform 추론) | 선택 | X |
+| `convert-mapping` | AS-IS↔TO-BE 컬럼 매핑 .md → `column_mapping.yaml` (LLM + heuristic 이 kind/transform 추론; **사용자 표준 9-컬럼 flat 포맷 지원** — asis/tobe table/column/type/comment/remark) | 선택 | X |
 | `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
 | `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
@@ -61,8 +61,25 @@ convert/
     ├── legacy_polymer_router.py  # Polymer (vaadin-router/page.js/dom-module) 파서
     ├── legacy_menu_loader.py     # 메뉴 로더 (DB 테이블 / Excel / Markdown)
     ├── legacy_analyzer.py        # AS-IS 통합 오케스트레이터 (양방향 URL 매칭)
-    ├── legacy_report.py          # AS-IS 리포트 Markdown + Excel (7시트)
-    └── legacy_util.py            # URL 정규화 공유 헬퍼
+    ├── legacy_report.py          # AS-IS 리포트 Markdown + Excel (최대 8시트)
+    ├── legacy_biz_extractor.py   # Phase A: ServiceImpl 비즈니스 로직 LLM 추출 (opt-in)
+    ├── legacy_util.py            # URL 정규화 공유 헬퍼
+    └── migration/
+        ├── mapping_model.py         # 매핑 dataclass
+        ├── mapping_loader.py        # YAML 로드 + 검증
+        ├── mapping_converter.py     # md/txt → YAML (9-컬럼 flat 지원)
+        ├── sql_rewriter.py          # SQL 재작성 오케스트레이터
+        ├── sql_formatter.py         # Korean Legacy 포매터 (리딩-콤마 등)
+        ├── comment_injector.py      # /* 한글 */ 자동 삽입
+        ├── xml_rewriter.py          # MyBatis XML 변환
+        ├── validator_static.py      # Stage A — sqlglot 검증
+        ├── validator_db.py          # Stage B — Oracle parse 검증
+        ├── dynamic_sql_expander.py  # MyBatis <if>/<choose>/<foreach> 전개
+        ├── llm_fallback.py          # NEEDS_LLM 상태 통과 시 LLM 변환
+        ├── migration_report.py      # 5시트 Excel 리포트
+        ├── impact_analyzer.py       # 사전 영향분석
+        ├── bind_dummifier.py        # Stage B 전처리 (#{}/${} 제거)
+        └── transformers/            # 8종 변환기 (TableRename/ColumnRename/...)
 ```
 
 ## 설치
@@ -484,6 +501,30 @@ python main.py analyze-legacy `
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
 | `--frontend-framework` | `auto` / `react` / `polymer` 강제 지정 |
 | `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 2) |
+| `--extract-biz-logic` | ServiceImpl 비즈니스 로직 LLM 추출 (opt-in, 별도 `Business Logic` 시트 + Program Detail 요약 컬럼) |
+| `--biz-scope {backend,frontend,both}` | biz 추출 범위 제한. Phase A 는 backend 만 실제 동작 |
+| `--biz-max-methods N` | LLM 에 보낼 메서드 수 hard cap (기본 500) |
+| `--no-biz-cache` | 디스크 캐시 비활성 (기본 캐시 on — 재실행 0 LLM 호출) |
+
+**비즈니스 로직 추출** (`--extract-biz-logic`)
+
+`PATTERN_LLM_*` 환경변수로 연결된 사내 LLM 엔드포인트에 엔드포인트 체인이
+도달한 ServiceImpl 메서드 body 를 배치 (기본 6개씩) 로 보내 validation /
+biz_rules / state_changes / calculations / external_calls / summary 을
+구조화 JSON 으로 추출합니다. Scope 는 `_resolve_endpoint_chain` 이 이미
+준 메서드 집합 + intra-class self-call closure (BFS) 라 자동 축소됨
+(LLM 비용 통제). 결과는:
+
+- **Program Detail** 시트에 `Business Logic` 컬럼 (요약 한 줄)
+- 별도 **Business Logic** 시트 (9 컬럼 — Service#Method / Validations / Biz
+  Rules / State Changes / Calculations / External Calls / Summary / Source /
+  Programs). `Source=cache/fallback` 은 각각 정상 cache hit / LLM 실패 후
+  regex fallback 임을 표시
+
+LLM 다운 상황에서도 regex 로 `if N; throw M; sql K` 같은 static summary
+가 채워져 분석이 중단되지 않습니다. 재실행 시 method body SHA-256 기반
+disk cache (`output/legacy_analysis/.biz_cache/`) 가 hit 되어 LLM 호출
+0 건.
 
 **메뉴 소스 우선순위**: `--skip-menu` > `--menu-md` > `--menu-xlsx` > DB (`config.yaml`)
 - `--menu-md`: Markdown 파이프 테이블 (DRM 환경 권장, `input/menu_template.md` 참조)
@@ -644,8 +685,8 @@ Oracle 11g 에서 Oracle 23ai 로 스키마가 바뀐 환경에 맞춰 기존 My
 **Stage B** (TO-BE DB 에서 parse-only). 스펙은 [`docs/migration/spec.md`](docs/migration/spec.md).
 
 **0) (선택) 기존 매핑 .md → YAML 자동 변환**: 팀에 이미 AS-IS↔TO-BE 테이블/컬럼
-매핑 문서가 markdown 으로 있다면 LLM 이 kind (rename / type_convert / split /
-merge / value_map / drop) 를 추론해 YAML 로 변환:
+매핑 문서가 markdown 으로 있다면 LLM + heuristic 이 kind (rename / type_convert /
+split / merge / value_map / drop) 를 추론해 YAML 로 변환:
 
 ```powershell
 python main.py convert-mapping `
@@ -653,6 +694,19 @@ python main.py convert-mapping `
   --output .\input\column_mapping.yaml
 # --no-llm 로 heuristic 만 사용 (pipe table 헤더 synonym 매칭)
 ```
+
+**권장: 9-컬럼 flat 포맷** (사용자 표준, DRM-safe txt/md). 샘플은
+`input/column_mapping_template.md` 참고. 한 행 = 한 컬럼 매핑:
+
+```
+| asis_table | asis_column | asis_column_type | tobe_table | tobe_table_comment
+| tobe_column | tobe_column_type | tobe_column_comment | remark |
+```
+
+헤더 synonym 매칭 + type pair (VARCHAR2(8)↔DATE, VARCHAR2(14)→TIMESTAMP,
+VARCHAR2↔NUMBER) 자동 transform 추론 + tobe_comment 는 rich YAML 의
+`comment` 필드로 보존되어 다음 단계에서 **변환 SQL 에 자동 인라인 주석**
+소스로 사용 (`options.comment_source: mapping` / `mapping_first`).
 
 **1) 매핑 파일 작성** (`input/column_mapping.yaml` — 템플릿 제공):
 
@@ -714,6 +768,32 @@ python main.py migrate-sql `
 - `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
 - `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
 - `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+
+**column_mapping.yaml 의 `options` 로 제어 가능한 UX 옵션**:
+
+```yaml
+options:
+  emit_column_comments: true
+  comment_source: mapping          # mapping | mapping_first | to_be_schema | terms_dictionary | both
+  output_format:
+    style: korean_legacy            # none (기본, 단일 라인) | korean_legacy | ansi
+    leading_comma: true
+    normalize_comment_width: true
+    table_comment_prefix: "T:"
+```
+
+- `comment_source: mapping` → 위 9-컬럼 flat 매핑의 `tobe_*_comment` 가 바로
+  SQL 주석 소스. 별도 terms/schema 파일 불필요
+- `output_format.style: korean_legacy` → 변환 SQL 이 리딩-콤마 + 6-char
+  keyword 우측정렬 + 블록 내 컬럼/주석 폭 통일 + 테이블 `T:` prefix 로 emit.
+  샘플:
+  ```
+  SELECT CUSTOMER_ID                                  /* 고객ID     */
+       , CUSTOMER_NAME                                /* 고객명      */
+       , TO_DATE(CUSTOMER.REGISTER_DATE, 'YYYYMMDD')
+    FROM CUSTOMER                                     /* T:고객 마스터 */
+   WHERE CUSTOMER_ID = #{id}
+  ```
 
 **4) Stage B 검증 — TO-BE DB 에서 parse-only**:
 
