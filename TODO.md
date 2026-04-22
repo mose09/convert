@@ -325,18 +325,19 @@
 
 ## 🔴 실질 버그 (기능 영향 있음)
 
-- [ ] **B2. `transformers/type_conversion.py` — UPDATE SET / INSERT VALUES 의
+- [x] **B2. `transformers/type_conversion.py` — UPDATE SET / INSERT VALUES 의
       write template 을 LHS 컬럼이 아닌 RHS 값에 적용**
-      현재: `UPDATE T SET TO_CHAR(NEW_COL, 'YYYYMMDD') = #{dt}` (문법 에러)
-      기대: `UPDATE T SET NEW_COL = TO_DATE(#{dt}, 'YYYYMMDD')`
-      구현 노트:
-      - Pass A — UPDATE SET: `eq.left` 가 col 이면 rename 만 + `eq.right`
-        에 `write` template 적용 (`{src}` → 원 RHS sql())
-      - Pass B — INSERT: Schema.expressions 컬럼 rename + 각 Tuple 의 같은
-        인덱스 값에 `write` template 적용. VALUES 가 SELECT subquery 면
-        skip + warning (position 매칭 불가)
-      - Pass C — 나머지 (SELECT/WHERE) 는 기존대로 col 을 wrap
-      - `_classify_context` 는 'write' 분기 제거 — A/B 가 모두 처리
+      3-pass 리팩터 완료:
+      - Pass A (UPDATE SET): `eq.left` col rename 만, `eq.right` 에 write
+        template 적용 (`{src}` → 원 RHS sql())
+      - Pass B (INSERT): Schema.expressions 컬럼 rename + 각 Tuple 의 같은
+        인덱스 값에 write template. VALUES 가 SELECT subquery 면 warning
+        후 rename 만 수행
+      - Pass C (SELECT/WHERE/JOIN): 기존대로 col 을 wrap (consumed set 으로
+        Pass A 중복 적용 방지)
+      - `_classify_context` 에서 `write` 분기 제거 (A/B 가 처리)
+      - 검증 8 시나리오 통과 (UPDATE / INSERT VALUES / SELECT / WHERE /
+        INSERT…SELECT / 복합 RHS / 멀티-튜플 / UPDATE+WHERE 같은 컬럼)
 
 ## 🟡 엣지 케이스 (실환경 드물)
 
