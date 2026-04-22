@@ -92,36 +92,28 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: biz 추출 scope — Vert.x handler + 체인 미해결 대응
+### 진행 중: biz 추출 iface→impl lookup fallback
 
-실사용 로그: `services=82 / mappers=0 / biz extraction: no candidate
-methods after static filter`. `service_methods` 가 비어 있어 seed=0 → 타겟 0
-→ Business Logic 시트 미생성. 원인 2가지:
+PR #20 후속. 사용자 실사용 로그 `seed 152 / no methods collected -
+endpoint chain empty` → 원인: ``service_methods`` 가 interface FQCN 을
+저장하는데 (``com.x.OrderService#save``) ``services_by_fqcn`` 에는
+interface + impl 둘 다 있음. interface 자체는 body 없는 메서드 시그니처
+뿐이라 ``_find_method_in_class`` 가 None 반환 → 기존 fallback 은
+``cls is None`` 경로에서만 iface_to_impl 시도 → method-missing 경로는
+놓침.
 
-1. **Vert.x Verticle** — 비즈니스 로직이 handler 메서드 본문에 인라인되고
-   별도 ServiceImpl 없음 (아예 `service_methods` 개념이 안 맞음)
-2. **Spring 커스텀 주입** — `@Autowired` 미사용, 생성자/팩토리/Nexcore
-   get* 패턴이라 체인 walker 가 `receiver.method()` 매칭 실패
+수정:
 
-공통 대응: **endpoint method 자체** (Controller/Verticle 의 handler) 를
-biz seed 에 추가. static filter 가 trivial delegator/`get*`/짧은 body 를
-drop 하므로 false positive 걱정 없음.
-
-작업 항목:
-
-- [x] `collect_chain_methods` 두 번째 seed 추가:
-      `(row["controller_class"], row["method_name"])`.
-      `services_by_fqcn` / `controllers_by_fqcn` 양쪽 lookup.
-- [x] `_build_row` / menu-only placeholder row 에 `method_name` 필드
-      (program_name 은 메뉴 덮어쓰기 대상이라 Java 메서드명 원본 별도 보관)
-- [x] 진단 로그 개선 — seed 출처별 카운트 + "empty chain" vs "all filtered"
-      구분 메시지
-- [x] smoke: `/tmp/mock_vertx_biz` — Verticle handler (validate + state
-      transition + calc 포함) → biz_map 에 `handleSave` 추출, trivial
-      `handleGet` 은 static filter 로 drop 확인
-- [x] 회귀: Phase A 5/5 통과 (service_methods seed + self-call closure
-      그대로 동작)
-- [ ] rebase origin/main + PR + squash merge
+- [x] ``collect_chain_methods`` 내 ``_resolve(fqcn, mname)`` 헬퍼 도입 —
+      cls-found-but-method-missing 경로도 iface_to_impl 로 한 번 더 시도
+- [x] out 의 fqcn 은 impl 로 정규화 (``OrderService#save`` →
+      ``OrderServiceImpl#save``). BFS seen 에 두 FQCN 모두 등록해 중복 방지
+- [x] 진단 로그에 ``N iface→impl 해석`` / ``M 미해결`` 수치 추가
+- [x] smoke `/tmp/mock_iface_impl` (interface + impl 분리 mock):
+      * 수정 전: ``1 service_methods + 1 endpoints → 1 unique (1 미해결)``
+      * 수정 후: ``1 service_methods + 1 endpoints → 2 unique (1 iface→impl 해석)``
+      * Excel: ``com.x.OrderServiceImpl#saveOrder`` 정상 추출 (impl FQCN 으로)
+- [x] 회귀: Phase A 5/5, mock_vertx_biz, mock_bare_calls 전부 통과
 
 ### 진행 중: redux-saga 패턴 API 호출 추출 (A + B)
 

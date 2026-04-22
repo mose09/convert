@@ -342,6 +342,8 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
     """
     svc_index = indexes.get("services_by_fqcn") or {}
     ctrl_index = indexes.get("controllers_by_fqcn") or {}
+    mapper_index = indexes.get("mappers_by_fqcn") or {}
+    iface_to_impl = indexes.get("iface_to_impl") or {}
     seen: set = set()
     out: List[Dict[str, Any]] = []
 
@@ -369,21 +371,51 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
             queue.append((ctrl, mname))
             seed_counts["endpoint"] += 1
 
+    lookup_stats = {"iface_resolved": 0, "not_found": 0}
+
+    def _resolve(fqcn: str, mname: str) -> tuple:
+        """Class/method lookup with iface→impl fallback.
+
+        Returns ``(cls, method, resolved_fqcn)`` or ``(None, None, fqcn)``.
+        iface 가 services_by_fqcn 에 등록돼 있지만 메서드 body 는 impl 에만
+        있는 일반적 Spring 패턴 (``OrderService`` 인터페이스 + ``OrderServiceImpl``
+        구현) 에서는 interface 쪽 cls 가 잡혀도 method 가 없음 → iface_to_impl
+        로 한 번 더 시도해야 한다. 따라서 lookup 은 ``cls 없음`` 경로 뿐 아니라
+        ``method 없음`` 경로에서도 impl 로 재시도.
+        """
+        cls = (svc_index.get(fqcn)
+               or ctrl_index.get(fqcn)
+               or mapper_index.get(fqcn))
+        if cls is not None:
+            m = _find_method_in_class(cls, mname)
+            if m is not None:
+                return cls, m, fqcn
+        impl_fqcn = iface_to_impl.get(fqcn)
+        if impl_fqcn and impl_fqcn != fqcn:
+            impl_cls = (svc_index.get(impl_fqcn)
+                        or ctrl_index.get(impl_fqcn)
+                        or mapper_index.get(impl_fqcn))
+            if impl_cls is not None:
+                m = _find_method_in_class(impl_cls, mname)
+                if m is not None:
+                    return impl_cls, m, impl_fqcn
+        return None, None, fqcn
+
     while queue:
         fqcn, mname = queue.pop(0)
         key = (fqcn, mname)
         if key in seen:
             continue
         seen.add(key)
-        # services_by_fqcn 우선, 없으면 controllers_by_fqcn — Vert.x Verticle /
-        # Nexcore BizController 같은 controller 스테레오타입 클래스의 endpoint
-        # 메서드도 함께 찾아주기 위함.
-        cls = svc_index.get(fqcn) or ctrl_index.get(fqcn)
-        if not cls:
+        cls, method, resolved_fqcn = _resolve(fqcn, mname)
+        if cls is None or method is None:
+            lookup_stats["not_found"] += 1
             continue
-        method = _find_method_in_class(cls, mname)
-        if method is None:
-            continue
+        if resolved_fqcn != fqcn:
+            lookup_stats["iface_resolved"] += 1
+            # seen 키에 impl FQCN 도 추가해 BFS 중복 방지
+            seen.add((resolved_fqcn, mname))
+            fqcn = resolved_fqcn
         out.append({
             "fqcn": fqcn,
             "name": mname,
@@ -401,10 +433,15 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
                     queue.append((fqcn, target))
 
     if out or sum(seed_counts.values()):
+        extra = ""
+        if lookup_stats["iface_resolved"]:
+            extra += f", {lookup_stats['iface_resolved']} iface→impl 해석"
+        if lookup_stats["not_found"]:
+            extra += f", {lookup_stats['not_found']} 미해결 (class/method 인덱스 miss)"
         print(f"  biz extraction seeds: "
               f"{seed_counts['service_methods']} service_methods + "
               f"{seed_counts['endpoint']} endpoints → "
-              f"{len(out)} unique methods (BFS closure 포함)")
+              f"{len(out)} unique methods (BFS closure 포함{extra})")
     return out
 
 
