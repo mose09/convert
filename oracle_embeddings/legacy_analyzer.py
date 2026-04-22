@@ -876,17 +876,25 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                 svc_fqcn = _resolve_field_type_fqcn(receiver, owner, indexes)
                 if not svc_fqcn:
                     continue
-                services.add(svc_fqcn)
-                sm_key = (svc_fqcn, target_method_name)
-                if target_method_name and sm_key not in seen_service_methods:
-                    seen_service_methods.add(sm_key)
-                    service_methods.append(f"{svc_fqcn}#{target_method_name}")
-                # Walk into the interface's impl if we have one.
-                # Search services, mappers (DAO/Repository), and
-                # controllers so Nexcore chains (Svc→DAO) resolve.
+                # If ``svc_fqcn`` is an interface with a known impl,
+                # surface the impl FQCN in the report columns so
+                # interface-backed services look the same as
+                # direct-impl injection. Without this the Service column
+                # shows ``UserDefineService#getUserSdptAuthLIst`` while
+                # other (impl-injected) services show ``FooServiceImpl#...``.
+                # ``iface_to_impl.get`` returns ``svc_fqcn`` unchanged
+                # when no mapping exists, so direct-impl is unaffected.
                 mapper_index = indexes["mappers_by_fqcn"]
                 ctrl_index = indexes["controllers_by_fqcn"]
                 impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)
+                services.add(impl_fqcn)
+                sm_key = (impl_fqcn, target_method_name)
+                if target_method_name and sm_key not in seen_service_methods:
+                    seen_service_methods.add(sm_key)
+                    service_methods.append(f"{impl_fqcn}#{target_method_name}")
+                # Walk into the interface's impl if we have one.
+                # Search services, mappers (DAO/Repository), and
+                # controllers so Nexcore chains (Svc→DAO) resolve.
                 impl_cls = (svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
                             or mapper_index.get(impl_fqcn) or mapper_index.get(svc_fqcn)
                             or ctrl_index.get(impl_fqcn) or ctrl_index.get(svc_fqcn))

@@ -92,29 +92,30 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: @RestVerticle + BaseRestHandler 핸들러 선택 버그
+### 진행 중: service_methods 에 인터페이스 대신 impl FQCN 노출
 
-`@RestVerticle(url=...)` + `BaseRestHandler` 패턴에서 실제 비즈니스 로직이
-담긴 `POST(RoutingContext, JsonObject)` 같은 HTTP verb 메서드가 아닌,
-베이스 클래스에서 내려온 빈 `handle()` 디스패처가 선택되어 체인 워커가
-endpoint body 를 순회 못 함 → Service / Tables 컬럼 전부 공백.
+`_resolve_endpoint_chain` 이 interface-Impl 분리 구조 (`UserDefineService`
+인터페이스 + `UserDefineServiceImpl` 구현) 에서 `iface_to_impl` 매핑이
+정확히 빌드돼 있음에도, `services.add(svc_fqcn)` /
+`service_methods.append(...)` 를 **먼저 interface FQCN 으로 쓴 뒤**에야
+impl 로 walk 해서 리포트 Service 컬럼에 인터페이스 FQCN 이 박히는 버그.
 
-재현 (`/tmp/mock_vertx_post`): handler 클래스에 `handle()` + `POST()` 가
-같이 있으면 `_pick_handler_method` 의 선호 순위
-(`handle` / `execute` / `run` / `process`) 가 HTTP verb 메서드보다 앞서서
-`handle` 을 골라버림. 베이스 클래스의 `handle` 은 분배 dispatcher 라서
-body 가 비거나 field call 이 없음 → `service_methods = (empty)`.
+사용자 지적: "다른건 impl 로 잘찾아서 가져오는데 얘만 인터페이스로 가서
+못찾아옴". 다른 서비스는 impl 을 필드 타입으로 직접 주입
+(`private FooServiceImpl fooService;`) 해서 `_resolve_field_type_fqcn` 이
+impl FQCN 을 반환하던 것뿐 — 인터페이스-Impl 분리 케이스만 이 경로에
+안 걸려서 인터페이스 FQCN 이 그대로 노출됨.
 
-사용자 확인: `@RestVerticle` 클래스는 한 클래스당 verb 메서드 1개만
-사용 (POST 전용 또는 GET 전용) → 옵션 A (선호 순위 재조정) 로 충분.
+수정:
 
-작업 항목:
-
-- [x] `_pick_handler_method` 선호 순위에 HTTP verb (POST/GET/PUT/DELETE/PATCH)
-      를 `handle`/`execute`/… 앞에 둔다. 대소문자 양쪽 허용.
-- [x] mock_vertx_post (`handle()` + `POST()`) 에서 service_methods 정상 추출
-      확인 (`com.example.UserDefineService#getUserSdptAuthLIst`).
-- [x] `POST()` 단독 / `handle()` 단독 회귀 — 양쪽 시나리오 정상 추출.
+- [x] `_resolve_endpoint_chain` 에서
+      `impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)` 호출을
+      `services.add()` / `service_methods.append()` **앞으로 이동**.
+      기존에 impl walk 에서만 쓰던 변수를 display FQCN 에도 공유. 매핑
+      없으면 `svc_fqcn` 그대로 반환 → direct-impl 주입은 무영향.
+- [x] `/tmp/mock_vertx_post` (iface + impl) → service_class /
+      service_methods 가 `com.example.UserDefineServiceImpl#...` 로 확정.
+- [x] 직접 class 주입 회귀: `com.example.UserDefineService#...` 그대로.
 - [x] conventional commit + PR + squash-merge
 
 ---
