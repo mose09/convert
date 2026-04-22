@@ -1,3 +1,61 @@
+# TODO: SQL Migration UX — 사용자 표준 9-컬럼 flat 매핑 + 한글 주석 + 포매터 (3단계)
+
+사용자 워크플로우 정렬:
+1. flat md/txt 매핑 작성 (DRM-safe) → convert-mapping 으로 rich YAML 변환
+2. tobe 한글 코멘트가 변환 SQL 에 자동 인라인 (comment_injector)
+3. TO-BE SQL 출력이 사용자 패턴 (leading-comma, 6-char keyword 우측정렬,
+   주석 폭 통일 등) 으로 emit. ANSI 표준 전환 가능하도록 옵션화.
+
+## Phase 1 — 9-컬럼 flat 매핑 컨버터 (완료)
+
+- [x] `convert-mapping` 의 `_HEADER_SYNONYMS` 에 사용자 표준 9 컬럼명 추가
+      (`asis_table`, `asis_column`, `asis_column_type`, `tobe_table`,
+      `tobe_table_comment`, `tobe_column`, `tobe_column_type`,
+      `tobe_column_comment`, `remark`)
+- [x] `_heuristic_parse` 가 코멘트 컬럼 캡처 → tables[].comment /
+      columns[].to_be.comment 로 yaml 보존
+- [x] type-pair → transform 자동 추론 lookup 테이블 (`_TYPE_TRANSFORMS`):
+      VARCHAR2(8)/CHAR(8) ↔ DATE → TO_DATE/TO_CHAR YYYYMMDD
+      VARCHAR2(14) → TIMESTAMP → TO_TIMESTAMP YYYYMMDDHH24MISS
+      VARCHAR2 ↔ NUMBER → TO_NUMBER/TO_CHAR
+- [x] 같은 base 타입 길이 차이 (VARCHAR2(100) → VARCHAR2(200)) 는
+      transform 불필요 → kind=rename 유지
+- [x] 미지원 type 페어는 ⚠ 마커 + 사용자 검토 안내 + entry 는 유지
+- [x] LLM 프롬프트에도 9-컬럼 포맷 가이드 + 자동 추론 예시 추가
+- [x] `input/column_mapping_template.md` 신규 — 사용자 표준 양식 + 사용법
+- [x] mock 검증 9종 PASS: comment 보존, type-pair 자동, drop, ⚠ 마커,
+      mapping_loader round-trip 0 errors
+
+## Phase 2 — `tobe_*_comment` → comment_injector 연결 (대기)
+
+- [ ] `mapping_model.ColumnRef` / `TableMapping` 에 `comment_ko` 필드 추가
+- [ ] `mapping_loader._parse_column_ref` / `_parse_tables` 가 새 필드 파싱
+- [ ] `comment_injector` 가 `comment_source: mapping` 옵션 지원
+      (mapping → terms_dictionary → to_be_schema 우선순위)
+- [ ] `migrate-sql` 흐름에서 mapping 으로부터 ko_lookup 자동 빌드
+
+## Phase 3 — Korean Legacy SQL Formatter (대기)
+
+스펙 (사용자 샘플 기반):
+- 6-char keyword 우측 정렬: SELECT/FROM/WHERE/AND/OR/ON 모두 끝이 col 6
+- 자체 폭 keyword: INNER JOIN, ORDER BY, GROUP BY, HAVING
+- Leading comma `     , col` (col 5 에 ',', col 7 에 텍스트)
+- SELECT 블록 내 컬럼명/주석 폭 통일 (text right-pad → comment 시작 col 통일)
+- WHERE LHS 폭 통일 후 `=` 정렬
+- 테이블 코멘트 `T:` prefix
+- MyBatis `<if>` 보존 + 내부 leading-comma
+- ANSI 표준 등 다른 스타일 전환 가능 (style 옵션)
+
+작업 항목:
+- [ ] `oracle_embeddings/migration/sql_formatter.py` 신규 — KoreanLegacy /
+      Ansi 등 style 별 emitter
+- [ ] `column_mapping.yaml` 의 `output.format` 섹션 옵션 (style/indent/
+      leading_comma/keyword_case 등)
+- [ ] `rewrite_sql` / `xml_rewriter` 에서 emit 시점에 formatter 호출
+- [ ] MyBatis 동적 태그 boundary 처리 (Phase 3b 로 분리 가능)
+
+---
+
 # TODO: table alias preservation — rename Pass 2 가 alias 를 table 이름으로 망가뜨리는 버그 수정 (완료)
 
 - [x] 증상: `SELECT t.COL FROM T t` 같은 alias-qualified SQL 에서 alias `t`
