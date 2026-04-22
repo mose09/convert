@@ -1,3 +1,25 @@
+# TODO: RFC 패턴 false positive 재발 방지 — LLM 프롬프트 + 파서 가드 (완료)
+
+- [x] 증상: `discover-patterns` 의 LLM 이 `rfc_call_methods` 에 `get`, `put`
+      등 Java 표준 Collection/Map API 를 포함시켜 `map.get("PARAM_X")` 같은
+      평범한 데이터 조회가 전부 RFC false positive 로 걸림.
+- [x] 프롬프트 보강 (`legacy_pattern_discovery.py`): `rfc_call_methods` 필드
+      설명에 "Java 표준 Collection/Map API 는 절대 포함 금지" 명시 + 금지
+      메서드 예시 (get/put/set/add/...) 열거.
+- [x] 코드 사이드 가드 (`legacy_java_parser.apply_patterns`):
+      `_GENERIC_COLLECTION_METHODS` frozenset (약 30개 메서드) 으로 자동
+      필터. 걸러진 항목은 콘솔 경고 출력. 모두 걸러지면 `_rfc_custom_re`
+      비활성화.
+- [x] 검증 3종 통과:
+      1. `rfc_call_methods=["execute","get","put"]` → get/put drop, execute
+         유지, `IF-GERP-180` RFC 정상 추출, `PARAM_WORK_PERSON` false
+         positive 제거 확인
+      2. 전부 generic 만 있으면 regex 비활성화 확인
+      3. 깨끗한 입력은 경고 없이 통과
+- [x] 회귀: mock_bare_calls + mock_batch 동일 결과.
+
+---
+
 # TODO: bare method self-call 체인 추적 (완료)
 
 - [x] 원인: `_FIELD_CALL_RE` 는 `receiver.method(` 만 매칭 → `this.` 없이
