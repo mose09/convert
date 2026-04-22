@@ -1096,8 +1096,26 @@ def cmd_migrate_sql(args):
                             f"[{i.code}] {i.message}" for i in vr.errors
                         )
 
-            # Korean comments
-            if args.emit_column_comments and rr.to_be_sql and ko_lookup:
+            # Korean comments + 사용자 표준 포매터 (style=korean_legacy)
+            style = getattr(mapping.options.output_format, "style", "none")
+            if rr.to_be_sql and style == "korean_legacy":
+                # 포매터가 주석까지 블록 내 정렬해서 emit (inject_comments 대체)
+                from oracle_embeddings.migration.sql_formatter import (
+                    format_sql, KoreanLegacyStyle,
+                )
+                of = mapping.options.output_format
+                k_style = KoreanLegacyStyle(
+                    leading_comma=of.leading_comma,
+                    keyword_case=of.keyword_case,
+                    table_comment_prefix=of.table_comment_prefix,
+                    normalize_comment_width=of.normalize_comment_width,
+                )
+                rr.to_be_sql = format_sql(
+                    rr.to_be_sql,
+                    style=k_style,
+                    ko_lookup=ko_lookup if args.emit_column_comments else None,
+                )
+            elif args.emit_column_comments and rr.to_be_sql and ko_lookup:
                 scopes = mapping.options.comment_scope
                 rr.to_be_sql = inject_comments(
                     rr.to_be_sql, ko_lookup, scopes=scopes,

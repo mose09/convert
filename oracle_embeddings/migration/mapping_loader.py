@@ -274,7 +274,46 @@ def _parse_options(node: Any, errors: _Errors) -> MappingOptions:
         else:
             opts.unknown_table_action = v  # type: ignore[assignment]
 
+    if "output_format" in node:
+        v = node["output_format"]
+        if not isinstance(v, dict):
+            errors.add(
+                "options.output_format must be a mapping",
+                "options.output_format",
+            )
+        else:
+            _parse_output_format(v, opts.output_format, errors)
+
     return opts
+
+
+_VALID_FORMAT_STYLES: Set[str] = {"none", "korean_legacy", "ansi"}
+
+
+def _parse_output_format(node: Dict[str, Any], of, errors: _Errors) -> None:
+    loc = "options.output_format"
+    if "style" in node:
+        v = node["style"]
+        if v not in _VALID_FORMAT_STYLES:
+            errors.add(
+                f"{loc}.style must be one of {sorted(_VALID_FORMAT_STYLES)} "
+                f"(got {v!r})", f"{loc}.style",
+            )
+        else:
+            of.style = v
+    for key, attr, kind in [
+        ("indent", "indent", int),
+        ("keyword_case", "keyword_case", str),
+        ("leading_comma", "leading_comma", bool),
+        ("table_comment_prefix", "table_comment_prefix", str),
+        ("normalize_comment_width", "normalize_comment_width", bool),
+    ]:
+        if key in node:
+            v = node[key]
+            if not isinstance(v, kind):
+                errors.add(f"{loc}.{key} must be {kind.__name__}", f"{loc}.{key}")
+            else:
+                setattr(of, attr, v)
 
 
 def _parse_tables(node: Any, errors: _Errors) -> List[TableMapping]:
