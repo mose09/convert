@@ -411,15 +411,20 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
         if cls is None or method is None:
             lookup_stats["not_found"] += 1
             continue
+        # interface→impl 치환 시 양쪽 키를 알 수 있게 원본 fqcn 을 메서드
+        # dict 에 보존. extract_backend_biz_logic 가 dual-key 로 biz_map 에
+        # 등록 → enrich_rows_with_biz 가 row.service_methods (interface
+        # 원본) 로도, Business Logic 시트 출력 (impl 정규화) 로도 매칭됨.
+        original_fqcn = fqcn
         if resolved_fqcn != fqcn:
             lookup_stats["iface_resolved"] += 1
-            # seen 키에 impl FQCN 도 추가해 BFS 중복 방지
             seen.add((resolved_fqcn, mname))
             fqcn = resolved_fqcn
         out.append({
             "fqcn": fqcn,
             "name": mname,
             "body": method.get("body", "") or "",
+            "original_fqcn": original_fqcn,  # interface FQCN (있을 경우)
         })
         # Intra-class self-call 전이 closure. ``legacy_java_parser`` 가
         # bare call 도 synthetic ``receiver="this"`` 로 저장하므로 explicit
@@ -552,8 +557,11 @@ def extract_backend_biz_logic(
         cached = _cache_get(_hash_body(m["body"]), use_cache)
         if cached is not None:
             key = f"{m['fqcn']}#{m['name']}"
-            cached.fqcn_method = key  # cache 파일 에는 원래 키가 있지만 현재 fqcn 우선
+            cached.fqcn_method = key
             results[key] = cached
+            orig = m.get("original_fqcn")
+            if orig and orig != m["fqcn"]:
+                results[f"{orig}#{m['name']}"] = cached
         else:
             to_llm.append(m)
 
@@ -598,6 +606,11 @@ def extract_backend_biz_logic(
         for m, r in zip(batch, parsed):
             key = f"{m['fqcn']}#{m['name']}"
             results[key] = r
+            # iface→impl 로 치환된 경우 원본 interface 키로도 등록해
+            # row.service_methods (interface FQCN 사용) 에서 enrich 매칭 성공.
+            orig = m.get("original_fqcn")
+            if orig and orig != m["fqcn"]:
+                results[f"{orig}#{m['name']}"] = r
             if r.source == "llm":
                 llm_ok += 1
                 _cache_put(_hash_body(m["body"]), r, use_cache)
@@ -652,7 +665,13 @@ def _format_structured_list(items: List[Dict[str, Any]]) -> str:
 
 def biz_detail_sheet_rows(biz_map: Dict[str, BizResult],
                           rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """``Business Logic`` 시트용 row 리스트. Programs 열은 reverse index."""
+    """``Business Logic`` 시트용 row 리스트. Programs 열은 reverse index.
+
+    biz_map 에는 iface→impl 매칭을 위해 같은 BizResult 가 interface 키 +
+    impl 키로 이중 등록돼 있을 수 있음. 시트에는 한 메서드 당 한 줄만
+    필요하므로 BizResult 객체 id 로 dedup + 두 키 중 ``fqcn_method`` 값과
+    일치하는 (= impl 쪽) 키를 대표로 선택.
+    """
     method_to_programs: Dict[str, List[str]] = {}
     for row in rows:
         sm = row.get("service_methods") or ""
@@ -662,9 +681,25 @@ def biz_detail_sheet_rows(biz_map: Dict[str, BizResult],
         for entry in [s.strip() for s in sm.split(";") if s.strip()]:
             method_to_programs.setdefault(entry, []).append(pg)
 
+    # Dedup: 같은 BizResult 객체는 한 번만. 대표 키는 r.fqcn_method (impl).
+    seen_ids: set = set()
+    primary: Dict[str, BizResult] = {}
+    for key, r in biz_map.items():
+        if id(r) in seen_ids:
+            continue
+        seen_ids.add(id(r))
+        primary_key = r.fqcn_method if r.fqcn_method else key
+        primary[primary_key] = r
+
     out = []
-    for key, r in sorted(biz_map.items()):
-        programs = sorted(set(method_to_programs.get(key, [])))
+    for key, r in sorted(primary.items()):
+        # Programs 역인덱스: biz_map 에 등록된 모든 alias 키로 찾은 프로그램
+        # 합집합. 특히 interface 키로 저장된 row.service_methods 와도 매칭.
+        aliases = {k for k, v in biz_map.items() if v is r}
+        prog_set = set()
+        for alias in aliases:
+            for p in method_to_programs.get(alias, []):
+                prog_set.add(p)
         out.append({
             "key": key,
             "validations":    _format_structured_list(r.validations),
@@ -674,7 +709,7 @@ def biz_detail_sheet_rows(biz_map: Dict[str, BizResult],
             "external_calls": _format_structured_list(r.external_calls),
             "summary":        r.summary,
             "source":         r.source,
-            "programs":       ", ".join(programs),
+            "programs":       ", ".join(sorted(prog_set)),
         })
     return out
 

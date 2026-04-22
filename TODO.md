@@ -92,31 +92,28 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: service_methods 에 인터페이스 대신 impl FQCN 노출
+### 진행 중: biz 추출 dual-key (row.service_methods / BL 시트 양방향 매칭)
 
-`_resolve_endpoint_chain` 이 interface-Impl 분리 구조 (`UserDefineService`
-인터페이스 + `UserDefineServiceImpl` 구현) 에서 `iface_to_impl` 매핑이
-정확히 빌드돼 있음에도, `services.add(svc_fqcn)` /
-`service_methods.append(...)` 를 **먼저 interface FQCN 으로 쓴 뒤**에야
-impl 로 walk 해서 리포트 Service 컬럼에 인터페이스 FQCN 이 박히는 버그.
+PR #21 후속. Batch 모드 (`--backends-root`) 에서 Business Logic 시트는
+생성되지만 Programs 시트의 Business Logic 컬럼이 모두 비고 BL 시트의
+Programs 역인덱스도 비는 문제. 원인:
 
-사용자 지적: "다른건 impl 로 잘찾아서 가져오는데 얘만 인터페이스로 가서
-못찾아옴". 다른 서비스는 impl 을 필드 타입으로 직접 주입
-(`private FooServiceImpl fooService;`) 해서 `_resolve_field_type_fqcn` 이
-impl FQCN 을 반환하던 것뿐 — 인터페이스-Impl 분리 케이스만 이 경로에
-안 걸려서 인터페이스 FQCN 이 그대로 노출됨.
+- `collect_chain_methods` 가 iface→impl 로 resolve 후 `out.fqcn = impl` 로
+  정규화 → `biz_map` key 는 ``OrderServiceImpl#save``
+- PR #23 이전의 ``row["service_methods"]`` 는 interface FQCN 이라 key
+  mismatch. PR #23 이후에도 다른 해석 경로로 interface 가 새어들어올
+  가능성 있어 안전장치 필요
 
 수정:
 
-- [x] `_resolve_endpoint_chain` 에서
-      `impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)` 호출을
-      `services.add()` / `service_methods.append()` **앞으로 이동**.
-      기존에 impl walk 에서만 쓰던 변수를 display FQCN 에도 공유. 매핑
-      없으면 `svc_fqcn` 그대로 반환 → direct-impl 주입은 무영향.
-- [x] `/tmp/mock_vertx_post` (iface + impl) → service_class /
-      service_methods 가 `com.example.UserDefineServiceImpl#...` 로 확정.
-- [x] 직접 class 주입 회귀: `com.example.UserDefineService#...` 그대로.
-- [x] conventional commit + PR + squash-merge
+- [x] `collect_chain_methods` method dict 에 `original_fqcn` 필드
+- [x] `extract_backend_biz_logic` + cache hit 경로 **dual-key 등록**:
+      impl 키 + interface 키 둘 다 같은 BizResult 참조
+- [x] `biz_detail_sheet_rows` BizResult id dedup + alias 전체로 Programs
+      역인덱스 집계
+- [x] Batch mock 검증 (``/tmp/mock_batch_biz`` 2 프로젝트 × iface+impl):
+      BL 시트 Programs 역인덱스 + Programs 시트 BL 인라인 컬럼 정상
+- [x] Phase A 5/5 + single-mode iface_impl 회귀 통과
 
 ---
 
