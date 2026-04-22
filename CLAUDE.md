@@ -39,9 +39,9 @@
 | `validate-naming` | 신규 DDL/이름이 용어사전 표준 준수하는지 검증 | X | X |
 | `gen-ddl` | 자연어 요청 → 표준 CREATE TABLE DDL | O | 선택 |
 | `audit-standards` | 기존 스키마 전체를 용어사전 기준으로 전수 감사 | X | X |
-| `analyze-legacy` | **AS-IS 소스 분석 (핵심)** — Controller→Service→XML→Table→RFC 체인 | X | 선택 |
+| `analyze-legacy` | **AS-IS 소스 분석 (핵심)** — Controller→Service→XML→Table→RFC 체인 + ServiceImpl 비즈니스 로직 LLM 추출 (opt-in) | 선택 | 선택 |
 | `discover-patterns` | **LLM이 프로젝트 구조/패턴 자동 추출 → patterns.yaml** | O | X |
-| `convert-mapping` | **AS-IS↔TO-BE 매핑 .md → column_mapping.yaml** LLM 변환 | 선택 | X |
+| `convert-mapping` | **AS-IS↔TO-BE 매핑 .md → column_mapping.yaml** — 사용자 표준 9-컬럼 flat 포맷 지원 + type-pair transform 자동 추론 | 선택 | X |
 | `migration-impact` | **SQL Migration 사전 영향분석** — column_mapping.yaml × AS-IS 쿼리 | X | X |
 | `migrate-sql` | **AS-IS MyBatis XML → TO-BE 스키마용 일괄 변환 + 5시트 Excel 리포트** | 선택 | X |
 | `validate-migration` | **변환 XML 의 TO-BE SQL 을 parse-only 검증 (Stage B)** | X | O |
@@ -58,7 +58,8 @@
 | `oracle_embeddings/legacy_menu_loader.py` | 메뉴 소스 로더. DB 테이블 (`load_menu_hierarchy`) / Excel 1~5레벨 (`load_menu_from_excel`) / **Markdown 테이블 (`load_menu_from_markdown`, DRM 우회용)**. |
 | `oracle_embeddings/legacy_report.py` | Markdown + Excel 리포트 (단일/배치, 7시트). **메뉴 유무에 따라 컬럼 동적 선택** (있으면 Menu path 먼저, 없으면 Program 먼저). `--menu-only` 플래그로 매칭된 것만 Program Detail에 표시. |
 | `oracle_embeddings/legacy_util.py` | 공유 유틸 (`normalize_url` 등). |
-| `oracle_embeddings/legacy_pattern_discovery.py` | **LLM 기반 프로젝트 패턴 추출**. stereotype별 샘플 ~40개 클래스 요약 → `patterns.yaml` 생성. 코드 특화 모델 별도 env (`PATTERN_LLM_*`) 지원. |
+| `oracle_embeddings/legacy_pattern_discovery.py` | **LLM 기반 프로젝트 패턴 추출**. stereotype별 샘플 ~40개 클래스 요약 → `patterns.yaml` 생성. 코드 특화 모델 별도 env (`PATTERN_LLM_*`) 지원. `_call_llm(system_prompt=...)` 은 재사용 엔드포인트 — 다른 LLM 용도 모듈 (legacy_biz_extractor, mapping_converter 등) 이 retry/JSON 파싱/raw dump 를 상속. `_DEFAULT_PATTERNS['biz_extraction']` 에 biz 추출 기본값 (skip_methods/min_body_chars/keyword_hints/llm_batch_size 등) 보유. `apply_patterns` 가 `rfc_call_methods` 로드 시 `_GENERIC_COLLECTION_METHODS` (get/put/set/add 등 ~30 Java 컬렉션 API) 자동 필터 + 콘솔 경고로 false positive 방지. |
+| `oracle_embeddings/legacy_biz_extractor.py` | **ServiceImpl 비즈니스 로직 LLM 추출** (analyze-legacy `--extract-biz-logic` opt-in). `_is_biz_candidate` static triage (name skip `get*/set*` + body len + biz keyword hints) → `collect_chain_methods` BFS (service_methods seed + intra-class self-call closure, `legacy_java_parser` 의 bare call synthetic `receiver="this"` 규약 재사용) → `extract_backend_biz_logic` batch LLM (6개씩) + SHA-256 기반 disk cache (`output/legacy_analysis/.biz_cache/`) + regex fallback summary → `enrich_rows_with_biz` / `biz_detail_sheet_rows` 로 row/시트 emit. 스키마: validations/biz_rules/state_changes/calculations/external_calls/summary. `BIZ_SCHEMA_VERSION` bump 으로 캐시 전량 무효화. `_BUILTIN_DEFAULTS` + `_effective_config` 로 `patterns.yaml` 없어도 바로 동작. |
 | `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace/statement 4종 인덱스, Oracle comma-FROM + `(+)` outer join, composite JOIN. `scan_mybatis_dir`는 `.git/.gradle/.idea/.svn/.hg/.next/node_modules`만 스킵 (빌드 산출물명 `target/build/bin/out/dist`는 monorepo에서 실제 프로젝트일 수 있어 스킵 안 함 — `_is_sql_mapper`가 false positive 걸러줌). namespace 변수 2-pass 해석 (`sqlSession.selectList(namespace + "findXxx", ...)`). |
 
 ## 주요 모듈 (SQL Migration 파이프라인 — `oracle_embeddings/migration/`)
@@ -87,16 +88,25 @@
 | `bind_dummifier.py` | validator_db 전처리. `#{x}` → `:x` (Oracle bind), `${x}` → `DUMMY_IDENT`. jdbcType 힌트 strip, nested path 의 첫 token 사용. |
 | `validator_static.py` | Stage A — sqlglot parse + Table/Column 스키마 존재 확인. CTE/pseudocol (ROWNUM/SYSDATE/USER/DUAL) 화이트리스트. qualifier 해석 실패/ambiguous → warning. |
 | `validator_db.py` | Stage B — oracledb `cursor.parse()` (lazy import). `validate_db_batch(items, dsn, user, password, parallel)` 는 워커당 conn 1개 병렬, caller 순서대로 재정렬. `write_validation_report` 로 2 시트 xlsx. |
-| `comment_injector.py` | `inject_comments(sql, ko_lookup, scopes)` — sqlglot `Column.add_comments()` 로 한글 주석 부착. scope 분류기 (select/update/insert/where/join). INSERT 헤더는 exp.Identifier → exp.Column 으로 swap 후 주석. |
+| `comment_injector.py` | `inject_comments(sql, ko_lookup, scopes)` — sqlglot `Column.add_comments()` 로 한글 주석 부착. scope 분류기 (select/update/insert/where/join). INSERT 헤더는 exp.Identifier → exp.Column 으로 swap 후 주석. `build_ko_lookup_from_mapping(mapping)` 신규 빌더 — mapping.yaml 의 `columns[].to_be.comment` / `tables[].comment` 를 직접 ko_lookup 으로 변환 (options.comment_source = `mapping` / `mapping_first` 사용 시). |
+| `sql_formatter.py` | **Korean Legacy SQL 포매터** (options.output_format.style = `korean_legacy` 옵트인). AST walker 로 SELECT/UPDATE/INSERT/DELETE 절별 직접 emit — 6-char keyword 우측정렬 + leading comma + 블록 내 컬럼/주석 폭 통일 + 테이블 주석 `T:` prefix. `KoreanLegacyStyle` / `AnsiStyle` 프로파일. `format_sql(sql, style, ko_lookup)` 공개 API. Oracle comma-FROM 은 sqlglot bare Join 으로 감지해 leading-comma FROM 연속으로 정렬. 복잡한 MERGE / CTE 는 sqlglot `pretty=True` fallback. |
 | `llm_fallback.py` | `llm_rewrite(as_is_sql, mapping, partial_outcome, config)` — needs_llm 상태 statement 를 OpenAI 호환 엔드포인트로 JSON 변환. relevant mapping 만 프롬프트에 포함 (token 억제). confidence < 0.7 또는 needs_human_review=true → UNRESOLVED. |
 | `migration_report.py` | `write_migration_report(results, mapping, output_path, ...)` — 5 시트 Excel (Summary / Conversions 18컬럼 / Validation Errors / Unresolved Queue / Mapping Coverage). 상태별 하이라이트 (빨강=UNRESOLVED/PARSE_FAIL/Stage B 실패, 노랑=AUTO_WARN/NEEDS_LLM, 회색=AUTO 변경없음). |
 
 **매핑 템플릿 / 산출물**:
-- `input/column_mapping_template.yaml`: 스펙 §4 의 7 예제 (rename/type/split/merge/value_map/drop/split-discriminator) 그대로
+- `input/column_mapping_template.yaml`: 스펙 §4 의 7 예제 (rename/type/split/merge/value_map/drop/split-discriminator) 그대로 — 상세 rich YAML 샘플
+- `input/column_mapping_template.md`: **사용자 표준 9-컬럼 flat 포맷 샘플** (DRM-safe md/txt). `convert-mapping --md` 로 rich YAML 자동 변환. 헤더: `asis_table | asis_column | asis_column_type | tobe_table | tobe_table_comment | tobe_column | tobe_column_type | tobe_column_comment | remark`
 - `output/sql_migration/converted/<rel>.xml`: 변환 XML (구조 보존)
 - `output/sql_migration/sql_migration_TIMESTAMP.xlsx`: 5 시트 리포트
 - `output/sql_migration/impact_report_TIMESTAMP.xlsx`: 사전 영향분석 리포트
 - `output/sql_migration/validation_report_TIMESTAMP.xlsx`: Stage B 리포트
+- `output/legacy_analysis/.biz_cache/<sha256>.json`: Phase A biz 추출 결과 캐시 (method body SHA-256 키, `BIZ_SCHEMA_VERSION` bump 으로 전량 무효화)
+
+**column_mapping.yaml 확장 필드** (Phase 1~3 신규):
+- `options.comment_source`: `mapping` (mapping.yaml 만) / `mapping_first` (mapping > terms > schema chain) / `terms_dictionary` / `to_be_schema` / `both` (legacy)
+- `options.output_format`: `{style: none|korean_legacy|ansi, leading_comma, normalize_comment_width, table_comment_prefix: "T:", keyword_case, indent}` — style=korean_legacy 시 `sql_formatter.format_sql` 이 변환 SQL 을 사용자 표준 layout 으로 re-emit (inject_comments 대체)
+- `columns[].to_be.comment`: TO-BE 컬럼 한글 설명 (Phase 2 에서 자동 인라인 주석 소스)
+- `tables[].comment`: TO-BE 테이블 한글 설명
 
 ## 주요 모듈 (형태소분석 — `morpheme` 커맨드)
 
@@ -234,6 +244,14 @@ python main.py analyze-legacy \
 | `--menu-only`가 시간 절약 안 됨 | 전체 분석 후 필터링 방식 | 체인 해석 자체 skip |
 | namespace 변수 SQL 호출 미추출 | 리터럴만 잡는 regex | 상수 2-pass 해석 |
 | 변수 RFC 인터페이스 ID 미추출 | 커스텀 RFC는 리터럴만 | 변수 regex + 2-pass 해석 |
+| `this.` 없는 intra-class helper call 체인 단절 | `_FIELD_CALL_RE` 가 `receiver.method(` 만 매칭 | `_BARE_CALL_RE` + `_BARE_CALL_SKIP` 추가, bare call 도 synthetic `receiver="this"` 로 emit |
+| `map.put("PARAM_X")` 이 RFC false positive | 사용자 `patterns.yaml` 의 `rfc_call_methods` 에 `get`/`put` 들어감 (LLM 오판) | 프롬프트에 Java 컬렉션 API 제외 명시 + `apply_patterns` 에 `_GENERIC_COLLECTION_METHODS` 필터 (런타임 2차 방어) |
+| `UPDATE T SET TO_CHAR(COL,...) = #{d}` 같은 invalid SQL (type_convert) | write 템플릿을 LHS 컬럼에 씌움 | Pass A/B/C 3-pass 리팩터 — UPDATE SET / INSERT VALUES 는 RHS 에 wrap, LHS 는 rename 만 |
+| MERGE INSERT 컬럼 리스트 wrap / MERGE ON read 템플릿 | `Insert.this=Tuple` (일반 INSERT 와 shape 다름) + `Merge.on` 은 exp.Where/Join 아님 | Pass B Tuple 분기 추가 + `_classify_context` 에 Merge.on 서브트리 walk |
+| `UPDATE T t SET T.COL =` 같이 alias 가 table 이름으로 뭉개짐 | TableRename Pass 2 가 `q.upper()` 만으로 qualifier 교체 (alias 판별 없음) | Pass 2 전 `aliases_in_scope` 수집 → alias 인 qualifier 는 skip |
+| flat md 매핑에서 type 페어 매칭 실패 시 entry 자체 누락 | `_heuristic_parse` 의 `continue` 가 append 전 실행 | 미지원 페어도 ⚠ 마커 + default `{src}` transform 으로 entry 유지 |
+| biz 추출에서 intra-class helper 누락 | `service_methods` 는 inter-class 만 누적 (엔드포인트 chain walker 와 범위 mismatch) | `collect_chain_methods` 가 self-call closure BFS 로 helper 확장 |
+| patterns.yaml 미지정 시 biz candidate 필터가 비키워드만 매칭 | `biz_extraction` 섹션 없으면 `hints=[]` | `_BUILTIN_DEFAULTS` + `_effective_config` merge 로 fallback |
 
 ## 미해결 / 다음 작업
 

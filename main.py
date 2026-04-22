@@ -1574,10 +1574,11 @@ def cmd_analyze_legacy(args):
 
     menu_only = getattr(args, "menu_only", False)
 
-    # Business logic extraction args (Phase A: backend only; frontend no-op).
+    # Business logic extraction args (Phase A: backend; Phase B: frontend).
     extract_biz = bool(getattr(args, "extract_biz_logic", False))
     biz_scope = getattr(args, "biz_scope", "both")
     biz_max_methods = int(getattr(args, "biz_max_methods", 500))
+    biz_max_handlers = int(getattr(args, "biz_max_handlers", 300))
     biz_use_cache = not bool(getattr(args, "no_biz_cache", False))
     biz_config = config if isinstance(config, dict) else {}
 
@@ -1595,6 +1596,7 @@ def cmd_analyze_legacy(args):
             extract_biz=extract_biz,
             biz_scope=biz_scope,
             biz_max_methods=biz_max_methods,
+            biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
         )
@@ -1611,6 +1613,7 @@ def cmd_analyze_legacy(args):
             extract_biz=extract_biz,
             biz_scope=biz_scope,
             biz_max_methods=biz_max_methods,
+            biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
         )

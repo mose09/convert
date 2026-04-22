@@ -68,6 +68,48 @@ _BACKEND_SYSTEM_PROMPT = (
 )
 
 
+_FRONTEND_SYSTEM_PROMPT = (
+    "당신은 React 프론트엔드 handler 코드의 validation / 조건부 로직을\n"
+    "분석하는 전문가입니다. 주어진 handler body 와 그 주변 JSX slice\n"
+    "를 보고 사용자 입력 검증, onClick 전 상태 체크, 조건부 API 호출,\n"
+    "읽는 state 를 구조화 JSON 으로 요약하세요.\n"
+    "반드시 유효한 JSON 만 응답하세요 (주석 금지)."
+)
+
+
+_FRONTEND_USER_PROMPT_TEMPLATE = """아래 React handler 들의 validation / 조건부 로직을 추출해주세요.
+각 handler 에 대해 다음 필드를 채운 JSON 객체를 **배열** 형태로 반환:
+
+```json
+[
+  {{
+    "key": "src/x/Order.jsx#handleSave@/order/save",
+    "field_validations": [
+      {{"field": "orderDate", "required": true, "format": "YYYYMMDD",
+       "range": null, "source": "prop|handler"}}
+    ],
+    "pre_checks":        [{{"condition": "!selectedRow", "blocks_api": true}}],
+    "conditional_calls": [{{"if": "status == 'DRAFT'", "api_url": "/order/save", "method": "POST"}}],
+    "state_reads":       ["selectedRow", "userRole"],
+    "summary":           "선택 행 필수 + 일자 YYYYMMDD 검증 후 저장 호출"
+  }}
+]
+```
+
+## 규칙
+- 배열 요소는 입력 handler 순서 그대로 (index 일치 필수)
+- 필드 값이 없으면 빈 배열 [] 유지
+- summary 는 한 문장 한국어
+- JSX slice 에서 발견되는 `required` / `pattern` / `minLength` / `maxLength` /
+  `min` / `max` / `type` prop 은 source="prop" 으로, handler body 의 if/throw/
+  alert 검증은 source="handler" 로 분류
+- 확신 없으면 해당 필드만 비우고 summary 는 반드시 채울 것
+
+## Handlers (n={n})
+{items_json}
+"""
+
+
 _BACKEND_USER_PROMPT_TEMPLATE = """아래 ServiceImpl 메서드들의 비즈니스 로직을 추출해주세요.
 각 메서드에 대해 다음 필드를 채운 JSON 객체를 **배열** 형태로 반환 (top-level 은 배열):
 
@@ -112,6 +154,27 @@ class BizResult:
     external_calls: List[Dict[str, Any]] = field(default_factory=list)
     summary: str = ""
     source: str = "llm"  # "llm" | "fallback" | "cache"
+
+
+@dataclass
+class FrontendBizResult:
+    """Phase B: React handler biz 추출 결과.
+
+    key 는 ``file#handler@url`` (URL 까지 포함해야 같은 핸들러가 여러 URL 에
+    묶여있을 때 구분 가능).
+    """
+
+    key: str
+    file: str = ""
+    handler: str = ""
+    label: str = ""
+    url: str = ""
+    field_validations: List[Dict[str, Any]] = field(default_factory=list)
+    pre_checks: List[Dict[str, Any]] = field(default_factory=list)
+    conditional_calls: List[Dict[str, Any]] = field(default_factory=list)
+    state_reads: List[str] = field(default_factory=list)
+    summary: str = ""
+    source: str = "llm"
 
 
 # ---------------------------------------------------------------------------
@@ -541,5 +604,310 @@ def biz_detail_sheet_rows(biz_map: Dict[str, BizResult],
             "summary":        r.summary,
             "source":         r.source,
             "programs":       ", ".join(programs),
+        })
+    return out
+
+
+# ===========================================================================
+# Phase B — Frontend React handler extraction
+# ===========================================================================
+
+
+def _make_frontend_key(ctx: Dict[str, Any], url: str) -> str:
+    return f"{ctx.get('file','')}#{ctx.get('handler','')}@{url}"
+
+
+def _fallback_frontend_summary(ctx: Dict[str, Any]) -> str:
+    """regex 로 React handler 간단 요약 (LLM 실패 시)."""
+    body = ctx.get("body", "") or ""
+    norm = _normalise_body(body)
+    ifs = len(re.findall(r"\bif\s*\(", norm))
+    throws = len(re.findall(r"\bthrow\s+new\b", norm))
+    alerts = len(re.findall(
+        r"\b(?:alert|confirm|toast|message|Modal)\s*\(", norm, re.IGNORECASE
+    ))
+    props = len(ctx.get("validation_props") or [])
+    parts = []
+    if props:
+        parts.append(f"jsx validation props {props}")
+    if ifs:
+        parts.append(f"if {ifs}")
+    if throws:
+        parts.append(f"throw {throws}")
+    if alerts:
+        parts.append(f"alert/toast {alerts}")
+    if not parts:
+        return "handler w/o static validation signal (heuristic)"
+    return "; ".join(parts) + " (static heuristic)"
+
+
+def _build_frontend_batch_prompt(batch: List[Dict[str, Any]],
+                                  max_body_chars: int) -> str:
+    prep = []
+    for it in batch:
+        ctx = it["ctx"]
+        body = ctx.get("body", "") or ""
+        jsx = ctx.get("jsx_slice", "") or ""
+        norm_body = _normalise_body(body)[:max_body_chars]
+        # JSX slice 는 더 짧게 (신호 위주, LLM 프롬프트 토큰 통제)
+        norm_jsx = _normalise_body(jsx)[:1500]
+        prep.append({
+            "key": it["key"],
+            "file": ctx.get("file", ""),
+            "handler": ctx.get("handler", ""),
+            "label": ctx.get("label", ""),
+            "url": it["url"],
+            "validation_props_hint": ctx.get("validation_props") or [],
+            "jsx_slice": norm_jsx,
+            "handler_body": norm_body,
+        })
+    return _FRONTEND_USER_PROMPT_TEMPLATE.format(
+        n=len(batch),
+        items_json=json.dumps(prep, ensure_ascii=False, indent=2),
+    )
+
+
+def _parse_frontend_batch(raw: Any,
+                          expected: List[Dict[str, Any]]
+                          ) -> List[FrontendBizResult]:
+    items: List[Any] = []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        for k in ("results", "data", "handlers", "items"):
+            v = raw.get(k)
+            if isinstance(v, list):
+                items = v
+                break
+
+    def _as_list(v):
+        return v if isinstance(v, list) else []
+
+    out: List[FrontendBizResult] = []
+    for i, it in enumerate(expected):
+        ctx = it["ctx"]
+        key = it["key"]
+        r = items[i] if i < len(items) and isinstance(items[i], dict) else None
+        if r is None:
+            out.append(FrontendBizResult(
+                key=key,
+                file=ctx.get("file", ""),
+                handler=ctx.get("handler", ""),
+                label=ctx.get("label", ""),
+                url=it["url"],
+                summary=_fallback_frontend_summary(ctx),
+                source="fallback",
+            ))
+            continue
+        raw_states = r.get("state_reads")
+        state_reads = [str(s) for s in raw_states if isinstance(s, str)] \
+            if isinstance(raw_states, list) else []
+        summary = r.get("summary", "")
+        out.append(FrontendBizResult(
+            key=key,
+            file=ctx.get("file", ""),
+            handler=ctx.get("handler", ""),
+            label=ctx.get("label", ""),
+            url=it["url"],
+            field_validations=_as_list(r.get("field_validations")),
+            pre_checks=_as_list(r.get("pre_checks")),
+            conditional_calls=_as_list(r.get("conditional_calls")),
+            state_reads=state_reads,
+            summary=summary if isinstance(summary, str) else "",
+            source="llm",
+        ))
+    return out
+
+
+def extract_frontend_biz_logic(
+    handlers_by_url: Dict[str, List[Dict[str, Any]]],
+    patterns: Dict[str, Any],
+    *,
+    max_handlers: int = 300,
+    use_cache: bool = True,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, FrontendBizResult]:
+    """Main entry for Phase B.
+
+    입력: ``collect_handler_contexts`` 가 준 ``{url: [ctx, ...]}``.
+    반환: ``{key: FrontendBizResult}`` where ``key = file#handler@url``.
+    """
+    bz = _effective_config(patterns)
+    batch_size = max(1, int(bz.get("llm_batch_size", 6)))
+    max_body_chars = int(bz.get("llm_max_body_chars", 3500))
+
+    # 평탄화 + dedup by key (같은 handler 가 여러 URL 에 바인딩돼도 per-URL
+    # 단위로 분석 — 조건부 API 호출 맥락 파악에 도움).
+    items: List[Dict[str, Any]] = []
+    seen_keys: set = set()
+    for url, ctx_list in handlers_by_url.items():
+        for ctx in ctx_list or []:
+            key = _make_frontend_key(ctx, url)
+            if key in seen_keys:
+                continue
+            seen_keys.add(key)
+            items.append({"key": key, "url": url, "ctx": ctx})
+
+    if not items:
+        print("  frontend biz: no handler contexts collected")
+        return {}
+
+    if len(items) > max_handlers:
+        print(f"  frontend biz: {len(items)} handlers > cap {max_handlers} — truncating")
+        items = items[:max_handlers]
+
+    print(f"  frontend biz: {len(items)} handler×url pairs")
+
+    # cache lookup: 프론트는 body + jsx + validation props 의 hash 를 사용
+    results: Dict[str, FrontendBizResult] = {}
+    to_llm: List[Dict[str, Any]] = []
+    for it in items:
+        ctx = it["ctx"]
+        blob = ctx.get("body", "") + "\n---JSX---\n" + (ctx.get("jsx_slice", "") or "")
+        cache_key = _hash_body(blob)
+        cached = _cache_get_fe(cache_key, use_cache)
+        if cached is not None:
+            # Refresh identity fields from current context (file/handler/url).
+            cached.key = it["key"]
+            cached.file = ctx.get("file", "")
+            cached.handler = ctx.get("handler", "")
+            cached.label = ctx.get("label", "")
+            cached.url = it["url"]
+            results[it["key"]] = cached
+        else:
+            it["_cache_key"] = cache_key
+            to_llm.append(it)
+
+    if results:
+        print(f"  frontend biz: cache hit {len(results)}/{len(items)}")
+
+    if not to_llm:
+        return results
+
+    try:
+        from .legacy_pattern_discovery import _call_llm as llm_call
+    except Exception as exc:
+        logger.warning("frontend biz: LLM wrapper unavailable (%s)", exc)
+        for it in to_llm:
+            ctx = it["ctx"]
+            results[it["key"]] = FrontendBizResult(
+                key=it["key"],
+                file=ctx.get("file", ""),
+                handler=ctx.get("handler", ""),
+                label=ctx.get("label", ""),
+                url=it["url"],
+                summary=_fallback_frontend_summary(ctx),
+                source="fallback",
+            )
+        return results
+
+    cfg = config or {}
+    llm_ok = 0
+    fb = 0
+    for start in range(0, len(to_llm), batch_size):
+        batch = to_llm[start:start + batch_size]
+        prompt = _build_frontend_batch_prompt(batch, max_body_chars)
+        label = f"biz_fe_batch_{start // batch_size}"
+        try:
+            raw = llm_call(
+                prompt,
+                cfg,
+                label=label,
+                system_prompt=_FRONTEND_SYSTEM_PROMPT,
+            )
+        except Exception as exc:
+            logger.warning("frontend biz LLM call %s failed: %s", label, exc)
+            raw = {}
+        parsed = _parse_frontend_batch(raw, batch)
+        for it, r in zip(batch, parsed):
+            results[it["key"]] = r
+            if r.source == "llm":
+                llm_ok += 1
+                _cache_put_fe(it["_cache_key"], r, use_cache)
+            else:
+                fb += 1
+
+    print(f"  frontend biz: LLM {llm_ok} ok, {fb} fallback")
+    return results
+
+
+def _cache_get_fe(key: str, enabled: bool) -> Optional[FrontendBizResult]:
+    if not enabled:
+        return None
+    p = _cache_dir() / f"fe_{key}.json"
+    if not p.exists():
+        return None
+    try:
+        data = json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    data.pop("source", None)
+    try:
+        return FrontendBizResult(**data, source="cache")
+    except TypeError:
+        return None
+
+
+def _cache_put_fe(key: str, result: FrontendBizResult, enabled: bool) -> None:
+    if not enabled:
+        return
+    p = _cache_dir() / f"fe_{key}.json"
+    data = {k: v for k, v in asdict(result).items() if k != "source"}
+    p.write_text(
+        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8",
+    )
+
+
+def enrich_rows_with_frontend_biz(
+    rows: List[Dict[str, Any]],
+    fe_map: Dict[str, FrontendBizResult],
+) -> None:
+    """row 의 ``frontend_validation_summary`` 필드 채움.
+
+    매칭 기준: row 의 `url` + `presentation_layer` (파일 경로) 가 fe_map
+    엔트리의 url + file 과 맞으면 summary 를 "; " 로 join. 여러 handler 가
+    걸려있으면 상위 3개만.
+    """
+    # Index by (url_lower, file) for fast lookup
+    by_url_file: Dict[tuple, List[FrontendBizResult]] = {}
+    for r in fe_map.values():
+        by_url_file.setdefault((r.url.lower(), r.file), []).append(r)
+
+    for row in rows:
+        summaries: List[str] = []
+        url = (row.get("url") or "").lower()
+        files = (row.get("presentation_layer") or "").split(";")
+        for f in files:
+            f = f.strip()
+            if not f:
+                continue
+            matches = by_url_file.get((url, f), [])
+            for r in matches[:3]:
+                if r.summary:
+                    summaries.append(r.summary)
+        row.setdefault("frontend_validation_summary", "")
+        if summaries:
+            row["frontend_validation_summary"] = " | ".join(summaries[:3])
+
+
+def frontend_biz_sheet_rows(
+    fe_map: Dict[str, FrontendBizResult],
+) -> List[Dict[str, str]]:
+    out = []
+    for key, r in sorted(fe_map.items()):
+        out.append({
+            "key": key,
+            "screen":            r.file,
+            "button":            r.label,
+            "handler":           r.handler,
+            "url":               r.url,
+            "field_validations": _format_structured_list(r.field_validations),
+            "pre_checks":        _format_structured_list(r.pre_checks),
+            "conditional_calls": _format_structured_list(r.conditional_calls),
+            "state_reads":       ", ".join(r.state_reads),
+            "summary":           r.summary,
+            "source":            r.source,
         })
     return out

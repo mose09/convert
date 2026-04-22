@@ -472,13 +472,115 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     return {k: sorted(v) for k, v in triggers.items()}
 
 
-def _locate_handler_body(content: str, handler: str) -> str:
+def collect_handler_contexts(
+    frontend_dir: str,
+    api_index: dict[str, list[str]],
+    patterns: dict | None = None,
+    strip_patterns=None,
+) -> dict[str, list[dict]]:
+    """Phase B biz extraction 전용 수집기.
+
+    Returns ``{normalized_api_url: [{file, handler, label, body, jsx_slice,
+    validation_props}, ...]}``. ``extract_button_triggers`` 와 같은 pass
+    를 살짝 확장해 LLM 에 필요한 컨텍스트 (긴 handler body + 앞뒤 JSX
+    + pre-annotated JSX validation props) 까지 쌓아서 반환.
+    """
+    if not frontend_dir or not os.path.isdir(frontend_dir) or not api_index:
+        return {}
+
+    fe = (patterns or {}).get("frontend") or {}
+    methods = list(_DEFAULT_API_METHODS) + list(fe.get("api_call_methods") or [])
+    const_files_hint = fe.get("api_url_const_files") or []
+    call_re = _build_call_regex(methods)
+    if call_re is None:
+        return {}
+
+    files_with_calls: set[str] = set()
+    for url, files in api_index.items():
+        for f in files:
+            files_with_calls.add(os.path.join(frontend_dir, f))
+
+    all_files = _scan_dir(frontend_dir)
+    const_map = _collect_url_constants(all_files, const_files_hint)
+
+    out: dict[str, list[dict]] = {}
+
+    for fp in files_with_calls:
+        try:
+            content = _read_file_safe(fp)
+        except Exception:
+            continue
+
+        handler_label: dict[str, str] = {}
+        for m in _BUTTON_LABEL_RE.finditer(content):
+            attrs = m.group("attrs") or ""
+            label = (m.group("label") or "").strip()
+            if not label or len(label) > 30:
+                continue
+            hm = _ON_HANDLER_RE.search(attrs)
+            if not hm:
+                continue
+            handler = hm.group("name") or hm.group("arrow")
+            if handler:
+                handler_label.setdefault(handler, label)
+
+        if not handler_label:
+            continue
+
+        rel = os.path.relpath(fp, frontend_dir)
+
+        for handler, label in handler_label.items():
+            start = _locate_handler_start(content, handler)
+            if start is None:
+                continue
+            body = content[start: start + 8000]
+            jsx = _locate_enclosing_jsx(content, start)
+            validation_props = extract_validation_props(jsx)
+
+            urls_in_handler: set[str] = set()
+            for m in call_re.finditer(body):
+                raw = m.group("url") or ""
+                if not raw:
+                    var = m.group("var") or ""
+                    if not var:
+                        continue
+                    raw = const_map.get(var, "")
+                    if not raw:
+                        continue
+                canonical = normalize_url(_normalize_template(raw), strip_patterns)
+                if canonical:
+                    urls_in_handler.add(canonical)
+
+            ctx = {
+                "file": rel,
+                "handler": handler,
+                "label": label,
+                "body": body,
+                "jsx_slice": jsx,
+                "validation_props": validation_props,
+            }
+            for u in urls_in_handler:
+                out.setdefault(u, []).append(ctx)
+
+    return out
+
+
+def _locate_handler_body(content: str, handler: str, max_chars: int = 4000) -> str:
     """Find the declaration of ``handler`` and return a rough body slice.
 
     Matches ``function handler(...)`` and ``const handler = (...) => ...``
-    style. Slice is capped at 4000 chars so a huge function doesn't
-    dominate the scan.
+    style. Slice is capped at ``max_chars`` chars (default 4000 for the
+    trigger-extraction path; Phase B biz extraction passes 8000 to catch
+    longer handlers).
     """
+    start = _locate_handler_start(content, handler)
+    if start is None:
+        return ""
+    return content[start : start + max_chars]
+
+
+def _locate_handler_start(content: str, handler: str) -> int | None:
+    """Return start offset of a handler declaration, or None if not found."""
     patterns = [
         rf"\bfunction\s+{re.escape(handler)}\s*\([^)]*\)\s*\{{",
         rf"\b(?:const|let|var)\s+{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
@@ -487,6 +589,49 @@ def _locate_handler_body(content: str, handler: str) -> str:
     for pat in patterns:
         m = re.search(pat, content)
         if m:
-            start = m.start()
-            return content[start : start + 4000]
-    return ""
+            return m.start()
+    return None
+
+
+def _locate_enclosing_jsx(content: str, handler_start: int, max_chars: int = 2000) -> str:
+    """Best-effort slice of the JSX that encloses / follows a handler.
+
+    Heuristic: return up to ``max_chars`` characters **before** the handler
+    declaration (field validation props usually live in the form JSX above
+    the submit handler) plus up to ``max_chars`` chars **after** the
+    handler (where the Button calling it lives). Not a real AST parse —
+    the biz extractor only uses this as extra context for the LLM.
+    """
+    if handler_start <= 0:
+        before = ""
+    else:
+        before = content[max(0, handler_start - max_chars): handler_start]
+    after = content[handler_start: handler_start + max_chars + 1000]
+    return before + "\n/* --- HANDLER BELOW --- */\n" + after
+
+
+_VALIDATION_PROP_RE = re.compile(
+    r"""(?P<prop>required|pattern|minLength|maxLength|min|max|type)
+        \s*=\s*
+        (?:\{(?P<curly>[^}]*)\}|"(?P<dqs>[^"]*)"|'(?P<sqs>[^']*)')
+    """,
+    re.VERBOSE,
+)
+
+
+def extract_validation_props(jsx_slice: str) -> list[dict]:
+    """Extract JSX validation attributes from a text slice.
+
+    Returns a list of ``{"prop": ..., "value": ...}`` (order preserved, no
+    dedup — LLM gets raw context). Designed as a regex pre-annotator that
+    rides alongside the handler body in the Phase B LLM prompt so the
+    model doesn't have to re-discover common React prop patterns.
+    """
+    if not jsx_slice:
+        return []
+    out: list[dict] = []
+    for m in _VALIDATION_PROP_RE.finditer(jsx_slice):
+        prop = m.group("prop")
+        val = m.group("curly") or m.group("dqs") or m.group("sqs") or ""
+        out.append({"prop": prop, "value": val.strip()})
+    return out
