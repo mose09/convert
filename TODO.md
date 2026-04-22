@@ -92,30 +92,30 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: redux-saga 패턴 API 호출 추출 (A + B)
+### 진행 중: @RestVerticle + BaseRestHandler 핸들러 선택 버그
 
-`legacy_react_api_scanner` 가 redux-saga 파일 (`*Saga.js` / `sagas/*.js`)
-안의 axios 호출을 놓치는 문제. 두 패턴 동시 커버:
+`@RestVerticle(url=...)` + `BaseRestHandler` 패턴에서 실제 비즈니스 로직이
+담긴 `POST(RoutingContext, JsonObject)` 같은 HTTP verb 메서드가 아닌,
+베이스 클래스에서 내려온 빈 `handle()` 디스패처가 선택되어 체인 워커가
+endpoint body 를 순회 못 함 → Service / Tables 컬럼 전부 공백.
 
-- **A** — `yield call(axios.get, '/api/x')`: URL 이 2번째 인자. 현재 regex
-  는 호출 바로 뒤 첫 인자만 매칭 → 실패.
-- **B** — `yield call(api.fetchUser, payload)`: URL 이 saga 파일에 없고
-  별도 `api.js` 모듈의 `fetchUser` 안에 있음. 전역 함수 body 인덱스 →
-  2-pass 해석으로 saga 파일에 URL 귀속.
+재현 (`/tmp/mock_vertx_post`): handler 클래스에 `handle()` + `POST()` 가
+같이 있으면 `_pick_handler_method` 의 선호 순위
+(`handle` / `execute` / `run` / `process`) 가 HTTP verb 메서드보다 앞서서
+`handle` 을 골라버림. 베이스 클래스의 `handle` 은 분배 dispatcher 라서
+body 가 비거나 field call 이 없음 → `service_methods = (empty)`.
+
+사용자 확인: `@RestVerticle` 클래스는 한 클래스당 verb 메서드 1개만
+사용 (POST 전용 또는 GET 전용) → 옵션 A (선호 순위 재조정) 로 충분.
 
 작업 항목:
 
-- [x] A 구현 — `_SAGA_CALL_LITERAL_RE` 추가 (call/apply 의 2번째 인자 URL
-      리터럴 매칭). 1번째 인자는 식별자 / dotted 참조만 허용 +
-      `Function.prototype.call` (this/bind/…) skip 가드.
-- [x] B 구현 — `_collect_function_bodies` 전역 인덱스 + saga 파일에서
-      `call(X.fn)` / `call(fn)` 감지 → 인덱스 lookup → 본체에서 axios URL
-      추출 → saga 파일에 귀속.
-- [x] `/tmp/mock_saga` 신규 (saga literal + saga indirect + 직접 호출 +
-      false positive 4 시나리오) 전부 PASS.
-- [x] `FalsePositivePage.jsx` 로 `Function.prototype.call` 케이스 회귀
-      검증 — 3 개 false positive URL 전부 필터링 확인.
-- [x] conventional commit + push
+- [x] `_pick_handler_method` 선호 순위에 HTTP verb (POST/GET/PUT/DELETE/PATCH)
+      를 `handle`/`execute`/… 앞에 둔다. 대소문자 양쪽 허용.
+- [x] mock_vertx_post (`handle()` + `POST()`) 에서 service_methods 정상 추출
+      확인 (`com.example.UserDefineService#getUserSdptAuthLIst`).
+- [x] `POST()` 단독 / `handle()` 단독 회귀 — 양쪽 시나리오 정상 추출.
+- [x] conventional commit + PR + squash-merge
 
 ---
 

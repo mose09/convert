@@ -1740,7 +1740,21 @@ def parse_java_file(filepath: str) -> dict:
     def _pick_handler_method():
         """Pick the most likely handler body for @RestVerticle-style
         one-class-per-endpoint patterns where ``method_name`` is the
-        class name instead of the actual Java method."""
+        class name instead of the actual Java method.
+
+        HTTP verb method names (``POST`` / ``GET`` / ``PUT`` / ``DELETE``
+        / ``PATCH``) win over generic dispatcher names (``handle`` /
+        ``execute`` / ``run`` / ``process``). Projects that pair
+        ``@RestVerticle`` with a ``BaseRestHandler`` convention put the
+        real per-verb business logic in the uppercase verb methods,
+        while ``handle`` usually comes from the base class as an empty
+        dispatcher — picking it would leave the endpoint row with no
+        field calls and drop the service chain entirely.
+        """
+        for preferred in ("POST", "GET", "PUT", "DELETE", "PATCH",
+                          "post", "get", "put", "delete", "patch"):
+            if preferred in method_by_name:
+                return method_by_name[preferred][0]
         for preferred in ("handle", "execute", "run", "process"):
             if preferred in method_by_name:
                 return method_by_name[preferred][0]
