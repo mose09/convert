@@ -26,13 +26,24 @@
 - [x] mock 검증 9종 PASS: comment 보존, type-pair 자동, drop, ⚠ 마커,
       mapping_loader round-trip 0 errors
 
-## Phase 2 — `tobe_*_comment` → comment_injector 연결 (대기)
+## Phase 2 — `tobe_*_comment` → comment_injector 연결 (완료)
 
-- [ ] `mapping_model.ColumnRef` / `TableMapping` 에 `comment_ko` 필드 추가
-- [ ] `mapping_loader._parse_column_ref` / `_parse_tables` 가 새 필드 파싱
-- [ ] `comment_injector` 가 `comment_source: mapping` 옵션 지원
-      (mapping → terms_dictionary → to_be_schema 우선순위)
-- [ ] `migrate-sql` 흐름에서 mapping 으로부터 ko_lookup 자동 빌드
+- [x] `mapping_model.ColumnRef.comment` + `TableMapping.comment` 필드 추가
+      (Phase 1 yaml 의 `comment` 키와 일치). `CommentSource` Literal 에
+      `mapping` / `mapping_first` 추가
+- [x] `mapping_loader._parse_column_ref` + `_parse_tables` 가 새 `comment`
+      필드 파싱 (옵셔널, 비-string 시 에러)
+- [x] `_VALID_COMMENT_SOURCES` set 에 `mapping` / `mapping_first` 등록
+- [x] `comment_injector.build_ko_lookup_from_mapping(mapping)` 신규 헬퍼
+      (TO-BE 컬럼/테이블의 comment 를 `{TABLE.COL: 한글}` + 베어 키로 빌드)
+- [x] `main.py cmd_migrate_sql` 가 `mapping.options.comment_source` 분기:
+      - `mapping`: mapping 만 사용
+      - `mapping_first`: 기존 schema/terms chain 위에 mapping 덮어쓰기
+      - 기타 (default `terms_dictionary` / `to_be_schema` / `both`): 기존 흐름
+- [x] end-to-end 7 시나리오 PASS:
+      flat md → convert-mapping → load → rewrite_sql → inject_comments
+      → SELECT projection / UPDATE SET LHS / INSERT column list 전부
+      `/* 한글 */` 인라인 주석 부착 확인. 테이블 코멘트도 ko_lookup 에 포함.
 
 ## Phase 3 — Korean Legacy SQL Formatter (대기)
 

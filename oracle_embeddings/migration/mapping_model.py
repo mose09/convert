@@ -14,7 +14,14 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, Union
 
 TableType = Literal["rename", "split", "merge", "drop"]
 CommentScope = Literal["select", "update", "insert", "where", "join"]
-CommentSource = Literal["to_be_schema", "terms_dictionary", "both"]
+CommentSource = Literal[
+    "to_be_schema",        # parse_schema_md(to_be_schema)
+    "terms_dictionary",    # terms_md 의 한글 컬럼 사전
+    "both",                # to_be_schema ∪ terms_dictionary
+    "mapping",             # column_mapping.yaml 의 columns[].to_be.comment
+                           # / tables[].comment 직접 사용 (Phase 2)
+    "mapping_first",       # mapping > terms_dictionary > to_be_schema 우선순위 chain
+]
 UnknownTableAction = Literal["warn", "error", "drop"]
 ColumnAction = Literal["convert", "drop_with_warning"]
 Status = Literal["AUTO", "AUTO_WARN", "NEEDS_LLM", "UNRESOLVED", "PARSE_FAIL"]
@@ -32,11 +39,18 @@ ColumnMappingKind = Literal[
 @dataclass(frozen=True)
 class ColumnRef:
     """AS-IS or TO-BE column reference. ``type`` is an optional Oracle
-    datatype string used for type conversion / compatibility checks."""
+    datatype string used for type conversion / compatibility checks.
+
+    ``comment`` is the column's Korean (or any human-readable) description.
+    On the TO-BE side it doubles as the source for ``comment_injector``
+    when ``options.comment_source = "mapping"`` so 사용자 standard 9-column
+    flat 매핑이 한 번 작성으로 변환 SQL 의 한글 주석까지 자동 채움.
+    """
 
     table: str
     column: str
     type: Optional[str] = None
+    comment: Optional[str] = None
 
     @property
     def qualified(self) -> str:
@@ -67,6 +81,9 @@ class TableMapping:
     - split   : as_is=str, to_be=list[str]
     - merge   : as_is=list[str], to_be=str
     - drop    : as_is=str, to_be=None
+
+    ``comment`` is the TO-BE table's Korean description (Phase 2: used by
+    ``comment_injector`` when ``options.comment_source = "mapping"``).
     """
 
     type: TableType
@@ -75,6 +92,7 @@ class TableMapping:
     discriminator_column: Optional[str] = None
     discriminator_map: Optional[Dict[str, str]] = None
     join_condition: Optional[str] = None
+    comment: Optional[str] = None
 
     def as_is_tables(self) -> List[str]:
         return list(self.as_is) if isinstance(self.as_is, list) else [self.as_is]

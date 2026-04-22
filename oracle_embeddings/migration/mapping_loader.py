@@ -41,7 +41,9 @@ from .mapping_model import (
 _PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][A-Za-z0-9_]*)\}")
 
 _VALID_COMMENT_SCOPES: Set[str] = {"select", "update", "insert", "where", "join"}
-_VALID_COMMENT_SOURCES: Set[str] = {"to_be_schema", "terms_dictionary", "both"}
+_VALID_COMMENT_SOURCES: Set[str] = {
+    "to_be_schema", "terms_dictionary", "both", "mapping", "mapping_first",
+}
 _VALID_UNKNOWN_TABLE_ACTIONS: Set[str] = {"warn", "error", "drop"}
 _VALID_TABLE_TYPES: Set[str] = {"rename", "split", "merge", "drop"}
 _VALID_COLUMN_ACTIONS: Set[str] = {"convert", "drop_with_warning"}
@@ -304,6 +306,10 @@ def _parse_tables(node: Any, errors: _Errors) -> List[TableMapping]:
         if not as_is_ok:
             continue
 
+        cm = entry.get("comment")
+        if cm is not None and not isinstance(cm, str):
+            errors.add("'comment' must be a string", f"{loc}.comment")
+            cm = None
         tm = TableMapping(
             type=ttype,  # type: ignore[arg-type]
             as_is=as_is,
@@ -311,6 +317,7 @@ def _parse_tables(node: Any, errors: _Errors) -> List[TableMapping]:
             discriminator_column=entry.get("discriminator_column"),
             discriminator_map=entry.get("discriminator_map"),
             join_condition=entry.get("join_condition"),
+            comment=cm,
         )
 
         # Extra shape checks per type ------------------------------------
@@ -543,7 +550,11 @@ def _parse_column_ref(
     if ty is not None and not isinstance(ty, str):
         errors.add("'type' must be a string", f"{loc}.type")
         ty = None
-    return ColumnRef(table=t, column=c, type=ty)
+    cm = node.get("comment")
+    if cm is not None and not isinstance(cm, str):
+        errors.add("'comment' must be a string", f"{loc}.comment")
+        cm = None
+    return ColumnRef(table=t, column=c, type=ty, comment=cm)
 
 
 def _parse_transform(

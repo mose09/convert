@@ -1018,10 +1018,30 @@ def cmd_migrate_sql(args):
         return
 
     # Korean comment lookup for --emit-column-comments
+    # Source priority is driven by mapping.options.comment_source:
+    #   "mapping"        — mapping.yaml only
+    #   "mapping_first"  — mapping > terms_dictionary > to_be_schema (chain)
+    #   "to_be_schema"   — schema.md only (default 그대로 동작)
+    #   "terms_dictionary" — terms.md only
+    #   "both"           — terms_dictionary ∪ to_be_schema (legacy 동작)
     ko_lookup: dict = {}
     if args.emit_column_comments:
-        ko_lookup = _build_ko_lookup(to_be_schema_path, terms_md)
-        print(f"Korean comment lookup: {len(ko_lookup)} entries")
+        from oracle_embeddings.migration.comment_injector import (
+            build_ko_lookup_from_mapping,
+        )
+        cs = mapping.options.comment_source
+        if cs == "mapping":
+            ko_lookup = build_ko_lookup_from_mapping(mapping)
+        elif cs == "mapping_first":
+            chained: dict = {}
+            chained.update(_build_ko_lookup(to_be_schema_path, terms_md))
+            # mapping 의 값이 있으면 덮어씀 (= 우선) — 빈 키만 schema 가 채움
+            for k, v in build_ko_lookup_from_mapping(mapping).items():
+                chained[k] = v
+            ko_lookup = chained
+        else:
+            ko_lookup = _build_ko_lookup(to_be_schema_path, terms_md)
+        print(f"Korean comment lookup: {len(ko_lookup)} entries (source: {cs})")
 
     # Collect XML files
     xml_files = sorted(mybatis_dir.rglob("*.xml"))
