@@ -105,16 +105,17 @@ _진행 중 없음_
 
 작업 항목:
 
-- [ ] A 구현 — `_SAGA_CALL_LITERAL_RE` 추가 (call/apply 의 2번째 인자 URL
-      리터럴 매칭). 1번째 인자는 식별자 / dotted 참조만 허용.
-- [ ] B 구현 — `_collect_function_bodies` 전역 인덱스 + saga 파일에서
+- [x] A 구현 — `_SAGA_CALL_LITERAL_RE` 추가 (call/apply 의 2번째 인자 URL
+      리터럴 매칭). 1번째 인자는 식별자 / dotted 참조만 허용 +
+      `Function.prototype.call` (this/bind/…) skip 가드.
+- [x] B 구현 — `_collect_function_bodies` 전역 인덱스 + saga 파일에서
       `call(X.fn)` / `call(fn)` 감지 → 인덱스 lookup → 본체에서 axios URL
       추출 → saga 파일에 귀속.
-- [ ] `/tmp/mock_saga` 신규: (1) saga 에 `call(axios.get, '/api/a')`,
-      (2) saga 에 `call(api.fetchUser)` + `api.js` 에 `axios.get('/api/b')`,
-      (3) 기본 `axios.post('/api/c')` 3 케이스 종합.
-- [ ] 기존 `mock_react` 회귀 — 직접 호출 추출에 영향 없는지 확인.
-- [ ] conventional commit + push
+- [x] `/tmp/mock_saga` 신규 (saga literal + saga indirect + 직접 호출 +
+      false positive 4 시나리오) 전부 PASS.
+- [x] `FalsePositivePage.jsx` 로 `Function.prototype.call` 케이스 회귀
+      검증 — 3 개 false positive URL 전부 필터링 확인.
+- [x] conventional commit + push
 
 ---
 
