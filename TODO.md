@@ -92,34 +92,43 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: `--library-dir` — cross-repo 공용 서비스 인덱스 공유
+### 진행 중: Programs 시트 Tables/RFC 컬럼에 CRUD 표기 + 줄바꿈 구분자
 
-실제 환경에서 흔한 "메인 레포 (핸들러) + 별도 레포 (공용 서비스)" 구성
-(예: `gipms-main` + `gipms-common`) 에서 메인 레포의 handler 가 common
-레포의 service 를 호출할 때 현재 `--backends-root` 배치 모드는 프로젝트별로
-service 인덱스를 분리해서 cross-repo FQCN 해석 실패. 워크어라운드는
-`--backend-dir C:\parent` 로 부모 디렉토리 통째 스캔이지만, 정규 옵션으로
-라이브러리 경로만 별도 지정 가능하게 추가.
+Tables 컬럼에 각 테이블의 작업 유형 (C/R/U/D) 을 붙이고, 한 셀 안에
+`,\n` (쉼표 + 줄바꿈) 으로 구분해 한눈에 여러 항목을 읽기 쉽게.
+RFC 컬럼도 동일하게 `,\n` 구분자 적용.
+
+사용자 샘플:
+```
+CMN_BTN_ROLE(R),
+CRHD_W(RU),
+IFLOT_W(C),
+EQUI_W(CRUD)
+```
+
+단일 모드 (`--backend-dir`) + 배치 모드 (`--backends-root`) 양쪽 동일.
 
 작업 항목:
 
-- [x] `_build_indexes`: classes 에 `is_library=True` 표시된 것은
-      controllers_by_fqcn 에서만 제외, services/mappers/by_simple 은 유지
-- [x] `analyze_legacy(library_dirs=[...])`: backend_dir 파싱 후 각 lib_dir
-      에 대해 `parse_all_java` + `parse_all_mappers` 호출해 classes /
-      statements 병합. 각 library class 에 `is_library=True` 주입.
-- [x] `analyze_legacy_batch(library_dirs=[...])`: 동일 library_dirs 를
-      모든 sub-project analyze_legacy 호출에 forwarding → 배치 내 전
-      프로젝트가 동일 라이브러리 공유.
-- [x] CLI `--library-dir <path>` (action=append, 반복 가능). 단일 +
-      배치 모드 둘 다에서 작동.
-- [x] mock 검증 3 종 PASS:
-      * 단일 모드 + library_dir: main UserHandler 가 lib UserService 호출 →
-        service_methods = `com.lib.UserServiceImpl#getUser` ✓, lib 의
-        InternalHandler (Vert.x 상속) 는 controllers 에서 제외됨 ✓
-      * 배치 모드 + library_dir: be_a / be_b 두 sub-project 이 모두 같은
-        lib 서비스 공유, 양쪽 행 모두 service_methods 해석 ✓
-      * 회귀: library_dirs=None / [] → 기존 동작 불변
+- [x] `_build_mybatis_indexes` 에 `statement_to_type` 추가 —
+      `{"ns.id": "SELECT|INSERT|UPDATE|DELETE|..."}`
+- [x] `_resolve_endpoint_chain` 에서 `table_crud: {table: set[letter]}` 수집
+      (SELECT→R / INSERT→C / UPDATE→U / DELETE→D). method-scope 경로에
+      `_derive_table_crud` helper 추가. class-scope fallback 은 per-statement
+      해석이 없어 CRUD 공백.
+- [x] `_build_row` 가 `_format_table_crud` 로 Tables 렌더, RFC 는
+      `,\n` 구분자. service/service_methods/query_xml/sql_ids 는 기존 `; `
+      를 `;\n` 으로 교체 (사용자 추가 요청).
+- [x] `legacy_report` Programs 시트 데이터 셀 `wrap_text=True` 적용 (단일
+      + 배치 양쪽 `_write_row` 수정). Tables Cross-Reference aggregation 에
+      `_bare_table_name` 으로 `(CRUD)` suffix 제거해서 bare name 키로 집계.
+- [x] mock 검증 PASS:
+      * 단일 모드 (`/tmp/mock_crud`): 4 테이블 × CRUD 믹스 — `CMN_BTN_ROLE(R)`
+        (SELECT), `CRHD_W(UD)` (UPDATE+DELETE), `EQUI_W(RU)` (SELECT+UPDATE),
+        `IFLOT_W(C)` (INSERT) ✓
+      * 배치 모드 (`/tmp/mock_crud_batch/project1, project2`): 양 프로젝트 동일
+        패턴 + Cross-Reference 가 `# Projects=2` 로 정상 집계 ✓
+      * Excel `wrap_text=True` 확인 ✓
 - [x] conventional commit + PR + squash-merge
 
 ---
