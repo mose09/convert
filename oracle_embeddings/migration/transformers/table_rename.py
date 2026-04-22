@@ -59,11 +59,26 @@ class TableRenameTransformer(Transformer):
 
         # Pass 2: fix column qualifiers that still point to the old table name
         # (happens when the original SQL used ``TABLE.COL`` without aliasing).
+        #
+        # **Alias preservation**: qualifiers that are aliases (e.g. ``t`` in
+        # ``FROM T t``) must stay as-written — rewriting them to the table
+        # name produces invalid SQL (``UPDATE T t SET T.col`` is invalid in
+        # Oracle: once an alias is declared, only the alias can be used).
+        # Case-insensitive compare below catches ``t`` vs ``T`` collisions.
+        # Bonus: also fixes a no-op rename (``T → T``) silently mangling
+        # aliases whose upper-case form collides with the table name.
         if rename_map:
+            aliases_in_scope: set[str] = set()
+            for tbl in tree.find_all(exp.Table):
+                alias = tbl.alias
+                if alias:
+                    aliases_in_scope.add(alias.upper())
             for col in tree.find_all(exp.Column):
                 q = col.table
                 if not q:
                     continue
+                if q.upper() in aliases_in_scope:
+                    continue  # keep alias verbatim
                 new_q = rename_map.get(q.upper())
                 if new_q is not None:
                     col.set("table", exp.to_identifier(new_q, quoted=False))

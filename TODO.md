@@ -1,3 +1,27 @@
+# TODO: table alias preservation — rename Pass 2 가 alias 를 table 이름으로 망가뜨리는 버그 수정 (완료)
+
+- [x] 증상: `SELECT t.COL FROM T t` 같은 alias-qualified SQL 에서 alias `t`
+      가 rename 후 대문자 `T` 로 교체되어 emit. `UPDATE T t SET t.COL = ...`
+      의 경우 Oracle 에서 `UPDATE T t SET T.COL = ...` 로 변해 invalid SQL.
+      `T → T` 같은 self-rename 에서도 alias 뭉개짐 (case-insensitive 비교가
+      alias 를 table 이름으로 오판).
+- [x] 원인: `table_rename.py` Pass 2 가 rename_map 에 매칭되는 모든
+      qualifier 를 교체. 하지만 alias 여부 판별 없이 `q.upper()` 만으로
+      판단 → alias `t` (upper=`T`) 가 self-map `T→T` 또는 `T→NEW_T` 에
+      걸려서 alias 가 table 이름으로 대체됨.
+- [x] 수정: Pass 2 전에 현재 tree 의 `exp.Table.alias` 수집 →
+      `aliases_in_scope` set. `col.table.upper()` 가 이 set 에 있으면 skip
+      (alias 는 그대로 유지).
+- [x] 검증:
+      - A1-A12 alias 시나리오 (self-join, UPDATE/INSERT/MERGE, subquery,
+        correlated query) 모두 alias 보존 ✓
+      - R1-R5 real-rename (T → NEW_T):
+        * no-alias `T.COL` → `NEW_T.COL` ✓ (본래 의도 동작)
+        * aliased `t.COL` → `t.COL` (NEW_T t 그대로, 유효 SQL) ✓
+      - 8 prior B2 + WITH/MERGE 회귀 통과
+
+---
+
 # TODO: RFC 패턴 false positive 재발 방지 — LLM 프롬프트 + 파서 가드 (완료)
 
 - [x] 증상: `discover-patterns` 의 LLM 이 `rfc_call_methods` 에 `get`, `put`
