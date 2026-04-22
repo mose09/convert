@@ -122,30 +122,6 @@ service 인덱스를 분리해서 cross-repo FQCN 해석 실패. 워크어라운
       * 회귀: library_dirs=None / [] → 기존 동작 불변
 - [x] conventional commit + PR + squash-merge
 
-`_resolve_endpoint_chain` 이 interface-Impl 분리 구조 (`UserDefineService`
-인터페이스 + `UserDefineServiceImpl` 구현) 에서 `iface_to_impl` 매핑이
-정확히 빌드돼 있음에도, `services.add(svc_fqcn)` /
-`service_methods.append(...)` 를 **먼저 interface FQCN 으로 쓴 뒤**에야
-impl 로 walk 해서 리포트 Service 컬럼에 인터페이스 FQCN 이 박히는 버그.
-
-사용자 지적: "다른건 impl 로 잘찾아서 가져오는데 얘만 인터페이스로 가서
-못찾아옴". 다른 서비스는 impl 을 필드 타입으로 직접 주입
-(`private FooServiceImpl fooService;`) 해서 `_resolve_field_type_fqcn` 이
-impl FQCN 을 반환하던 것뿐 — 인터페이스-Impl 분리 케이스만 이 경로에
-안 걸려서 인터페이스 FQCN 이 그대로 노출됨.
-
-수정:
-
-- [x] `_resolve_endpoint_chain` 에서
-      `impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)` 호출을
-      `services.add()` / `service_methods.append()` **앞으로 이동**.
-      기존에 impl walk 에서만 쓰던 변수를 display FQCN 에도 공유. 매핑
-      없으면 `svc_fqcn` 그대로 반환 → direct-impl 주입은 무영향.
-- [x] `/tmp/mock_vertx_post` (iface + impl) → service_class /
-      service_methods 가 `com.example.UserDefineServiceImpl#...` 로 확정.
-- [x] 직접 class 주입 회귀: `com.example.UserDefineService#...` 그대로.
-- [x] conventional commit + PR + squash-merge
-
 ---
 
 ## 12. SQL Migration — `convert-mapping` / `migration-impact` / `migrate-sql` / `validate-migration`
