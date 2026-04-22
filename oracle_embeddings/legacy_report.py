@@ -28,6 +28,19 @@ logger = logging.getLogger(__name__)
 LEGACY_SUBDIR = "legacy_analysis"
 
 
+# Matches the trailing ``(CRUD)`` CRUD letters that ``_format_table_crud``
+# appends to each table name in the Programs sheet. Used in
+# Tables Cross-Reference aggregation so the bare table name is used as
+# the dict key — otherwise ``CMN_BTN_ROLE(R)`` and ``CMN_BTN_ROLE(CR)``
+# would look like two different tables.
+_CRUD_SUFFIX_RE = re.compile(r"\s*\(\s*[CRUD]+\s*\)\s*$")
+
+
+def _bare_table_name(cell: str) -> str:
+    """Return the table name with the trailing ``(CRUD)`` stripped."""
+    return _CRUD_SUFFIX_RE.sub("", cell).strip()
+
+
 def _backend_slug(backend_dir: str) -> str:
     """Derive a filename-safe slug from the backend directory path.
 
@@ -342,6 +355,10 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     )
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     gray_fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
+    # Wrap text on data cells so Tables / RFC / Service / Query XML / SQL
+    # ids — which now pack multiple items as ``,\n`` or ``;\n`` — render
+    # with one item per visible line inside a single Excel cell.
+    data_align = Alignment(vertical="top", wrap_text=True)
 
     def _write_header(ws, headers):
         for col, h in enumerate(headers, 1):
@@ -355,6 +372,7 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
         for col, v in enumerate(values, 1):
             cell = ws.cell(row=row_num, column=col, value=v)
             cell.border = thin_border
+            cell.alignment = data_align
             if fill is not None:
                 cell.fill = fill
 
@@ -486,8 +504,13 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     for r in rows:
         if not r.get("related_tables"):
             continue
-        for t in [s.strip() for s in r["related_tables"].split(",") if s.strip()]:
-            table_to_programs.setdefault(t, []).append(r.get("program_name", ""))
+        # Programs sheet stores tables as ``TABLE_A(R),\nTABLE_B(CRU)``.
+        # Strip CRUD suffix so the Cross-Reference sheet keys by the
+        # bare table name and aggregates across CRUD variations.
+        for raw in [s.strip() for s in r["related_tables"].split(",") if s.strip()]:
+            t = _bare_table_name(raw)
+            if t:
+                table_to_programs.setdefault(t, []).append(r.get("program_name", ""))
     for i, (table, progs) in enumerate(sorted(table_to_programs.items()), 2):
         progs_sorted = sorted(set(progs))
         preview = ", ".join(progs_sorted[:10])
@@ -731,6 +754,10 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     )
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     gray_fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
+    # Wrap text on data cells so Tables / RFC / Service / Query XML / SQL
+    # ids — which now pack multiple items as ``,\n`` or ``;\n`` — render
+    # with one item per visible line inside a single Excel cell.
+    data_align = Alignment(vertical="top", wrap_text=True)
 
     def _write_header(ws, headers):
         for col, h in enumerate(headers, 1):
@@ -744,6 +771,7 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
         for col, v in enumerate(values, 1):
             cell = ws.cell(row=row_num, column=col, value=v)
             cell.border = thin_border
+            cell.alignment = data_align
             if fill is not None:
                 cell.fill = fill
 
@@ -865,7 +893,12 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
             continue
         program = r.get("program_name", "")
         project = r.get("backend_project", "")
-        for t in [s.strip() for s in r["related_tables"].split(",") if s.strip()]:
+        # Strip ``(CRUD)`` suffix so batch cross-ref keys by bare name
+        # (matches single-mode aggregation).
+        for raw in [s.strip() for s in r["related_tables"].split(",") if s.strip()]:
+            t = _bare_table_name(raw)
+            if not t:
+                continue
             table_to_programs.setdefault(t, []).append(program)
             if project:
                 table_to_projects.setdefault(t, []).append(project)

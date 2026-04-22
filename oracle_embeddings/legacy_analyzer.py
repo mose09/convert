@@ -303,11 +303,14 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         from ``TB_ORDER, TB_CUSTOMER`` for ``order.findAll``.
       * statement_to_xml_file  — ``{"ns.id": str}`` — the XML file path
         that contains the statement.
+      * statement_to_type      — ``{"ns.id": "SELECT"|"INSERT"|...}`` —
+        used to derive CRUD letters per table in the Programs report.
     """
     namespace_to_xml_files = {}
     namespace_to_tables = {}
     statement_to_tables = {}
     statement_to_xml_file = {}
+    statement_to_type = {}
     for stmt in mybatis_result.get("statements", []):
         ns = stmt.get("namespace") or ""
         stmt_id = stmt.get("id") or ""
@@ -322,13 +325,65 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
                 statement_to_tables.setdefault(key, set()).update(tables_for_stmt)
                 if "mapper_path" in stmt:
                     statement_to_xml_file.setdefault(key, stmt["mapper_path"])
+                stmt_type = (stmt.get("type") or "").upper()
+                if stmt_type and key not in statement_to_type:
+                    statement_to_type[key] = stmt_type
 
     return {
         "namespace_to_xml_files": {k: sorted(v) for k, v in namespace_to_xml_files.items()},
         "namespace_to_tables": {k: sorted(v) for k, v in namespace_to_tables.items()},
         "statement_to_tables": {k: sorted(v) for k, v in statement_to_tables.items()},
         "statement_to_xml_file": statement_to_xml_file,
+        "statement_to_type": statement_to_type,
     }
+
+
+# MyBatis statement type → CRUD letter mapping. ``STATEMENT`` /
+# ``PROCEDURE`` / unknown are returned as ``None`` — they won't
+# contribute a letter but the table still appears in the list.
+_STMT_TYPE_TO_CRUD = {
+    "SELECT": "R",
+    "INSERT": "C",
+    "UPDATE": "U",
+    "DELETE": "D",
+}
+
+
+def _stmt_type_to_crud(stmt_type: str) -> str | None:
+    """Return ``"C"`` / ``"R"`` / ``"U"`` / ``"D"`` or None for ambiguous."""
+    return _STMT_TYPE_TO_CRUD.get((stmt_type or "").upper())
+
+
+def _format_table_crud(tables: list[str], crud_map: dict[str, set]) -> str:
+    """Render the Programs-sheet Tables column.
+
+    For each table, append a ``(CRUD)`` suffix derived from ``crud_map``
+    (which maps table name → set of C/R/U/D letters). Items are joined
+    with ``",\\n"`` so Excel displays one table per line in a single
+    cell — users asked for at-a-glance reading of many tables.
+
+    The CRUD letters are sorted in canonical order (``C``, ``R``, ``U``,
+    ``D``). Tables with no known operation (e.g. parsed from a
+    ``<statement>`` tag we can't classify) get no suffix — the bare name
+    is still emitted so the user still sees which tables an endpoint
+    touches.
+    """
+    canonical = ("C", "R", "U", "D")
+    parts = []
+    for tbl in tables:
+        letters = crud_map.get(tbl) or set()
+        suffix = ""
+        if letters:
+            ordered = "".join(ch for ch in canonical if ch in letters)
+            if ordered:
+                suffix = f"({ordered})"
+        parts.append(f"{tbl}{suffix}")
+    return ",\n".join(parts)
+
+
+def _format_list_with_newlines(items: list[str]) -> str:
+    """Join a list with ``",\\n"`` so Excel wraps each item per line."""
+    return ",\n".join(items)
 
 
 # Name-based impl discovery suffixes. Legacy projects use many different
@@ -945,11 +1000,13 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
         mapper_fqcns = sorted(
             fqcn for fqcn in services if fqcn in indexes["mappers_by_fqcn"]
         )
+        table_crud = _derive_table_crud(sql_ids, mybatis_idx)
         return {
             "services": sorted(services),
             "service_methods": service_methods,
             "xml_files": sorted(xml_files),
             "tables": sorted(tables),
+            "table_crud": table_crud,
             "rfcs": sorted(rfcs),
             "sql_ids": sorted(sql_ids),
             "mapper_fqcns": mapper_fqcns,
@@ -964,16 +1021,44 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
     rfc_names = _collect_rfc_transitive(
         service_fqcns, indexes, controller.get("rfc_calls", []), depth=rfc_depth
     )
+    # Class-scope fallback has no per-statement resolution (it aggregates
+    # whole-class tables via namespace). Leave table_crud empty so tables
+    # still render but without suffix.
     return {
         "services": service_fqcns,
         "service_methods": [],
         "xml_files": xml_files_l,
         "tables": tables_l,
+        "table_crud": {},
         "rfcs": rfc_names,
         "sql_ids": [],
         "mapper_fqcns": mapper_fqcns,
         "resolved_via": "class-scope-fallback",
     }
+
+
+def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
+    """Build ``{table: set("C"|"R"|"U"|"D")}`` from resolved statement keys.
+
+    For each ``ns.id`` the endpoint actually calls we look up its type
+    (SELECT/INSERT/UPDATE/DELETE) and attach the corresponding CRUD
+    letter to every table that statement touches. A table reached by
+    multiple statements accumulates the union of letters.
+
+    Namespace-only fallback keys (no ``.id`` or unrecognized id) have no
+    known type — they contribute no letters, which is the desired
+    behavior (user still sees the table, with no suffix).
+    """
+    stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
+    stmt_to_type = mybatis_idx.get("statement_to_type", {})
+    out: dict[str, set] = {}
+    for key in sql_ids or ():
+        letter = _stmt_type_to_crud(stmt_to_type.get(key, ""))
+        if not letter:
+            continue
+        for tbl in stmt_to_tbl.get(key, ()):
+            out.setdefault(tbl, set()).add(letter)
+    return out
 
 
 def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[str]:
@@ -1140,14 +1225,20 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "frontend_trigger": frontend_trigger,
         "frontend_validation_summary": "",  # Phase B 가 나중에 채움
         "controller_class": controller["fqcn"],
-        "service_class": "; ".join(service_fqcns),
-        "service_methods": "; ".join(service_methods),
+        # 여러 항목이 들어가는 컬럼은 Excel 셀에서 한 항목당 한 줄씩
+        # 보이도록 ``;\n`` / ``,\n`` 로 구분. 셀은 wrap_text=True 가 이미
+        # 적용돼 있어 실제 줄바꿈으로 렌더됨. 단일 항목이면 개행 없음.
+        "service_class": ";\n".join(service_fqcns),
+        "service_methods": ";\n".join(service_methods),
         "biz_summary": "",       # Phase A: enrich_rows_with_biz 가 나중에 채움
         "biz_detail_key": "",    # Phase A: enrich_rows_with_biz 가 나중에 채움
-        "query_xml": "; ".join(_rel(p, backend_dir) for p in xml_files),
-        "sql_ids": "; ".join(sql_ids),
-        "related_tables": ", ".join(tables),
-        "rfc": ", ".join(rfc_names),
+        "query_xml": ";\n".join(_rel(p, backend_dir) for p in xml_files),
+        "sql_ids": ";\n".join(sql_ids),
+        # Tables rendered with per-table CRUD suffix and one-per-line so
+        # Excel cells wrap neatly (e.g. ``TABLE_A(R),\nTABLE_B(CRU)``).
+        # RFC uses the same comma-newline layout for symmetry.
+        "related_tables": _format_table_crud(tables, chain.get("table_crud") or {}),
+        "rfc": _format_list_with_newlines(rfc_names),
         "matched": menu_entry is not None,
         "resolved_via": chain.get("resolved_via", "method-scope"),
     }
