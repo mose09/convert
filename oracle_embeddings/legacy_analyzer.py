@@ -1003,6 +1003,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "frontend_project": "",
         "presentation_layer": "",
         "frontend_trigger": "",
+        "frontend_validation_summary": "",
         "controller_class": "",
         "service_class": "",
         "service_methods": "",
@@ -1116,6 +1117,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
             else (react_file or "")
         ),
         "frontend_trigger": frontend_trigger,
+        "frontend_validation_summary": "",  # Phase B 가 나중에 채움
         "controller_class": controller["fqcn"],
         "service_class": "; ".join(service_fqcns),
         "service_methods": "; ".join(service_methods),
@@ -1143,6 +1145,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    extract_biz: bool = False,
                    biz_scope: str = "both",
                    biz_max_methods: int = 500,
+                   biz_max_handlers: int = 300,
                    biz_use_cache: bool = True,
                    biz_config: dict | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
@@ -1527,11 +1530,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 "url": m.get("url", ""),
             })
 
-    # Business logic extraction (Phase A: backend only). opt-in via
+    # Business logic extraction (Phase A: backend; Phase B: frontend). opt-in via
     # ``extract_biz=True``. scope 는 이미 _resolve_endpoint_chain 이
     # 결정한 service_methods 집합을 재사용 (사용자 결정: 엔드포인트 체인에
     # 걸린 메서드만). biz_map 은 result dict 에 실려 report 가 시트로 emit.
     biz_map: dict = {}
+    fe_biz_map: dict = {}
     if extract_biz and biz_scope in ("backend", "both"):
         from . import legacy_biz_extractor as biz
         targets = biz.collect_chain_methods(rows, indexes)
@@ -1543,6 +1547,37 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             config=biz_config or {},
         )
         biz.enrich_rows_with_biz(rows, biz_map)
+
+    if extract_biz and biz_scope in ("frontend", "both") and frontend_dir:
+        from . import legacy_biz_extractor as biz
+        from .legacy_react_api_scanner import collect_handler_contexts
+        # single_api_index 는 analyzer 의 single-mode 경로에서만 채워짐.
+        # 사용자가 --frontend-dir 로 단일 프로젝트를 가리켰는데 analyzer 가
+        # multi 경로로 처리된 경우라도 frontend_dir 하나면 재스캔해서 Phase B
+        # 를 돌릴 수 있음. 진짜 multi-repo (frontends_root 여러 앱) 는
+        # per-app 반복이 필요해 Phase B3 로 미룸 — 현재는 병합 api_index 에
+        # 모든 URL 이 들어있어 fallback 동작.
+        api_idx = dict(single_api_index) if single_api_index else {}
+        if not api_idx:
+            # Rebuild on the fly from the merged multi-repo api_by_frontend.
+            for app_idx in (api_by_frontend or {}).values():
+                for url, files in (app_idx or {}).items():
+                    api_idx.setdefault(url, []).extend(files or [])
+        if api_idx:
+            handlers_by_url = collect_handler_contexts(
+                frontend_dir, api_idx, patterns or {},
+            )
+            if handlers_by_url:
+                fe_biz_map = biz.extract_frontend_biz_logic(
+                    handlers_by_url,
+                    patterns or {},
+                    max_handlers=biz_max_handlers,
+                    use_cache=biz_use_cache,
+                    config=biz_config or {},
+                )
+                biz.enrich_rows_with_frontend_biz(rows, fe_biz_map)
+        else:
+            print("  frontend biz: no API calls indexed — skip")
 
     resolved_method_scope = sum(
         1 for r in rows if r.get("resolved_via") == "method-scope"
@@ -1603,6 +1638,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "backend_project": backend_project,
         "frontend_dir": frontend_dir or "",
         "biz_map": biz_map,
+        "fe_biz_map": fe_biz_map,
     }
 
 
@@ -1655,6 +1691,7 @@ def analyze_legacy_batch(backends_root: str,
                         extract_biz: bool = False,
                         biz_scope: str = "both",
                         biz_max_methods: int = 500,
+                        biz_max_handlers: int = 300,
                         biz_use_cache: bool = True,
                         biz_config: dict | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
@@ -1729,6 +1766,7 @@ def analyze_legacy_batch(backends_root: str,
     all_rows = []
     all_unmatched = []
     all_biz_map: dict = {}
+    all_fe_biz_map: dict = {}
     all_orphans = []
     per_project_stats = {}
     project_frameworks = {}
@@ -1749,6 +1787,7 @@ def analyze_legacy_batch(backends_root: str,
             extract_biz=extract_biz,
             biz_scope=biz_scope,
             biz_max_methods=biz_max_methods,
+            biz_max_handlers=biz_max_handlers,
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
         )
@@ -1768,6 +1807,9 @@ def analyze_legacy_batch(backends_root: str,
         sub_biz = result.get("biz_map") or {}
         if sub_biz:
             all_biz_map.update(sub_biz)
+        sub_fe = result.get("fe_biz_map") or {}
+        if sub_fe:
+            all_fe_biz_map.update(sub_fe)
 
     # Aggregate stats across projects
     def _sum(key):
@@ -1817,4 +1859,5 @@ def analyze_legacy_batch(backends_root: str,
         "frontend_dir": frontend_dir or "",
         "is_batch": True,
         "biz_map": all_biz_map,
+        "fe_biz_map": all_fe_biz_map,
     }
