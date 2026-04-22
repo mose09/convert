@@ -1,3 +1,32 @@
+# TODO: 형태소 지침 템플릿 — 이커머스 도메인 패턴 반영 (원칙 전면 개편)
+
+기존 템플릿은 "pure tokenize" (언어 경계 분리) 중심이었으나 실제 업무에서는
+영문→한글 번역 / 의미 확장(담당→담당자) / 정규화(금→금액) / 괄호 내 코드
+리스트 감지 같은 **domain-aware enrichment** 가 필요함. 사용자 제공 7 패턴을
+few-shot 으로 삼고 원칙 섹션까지 개편.
+
+## 작업 항목
+
+- [x] 피처 브랜치 `claude/morpheme-guide-ecommerce-patterns` + TODO 섹션 추가
+- [x] `input/morpheme_guide_template.md` 원칙 1~6 전면 재작성:
+      * 원칙 1: 괄호 / 대괄호 제거 (+ 코드 힌트 감지 시 `코드` 토큰 추가)
+      * 원칙 2: 영문 업무 용어 한글 번역 (고유명사 / 업계 약어는 원본 유지)
+      * 원칙 3: 의미 확장 / 정규화 (담당→담당자 / 금→금액 / Duration→소요+시간)
+      * 원칙 4: 구분자 + CamelCase 분리
+      * 원칙 5: 한글 과분해 금지
+      * 원칙 6: 업계 약어 / 고유명사 보존
+- [x] Few-shot 7 예시 교체 완료 (사용자 제공 이커머스 패턴 그대로)
+- [x] 역할 섹션 — 반도체 → 이커머스/유통/공급망 도메인으로 변경,
+      "글자 단위 토큰화" 가 아닌 "도메인 의미 단위 분해" 강조
+- [x] Few-shot 선정 원칙 — 새 원칙 1~6 별 커버리지 매핑표 갱신
+      (원칙 6 은 아직 few-shot 미커버 → 운영 데이터 나오면 예시 8 추가 권장)
+- [x] smoke test: `load_guide` + `_build_user_prompt` 로 지침 로드 + 프롬프트
+      조립 검증, 7119자 / 주요 키워드 7종 (대괄호/담당자/금액/Cart-to-Purchase/
+      Checkout Duration/미수납금/주문) 모두 존재 확인
+- [ ] conventional commit + PR + squash-merge + local cleanup
+
+---
+
 # TODO: analyze-legacy 비즈니스 로직 추출 — Phase B (React 프론트) 완료
 
 - [x] `legacy_react_api_scanner` 확장:
