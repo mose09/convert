@@ -326,21 +326,31 @@ def _find_method_in_class(cls: Dict[str, Any], name: str) -> Optional[Dict[str, 
 
 def collect_chain_methods(rows: List[Dict[str, Any]],
                           indexes: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """rows 의 ``service_methods`` seed + 각 메서드의 intra-class self-call
-    전이 closure 를 BFS 로 수집해 dedup 후 method dict 리스트 반환.
+    """Endpoint 체인에 걸린 메서드를 BFS 로 수집해 dedup 후 반환.
 
-    service_methods 는 ``_resolve_endpoint_chain`` 이 inter-class 호출만
-    append 하므로 ``this.validateDates()`` / bare ``calculateTotal()`` 같이
-    같은 ServiceImpl 안 helper 는 누락됨. 체인 walker 는 이들을 방문하므로
-    biz 추출 scope 도 동일한 범위로 맞춰야 "엔드포인트가 도달하는 비즈니스
-    로직" 이 완전해진다.
+    Seeds (두 소스 합집합):
+      1. ``row["service_methods"]`` — inter-class Controller→Service 호출.
+         Spring 에서 ``@Autowired`` + ``svc.foo()`` 가 정상 resolve 된 경우.
+      2. ``row["controller_class"] + row["method_name"]`` — endpoint 자체.
+         Vert.x 처럼 Verticle handler 안에 비즈니스 로직이 인라인된 구조,
+         또는 Spring 에서 커스텀 주입으로 chain resolution 실패한 경우에
+         graceful degrade 로 endpoint body 를 biz 재료로 활용.
+
+    Intra-class self-call closure (explicit ``this.X()`` + bare ``X()``) 는
+    두 경우 모두 확장. false positive 위험은 ``_is_biz_candidate`` static
+    filter 가 처리 (trivial delegator / getter / 짧은 body 는 걸러냄).
     """
     svc_index = indexes.get("services_by_fqcn") or {}
+    ctrl_index = indexes.get("controllers_by_fqcn") or {}
+    mapper_index = indexes.get("mappers_by_fqcn") or {}
+    iface_to_impl = indexes.get("iface_to_impl") or {}
     seen: set = set()
     out: List[Dict[str, Any]] = []
 
-    # BFS queue of (fqcn, method_name) starting from service_methods seed
     queue: List[tuple] = []
+    seed_counts = {"service_methods": 0, "endpoint": 0}
+
+    # Seed 1 — service_methods 가 들어있는 row (inter-class chain 정상 resolve).
     for row in rows:
         sm = row.get("service_methods") or ""
         if not sm:
@@ -350,6 +360,46 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
                 continue
             fqcn, mname = entry.split("#", 1)
             queue.append((fqcn, mname))
+            seed_counts["service_methods"] += 1
+
+    # Seed 2 — endpoint method 자체. Vert.x Verticle 핸들러 / Spring 체인
+    # 미해결 케이스를 커버한다. 중복은 BFS 의 ``seen`` 이 dedup 처리.
+    for row in rows:
+        ctrl = row.get("controller_class") or ""
+        mname = row.get("method_name") or ""
+        if ctrl and mname:
+            queue.append((ctrl, mname))
+            seed_counts["endpoint"] += 1
+
+    lookup_stats = {"iface_resolved": 0, "not_found": 0}
+
+    def _resolve(fqcn: str, mname: str) -> tuple:
+        """Class/method lookup with iface→impl fallback.
+
+        Returns ``(cls, method, resolved_fqcn)`` or ``(None, None, fqcn)``.
+        iface 가 services_by_fqcn 에 등록돼 있지만 메서드 body 는 impl 에만
+        있는 일반적 Spring 패턴 (``OrderService`` 인터페이스 + ``OrderServiceImpl``
+        구현) 에서는 interface 쪽 cls 가 잡혀도 method 가 없음 → iface_to_impl
+        로 한 번 더 시도해야 한다. 따라서 lookup 은 ``cls 없음`` 경로 뿐 아니라
+        ``method 없음`` 경로에서도 impl 로 재시도.
+        """
+        cls = (svc_index.get(fqcn)
+               or ctrl_index.get(fqcn)
+               or mapper_index.get(fqcn))
+        if cls is not None:
+            m = _find_method_in_class(cls, mname)
+            if m is not None:
+                return cls, m, fqcn
+        impl_fqcn = iface_to_impl.get(fqcn)
+        if impl_fqcn and impl_fqcn != fqcn:
+            impl_cls = (svc_index.get(impl_fqcn)
+                        or ctrl_index.get(impl_fqcn)
+                        or mapper_index.get(impl_fqcn))
+            if impl_cls is not None:
+                m = _find_method_in_class(impl_cls, mname)
+                if m is not None:
+                    return impl_cls, m, impl_fqcn
+        return None, None, fqcn
 
     while queue:
         fqcn, mname = queue.pop(0)
@@ -357,20 +407,23 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
         if key in seen:
             continue
         seen.add(key)
-        cls = svc_index.get(fqcn)
-        if not cls:
+        cls, method, resolved_fqcn = _resolve(fqcn, mname)
+        if cls is None or method is None:
+            lookup_stats["not_found"] += 1
             continue
-        method = _find_method_in_class(cls, mname)
-        if method is None:
-            continue
+        if resolved_fqcn != fqcn:
+            lookup_stats["iface_resolved"] += 1
+            # seen 키에 impl FQCN 도 추가해 BFS 중복 방지
+            seen.add((resolved_fqcn, mname))
+            fqcn = resolved_fqcn
         out.append({
             "fqcn": fqcn,
             "name": mname,
             "body": method.get("body", "") or "",
         })
-        # Intra-class self-calls → 같은 클래스의 다른 메서드로 BFS 확장.
-        # ``legacy_java_parser`` 가 bare call 도 synthetic ``receiver="this"``
-        # 로 저장하므로 이 하나로 explicit ``this.X()`` / bare ``X()`` 둘 다 커버.
+        # Intra-class self-call 전이 closure. ``legacy_java_parser`` 가
+        # bare call 도 synthetic ``receiver="this"`` 로 저장하므로 explicit
+        # ``this.X()`` / bare ``X()`` 둘 다 한 번에 잡힌다.
         for fc in method.get("body_field_calls") or []:
             if fc.get("receiver") != "this":
                 continue
@@ -378,6 +431,17 @@ def collect_chain_methods(rows: List[Dict[str, Any]],
             if target and (fqcn, target) not in seen:
                 if _find_method_in_class(cls, target) is not None:
                     queue.append((fqcn, target))
+
+    if out or sum(seed_counts.values()):
+        extra = ""
+        if lookup_stats["iface_resolved"]:
+            extra += f", {lookup_stats['iface_resolved']} iface→impl 해석"
+        if lookup_stats["not_found"]:
+            extra += f", {lookup_stats['not_found']} 미해결 (class/method 인덱스 miss)"
+        print(f"  biz extraction seeds: "
+              f"{seed_counts['service_methods']} service_methods + "
+              f"{seed_counts['endpoint']} endpoints → "
+              f"{len(out)} unique methods (BFS closure 포함{extra})")
     return out
 
 
@@ -464,7 +528,14 @@ def extract_backend_biz_logic(
 
     candidates = [m for m in target_methods if _is_biz_candidate(m, patterns or {})]
     if not candidates:
-        print("  biz extraction: no candidate methods after static filter")
+        if not target_methods:
+            print("  biz extraction: no methods collected — endpoint chain "
+                  "empty (check 'services=' / 'Method-scope resolution' 위 로그; "
+                  "custom 주입 / 네이밍이라 체인이 끊겼을 가능성)")
+        else:
+            print(f"  biz extraction: 0 candidates after static filter "
+                  f"({len(target_methods)} methods 전부 trivial 로 판정됨 — "
+                  f"body 짧고 biz 키워드 없음)")
         return {}
 
     if len(candidates) > max_methods:
