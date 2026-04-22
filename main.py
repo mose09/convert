@@ -1409,6 +1409,60 @@ def cmd_all(args):
     cmd_erd(args)
 
 
+def cmd_morpheme(args):
+    """Morpheme analysis — LLM 기반 속성명 단어 분해."""
+    from oracle_embeddings.morpheme_analyzer import (
+        analyze_morphemes,
+        load_attributes_txt,
+        load_guide,
+    )
+    from oracle_embeddings.morpheme_report import (
+        save_morpheme_excel,
+        save_morpheme_markdown,
+    )
+
+    load_dotenv()
+    config = load_config(args.config)
+
+    default_output = os.path.join(
+        config.get("storage", {}).get("output_dir", "./output"),
+        "morpheme",
+    )
+    output_dir = args.output or default_output
+
+    print("=== Step 1: Loading inputs ===")
+    print(f"  Input: {args.input}")
+    print(f"  Guide: {args.guide}")
+    attrs = load_attributes_txt(args.input)
+    guide_text = load_guide(args.guide)
+    print(f"  Attributes loaded: {len(attrs):,} (중복 제거 후)")
+
+    if not attrs:
+        print("  Error: 입력 속성이 없습니다.")
+        return
+
+    print("\n=== Step 2: LLM Morpheme Analysis ===")
+    results, stats = analyze_morphemes(
+        attrs,
+        guide_text,
+        config,
+        batch_size=args.batch_size,
+        parallel=args.parallel,
+        timeout=args.timeout,
+    )
+
+    print("\n=== Step 3: Saving Reports ===")
+    md_path = save_morpheme_markdown(results, stats, output_dir, args.guide)
+    xlsx_path = save_morpheme_excel(results, output_dir)
+
+    print(f"\n  Markdown: {os.path.abspath(md_path)}")
+    print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+    print(
+        f"\n  Total: {stats.total:,} / Success: {stats.success:,} / "
+        f"Low conf: {stats.low_confidence:,} / Failed: {stats.parse_failed:,}"
+    )
+
+
 def cmd_analyze_legacy(args):
     """Analyze AS-IS legacy sources (backend + frontend + DB menu).
 
@@ -1889,6 +1943,36 @@ def main():
     mi_parser.add_argument("--output",
                            help="출력 Excel 경로 (기본: output/sql_migration/impact_report_TIMESTAMP.xlsx)")
 
+    # morpheme command
+    morph_parser = subparsers.add_parser(
+        "morpheme",
+        help="형태소분석 — LLM 으로 속성명을 단어 단위로 분해 (지침 md + txt 입력)",
+    )
+    morph_parser.add_argument(
+        "--input", required=True,
+        help="속성명 목록 텍스트 파일 (한 줄당 1속성, # 주석 허용)",
+    )
+    morph_parser.add_argument(
+        "--guide", required=True,
+        help="형태소분석 지침 Markdown 파일 (input/morpheme_guide_template.md 참고). 필수.",
+    )
+    morph_parser.add_argument(
+        "--batch-size", type=int, default=None,
+        help="LLM 배치 크기. 미지정 시 평균 속성 길이 기반 자동 (10~50 clamp).",
+    )
+    morph_parser.add_argument(
+        "--parallel", type=int, default=1,
+        help="동시 호출 배치 수 (기본 1). 사내 LLM rate limit 확인 후 조정.",
+    )
+    morph_parser.add_argument(
+        "--timeout", type=int, default=120,
+        help="배치당 LLM timeout 초 (기본 120).",
+    )
+    morph_parser.add_argument(
+        "--output",
+        help="출력 디렉토리 (기본: output/morpheme/)",
+    )
+
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
@@ -1942,6 +2026,8 @@ def main():
         cmd_migrate_sql(args)
     elif args.command == "validate-migration":
         cmd_validate_migration(args)
+    elif args.command == "morpheme":
+        cmd_morpheme(args)
     elif args.command == "all":
         cmd_all(args)
     else:
