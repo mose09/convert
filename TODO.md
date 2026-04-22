@@ -1,3 +1,52 @@
+# TODO: analyze-legacy 비즈니스 로직 추출 — Phase B (React 프론트) 완료
+
+- [x] `legacy_react_api_scanner` 확장:
+      - `_locate_handler_body(max_chars=4000)` 파라미터화 (Phase B 는 8000)
+      - `_locate_handler_start` 헬퍼 분리
+      - `_locate_enclosing_jsx` — handler 선행 2000자 + 후행 3000자 JSX slice
+      - `_VALIDATION_PROP_RE` + `extract_validation_props` — JSX props
+        (required/pattern/minLength/maxLength/min/max/type) regex 추출
+      - `collect_handler_contexts(frontend_dir, api_index, patterns)` —
+        `{url: [{file, handler, label, body, jsx_slice, validation_props}]}`
+- [x] `legacy_biz_extractor` Phase B 추가:
+      - `FrontendBizResult` dataclass (field_validations / pre_checks /
+        conditional_calls / state_reads / summary + identity fields)
+      - `_FRONTEND_SYSTEM_PROMPT` + `_FRONTEND_USER_PROMPT_TEMPLATE`
+      - `extract_frontend_biz_logic` — dedup by (file,handler,url) key +
+        batch LLM + per-blob SHA-256 cache (`fe_<hash>.json`) + regex
+        fallback summary (`_fallback_frontend_summary`: jsx props / if /
+        throw / alert count)
+      - `enrich_rows_with_frontend_biz` — (url, file) 인덱스로 row 매칭,
+        `frontend_validation_summary` 에 최대 3건 summary "; " join
+      - `frontend_biz_sheet_rows` — Frontend Logic 시트 데이터
+- [x] `analyze_legacy` / `analyze_legacy_batch` 에 `biz_max_handlers` 인자
+      + `biz_scope in (frontend, both)` 분기. single_api_index 가 비어
+      있으면 api_by_frontend 로 병합해 재스캔
+- [x] result dict 에 `fe_biz_map` 노출, batch 모드 sub-run 병합
+- [x] row 기본값 / `_build_row` 에 `frontend_validation_summary` 추가
+- [x] `legacy_report`:
+      - `_BATCH_COLUMNS_WITH_MENU` / `_SINGLE_COLUMNS_WITH_MENU` 에
+        `Frontend Validation` 컬럼 (Trigger 다음)
+      - `_SINGLE_COLUMNS_NO_MENU` 도 React 컬럼 다음에 추가
+      - `_write_frontend_biz_sheet` 공용 헬퍼 (10컬럼: Screen / Button /
+        Handler / URL / Field Validations / Pre-checks / Conditional Calls /
+        State Reads / Summary / Source)
+      - single + batch 모드 모두 fe_biz_map 있을 때 시트 emit
+- [x] `main.py` 가 `--biz-max-handlers` 도 실제로 전달
+- [x] 검증 (CLI end-to-end):
+      * Mock: `/tmp/mock_biz_phaseB/{frontend,backend}` — React `handleSave`
+        가 required/pattern/minLength/maxLength/min/max/type JSX props 7개
+        + 3 if + 2 alert + 조건부 axios.post 두 URL (`/order/save`,
+        `/order/update`) 보유
+      * LLM endpoint down → 양쪽 (backend + frontend) 모두 fallback regex
+        summary 채움. Frontend Logic 시트 2행 (2 URL 매핑) 생성. Programs
+        Frontend Validation 컬럼에도 요약 인라인
+      * 플래그 off → Business Logic / Frontend Logic 시트 모두 생성 안 됨
+        (회귀 없음)
+      * Phase A 5/5 통과 유지
+
+---
+
 # TODO: 형태소분석 (morpheme) 커맨드 — LLM 기반 속성명 단어 분해 리포트
 
 CLAUDE.md 작업규칙 §1 준수용 상단 할 일 목록.

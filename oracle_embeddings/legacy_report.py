@@ -256,6 +256,67 @@ def _write_biz_logic_sheet(wb, biz_map: dict, rows: list[dict]) -> None:
     ws.freeze_panes = "A2"
 
 
+def _write_frontend_biz_sheet(wb, fe_biz_map: dict) -> None:
+    """Phase B: Frontend Logic 시트 (React handler 단위, 8컬럼).
+
+    columns: Screen | Button | Handler | URL | Field Validations |
+             Pre-checks | Conditional Calls | State Reads | Summary | Source
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from .legacy_biz_extractor import frontend_biz_sheet_rows
+
+    ws = wb.create_sheet("Frontend Logic")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(
+        start_color="0F3460", end_color="0F3460", fill_type="solid",
+    )
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    headers = [
+        "Screen", "Button", "Handler", "URL",
+        "Field Validations", "Pre-checks", "Conditional Calls",
+        "State Reads", "Summary", "Source",
+    ]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    sheet_rows = frontend_biz_sheet_rows(fe_biz_map)
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    fallback_fill = PatternFill(
+        start_color="FFF2CC", end_color="FFF2CC", fill_type="solid",
+    )
+    for i, r in enumerate(sheet_rows, 2):
+        values = [
+            r["screen"], r["button"], r["handler"], r["url"],
+            r["field_validations"], r["pre_checks"], r["conditional_calls"],
+            r["state_reads"], r["summary"], r["source"],
+        ]
+        fill = fallback_fill if r["source"] == "fallback" else None
+        for col, v in enumerate(values, 1):
+            cell = ws.cell(row=i, column=col, value=v)
+            cell.border = thin_border
+            cell.alignment = wrap_align
+            if fill is not None:
+                cell.fill = fill
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                longest = max(len(line) for line in str(cell.value).split("\n"))
+                max_len = max(max_len, longest)
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
+    ws.freeze_panes = "A2"
+
+
 def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
@@ -440,6 +501,9 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     biz_map = result.get("biz_map") or {}
     if biz_map:
         _write_biz_logic_sheet(wb, biz_map, rows)
+    fe_biz_map = result.get("fe_biz_map") or {}
+    if fe_biz_map:
+        _write_frontend_biz_sheet(wb, fe_biz_map)
 
     wb.save(filepath)
     logger.info("Legacy excel saved: %s", filepath)
@@ -464,6 +528,7 @@ _BATCH_COLUMNS_WITH_MENU = [
     ("Frontend project",  "frontend_project"),
     ("Frontend screen",   "presentation_layer"),
     ("Trigger",           "frontend_trigger"),
+    ("Frontend Validation", "frontend_validation_summary"),
     ("Backend project",   "backend_project"),
     ("Backend framework", "backend_framework"),
     ("Program",           "program_name"),
@@ -507,6 +572,7 @@ _SINGLE_COLUMNS_WITH_MENU = [
     ("Frontend project",  "frontend_project"),
     ("Frontend screen",   "presentation_layer"),
     ("Trigger",           "frontend_trigger"),
+    ("Frontend Validation", "frontend_validation_summary"),
     ("Program",           "program_name"),
     ("HTTP",              "http_method"),
     ("Controller URL",    "url"),
@@ -527,6 +593,7 @@ _SINGLE_COLUMNS_NO_MENU = [
     ("URL",               "url"),
     ("File",              "file_name"),
     ("React",             "presentation_layer"),
+    ("Frontend Validation", "frontend_validation_summary"),
     ("Controller",        "controller_class"),
     ("Service",           "service_class"),
     ("Service method",    "service_methods"),
@@ -819,6 +886,9 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     biz_map = result.get("biz_map") or {}
     if biz_map:
         _write_biz_logic_sheet(wb, biz_map, rows)
+    fe_biz_map = result.get("fe_biz_map") or {}
+    if fe_biz_map:
+        _write_frontend_biz_sheet(wb, fe_biz_map)
 
     wb.save(filepath)
     logger.info("Legacy batch excel saved: %s", filepath)
