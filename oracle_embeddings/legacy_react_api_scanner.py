@@ -51,6 +51,46 @@ _DEFAULT_API_METHODS = (
 )
 
 
+# redux-saga effects 래퍼: URL 이 2번째 인자에 오거나 (A), 1번째 인자가
+# api 모듈 함수 참조라 URL 이 다른 파일에 있는 경우 (B) 를 잡기 위한 패턴.
+# ``call``/``apply`` 는 redux-saga 의 기본 effects 이름. 같은 이름이
+# ``Function.prototype.call`` 에서도 쓰이지만 그 경우 1번째 인자가
+# ``this`` 문맥 + 2번째 인자가 URL 리터럴인 경우는 실무에서 드물다.
+_SAGA_WRAPPERS = ("call", "apply")
+
+
+# A: ``call(fn, '/api/x', ...)`` / ``apply(fn, '/api/x', ...)``
+# 1번째 인자는 식별자 또는 dotted 참조 (axios.get / api.fetchUser).
+# 2번째 인자는 URL 리터럴 (리터럴이 없으면 매칭 안 됨 → 기존 regex 와
+# 역할 분리가 명확).
+_SAGA_CALL_LITERAL_RE = re.compile(
+    r"""\b(?P<wrapper>call|apply)\s*\(
+         \s*(?P<fn>[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*)\s*,
+         \s*(?P<quote>['"`])(?P<url>(?:https?:/)?/[^'"`\n]+?)(?P=quote)
+     """,
+    re.VERBOSE,
+)
+
+
+# B: ``call(fn, ...)`` / ``call(X.fn, ...)`` — 1번째 인자의 dotted 참조
+# 마지막 segment 만 캡처 (``api.fetchUser`` → ``fetchUser``). api 모듈 함수
+# 인덱스 lookup 용.
+_SAGA_CALL_INDIRECT_RE = re.compile(
+    r"""\b(?P<wrapper>call|apply)\s*\(
+         \s*(?:[A-Za-z_$][\w$]*\.)?(?P<fn>[A-Za-z_$][\w$]*)\s*[,)]
+     """,
+    re.VERBOSE,
+)
+
+
+# B 가 잘못 잡을 만한 일반 이름 — Function.prototype.call 계열. 이 이름들은
+# api 함수 인덱스에 있더라도 false positive 방지를 위해 skip.
+_SAGA_INDIRECT_SKIP_NAMES = frozenset({
+    "this", "self", "bind", "call", "apply", "console",
+    "Object", "Array", "String", "Number", "Boolean",
+})
+
+
 def _scan_dir(base: str) -> list[str]:
     out = []
     for root, dirs, names in os.walk(base):
@@ -140,6 +180,73 @@ def _collect_url_constants(files: list[str], const_files_hint: list[str]) -> dic
     return const_map
 
 
+# ── Global function body index (B) ──────────────────────────────
+
+
+# top-level 선언 + 클래스/객체 메서드 shorthand. body 는 선언 시점부터 4000
+# 문자까지 slice 해서 가볍게 유지 — 정확한 balanced-brace 파싱은 regex
+# 스캐너 범위 밖. 이 slice 안에서 axios/fetch URL 을 찾는 게 목적.
+_FN_DECL_RE = re.compile(
+    r"""(?:^|[\n;{}])\s*
+        (?:export\s+(?:default\s+)?)?
+        (?:
+            (?:async\s+)?function\s*\*?\s*(?P<fn_func>[A-Za-z_$][\w$]*)\s*\(
+          | (?:const|let|var)\s+(?P<fn_arrow>[A-Za-z_$][\w$]*)\s*=\s*
+              (?:async\s*)?(?:function\s*\*?\s*\([^)]*\)|\([^)]*\)\s*=>|\w+\s*=>)
+        )
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]]]:
+    """Return ``{fn_name: [(file_path, body_slice), ...]}`` for API resolution.
+
+    Single-pass scan of every candidate file. Name collisions (same ``fn``
+    defined in multiple files) keep all entries — the indirect resolver
+    walks every candidate body since we can't cheaply resolve imports via
+    regex. Over-resolution is harmless: resolved bodies that don't contain
+    API calls simply produce no URLs.
+    """
+    index: dict[str, list[tuple[str, str]]] = {}
+    for fp in files:
+        try:
+            content = _read_file_safe(fp, limit=80000)
+        except Exception:
+            continue
+        for m in _FN_DECL_RE.finditer(content):
+            name = m.group("fn_func") or m.group("fn_arrow")
+            if not name:
+                continue
+            start = m.start()
+            body = content[start : start + 4000]
+            index.setdefault(name, []).append((fp, body))
+    return index
+
+
+def _scan_body_for_urls(body: str, call_re, const_map: dict[str, str],
+                         strip_patterns) -> set[str]:
+    """Extract normalized URLs from a function body slice.
+
+    Shared between direct-call scanning and indirect saga resolution so
+    both paths use the same literal/template/const-var logic.
+    """
+    out: set[str] = set()
+    for m in call_re.finditer(body):
+        raw = m.group("url") or ""
+        if not raw:
+            var = m.group("var") or ""
+            if not var:
+                continue
+            raw = const_map.get(var, "")
+            if not raw:
+                continue
+        canonical = normalize_url(_normalize_template(raw), strip_patterns)
+        if canonical:
+            out.add(canonical)
+    return out
+
+
 def _normalize_template(url: str) -> str:
     """Replace JS template expressions ``${...}`` with the ``{p}`` token.
 
@@ -178,11 +285,20 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
 
     index: dict[str, set[str]] = {}
     matches_count = 0
+    saga_literal_count = 0
+    saga_indirect_count = 0
+
+    # 각 파일의 내용을 한 번만 읽어 재사용 — B (간접 호출 해석) 에서도
+    # 같은 content 를 다시 훑기 때문.
+    file_contents: dict[str, str] = {}
     for fp in files:
         try:
-            content = _read_file_safe(fp)
+            file_contents[fp] = _read_file_safe(fp)
         except Exception:
             continue
+
+    # ── Phase 0: 직접 호출 (axios.get / fetch / custom wrapper) ──
+    for fp, content in file_contents.items():
         rel = os.path.relpath(fp, frontend_dir)
         for m in call_re.finditer(content):
             raw = m.group("url") or ""
@@ -199,8 +315,55 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
             index.setdefault(canonical, set()).add(rel)
             matches_count += 1
 
-    logger.info("API URL index for %s: %d urls from %d calls across %d files",
-                frontend_dir, len(index), matches_count, len(files))
+    # ── Phase A: redux-saga ``call(fn, '/url')`` — URL 이 2번째 인자 ──
+    # 1번째 인자의 leaf name 이 ``Function.prototype.call`` 계열 (this/bind
+    # 등) 이면 skip. ``arr.call(this, '/path')`` 같은 false positive 방지.
+    for fp, content in file_contents.items():
+        if "call(" not in content and "apply(" not in content:
+            continue
+        rel = os.path.relpath(fp, frontend_dir)
+        for m in _SAGA_CALL_LITERAL_RE.finditer(content):
+            fn_ref = m.group("fn") or ""
+            leaf = fn_ref.rsplit(".", 1)[-1]
+            if leaf in _SAGA_INDIRECT_SKIP_NAMES:
+                continue
+            raw = m.group("url") or ""
+            if not raw:
+                continue
+            canonical = normalize_url(_normalize_template(raw), strip_patterns)
+            if not canonical:
+                continue
+            index.setdefault(canonical, set()).add(rel)
+            saga_literal_count += 1
+
+    # ── Phase B: redux-saga ``call(api.fn)`` — 간접 호출 해석 ──
+    # 전역 함수 body 인덱스를 빌드해서 saga 파일에서 참조하는 함수 이름을
+    # 본체까지 따라간다. import 해석 없이 이름 기반 global lookup — 같은
+    # 이름이 여러 파일에 있으면 모두 후보로 스캔. 후보 본체에 실제로
+    # axios/fetch 호출이 없으면 자연스럽게 매칭 없음.
+    fn_index = _collect_function_bodies(files)
+    for fp, content in file_contents.items():
+        if "call(" not in content and "apply(" not in content:
+            continue
+        rel = os.path.relpath(fp, frontend_dir)
+        seen_fns_here: set[str] = set()
+        for m in _SAGA_CALL_INDIRECT_RE.finditer(content):
+            fn_name = m.group("fn") or ""
+            if not fn_name or fn_name in _SAGA_INDIRECT_SKIP_NAMES:
+                continue
+            if fn_name in seen_fns_here:
+                continue
+            seen_fns_here.add(fn_name)
+            bodies = fn_index.get(fn_name) or []
+            for (_body_fp, body) in bodies:
+                for url in _scan_body_for_urls(body, call_re, const_map, strip_patterns):
+                    index.setdefault(url, set()).add(rel)
+                    saga_indirect_count += 1
+
+    logger.info("API URL index for %s: %d urls from %d calls across %d files "
+                "(saga literal=%d, saga indirect=%d)",
+                frontend_dir, len(index), matches_count, len(files),
+                saga_literal_count, saga_indirect_count)
     return {k: sorted(v) for k, v in index.items()}
 
 
