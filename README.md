@@ -14,6 +14,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
+| `morpheme` | 형태소분석 — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일 시트 xlsx + md 요약) | X | O |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
@@ -725,6 +726,81 @@ python main.py validate-migration `
 
 `cursor.parse()` 로 실행 없이 구문 + 스키마 검증만. `--dry-run` 으로 DB 없이
 statement 수집 구조만 확인 가능.
+
+---
+
+### 13. 형태소분석 (morpheme)
+
+속성명 텍스트 파일 (예: 한 줄당 `BACKEND지역값`, `LOT_ID_LIST`, `설비가동률현황` 등
+~2만개) 을 LLM 으로 **단어 경계 단위로 분해** 해 표준화 우선순위 판단에 쓸
+리포트를 만듭니다. `terms` 가 약어/영문명/한글명의 "의미 해석" 이라면 `morpheme`
+은 그 앞 단계의 "단어 분리" 에 특화된 커맨드입니다.
+
+**1) 지침 템플릿 복사 후 프로젝트 도메인에 맞게 수정**:
+
+```powershell
+copy input\morpheme_guide_template.md input\morpheme_guide.md
+# morpheme_guide.md 를 열어 원칙/Few-shot/업계 약어 리스트를 도메인에 맞춰 조정
+# (gitignore 가 *_template.* 외 input/ 파일은 자동 제외합니다)
+```
+
+지침 템플릿에 기본 포함되는 것:
+
+- 역할 + 원칙 6개 (언어 경계 자동 분리 / 구분자 처리 / CamelCase 분리 /
+  업계 표준 약어 보존 / 숫자 suffix 규칙 / 한글 과분해 금지)
+- Few-shot 예시 7개 (원칙 1~6 각각 커버 + 엣지 케이스 1. 권장 5~8)
+- 배치 처리 규칙 (자동 조정 공식, JSON 실패 시 축소 재시도 정책)
+- 속도 추정표 (2만건 기준, Ollama / vLLM / 사내 게이트웨이별)
+
+**2) 속성명 파일 준비** (`attrs.txt` — 한 줄당 1속성, `#` 주석 허용):
+
+```
+# 반도체 제조 + 공급망 속성 2만건
+BACKEND지역값
+WAFER_LOT_ID
+설비가동률현황
+FABRunRate2024
+PPID관리번호
+...
+```
+
+**3) 실행**:
+
+```powershell
+python main.py morpheme `
+  --input C:\work\attrs.txt `
+  --guide input\morpheme_guide.md
+
+# 배치/병렬 튜닝 (기본 자동)
+python main.py morpheme --input attrs.txt --guide input\morpheme_guide.md `
+  --batch-size 30 --parallel 4 --timeout 120
+```
+
+기본 배치 크기: `max(10, min(50, 1200 // 평균 속성길이))` 자동. 사내 LLM
+게이트웨이에서 rate limit 이 여유 있다면 `--parallel 4` 정도로 올려도 됩니다.
+
+**산출물** (`output/morpheme/`):
+
+```
+output/morpheme/
+├── morpheme_TIMESTAMP.md    # Summary + 저신뢰/실패/잘림 상위 20 샘플
+└── morpheme_TIMESTAMP.xlsx  # 단일 시트 "형태소분석" (15 컬럼)
+    └── 속성명 | 컨피던스 | 단어1 | 단어2 | ... | 단어12 | 비고
+```
+
+xlsx 행 하이라이트:
+- **노랑** — `confidence < 0.7` 저신뢰도 (수동 검토 큐)
+- **빨강** — 파싱 실패 (LLM 응답 누락/형식 오류, 2단계 재시도 후 실패 건)
+- **파랑** — 단어 13개 이상 → 단어12 까지만 저장, 비고에 "13번째 이후 N개
+  생략: ..." 기록
+
+**처리 시간 추정 (2만 건 기준)**:
+
+| LLM 환경 | 스루풋 | 순차 | 4병렬 |
+|---------|--------|------|-------|
+| Ollama CPU | 30 tok/s | 7.4h | 1.9h |
+| vLLM 중급 GPU | 80 tok/s | 2.8h | 42분 |
+| 사내 게이트웨이 | 200+ tok/s | 67분 | 17분 |
 
 ---
 
