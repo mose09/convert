@@ -501,30 +501,85 @@ python main.py analyze-legacy `
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
 | `--frontend-framework` | `auto` / `react` / `polymer` 강제 지정 |
 | `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 2) |
-| `--extract-biz-logic` | ServiceImpl 비즈니스 로직 LLM 추출 (opt-in, 별도 `Business Logic` 시트 + Program Detail 요약 컬럼) |
-| `--biz-scope {backend,frontend,both}` | biz 추출 범위 제한. Phase A 는 backend 만 실제 동작 |
-| `--biz-max-methods N` | LLM 에 보낼 메서드 수 hard cap (기본 500) |
-| `--no-biz-cache` | 디스크 캐시 비활성 (기본 캐시 on — 재실행 0 LLM 호출) |
+| **`--extract-biz-logic`** | **비즈니스 로직 LLM 추출 on/off (기본 off, 회귀 없음)** |
+| `--biz-scope {backend,frontend,both}` | 추출 범위 (기본 `both`) |
+| `--biz-max-methods N` | 백엔드 메서드 LLM 호출 cap (기본 500) |
+| `--biz-max-handlers N` | React handler LLM 호출 cap (기본 300) |
+| `--no-biz-cache` | 디스크 캐시 끔 (기본 on — 재실행 0 LLM 호출) |
 
-**비즈니스 로직 추출** (`--extract-biz-logic`)
+---
 
-`PATTERN_LLM_*` 환경변수로 연결된 사내 LLM 엔드포인트에 엔드포인트 체인이
-도달한 ServiceImpl 메서드 body 를 배치 (기본 6개씩) 로 보내 validation /
-biz_rules / state_changes / calculations / external_calls / summary 을
-구조화 JSON 으로 추출합니다. Scope 는 `_resolve_endpoint_chain` 이 이미
-준 메서드 집합 + intra-class self-call closure (BFS) 라 자동 축소됨
-(LLM 비용 통제). 결과는:
+**🧠 비즈니스 로직 + Validation 추출 (Quick Start)**
 
-- **Program Detail** 시트에 `Business Logic` 컬럼 (요약 한 줄)
-- 별도 **Business Logic** 시트 (9 컬럼 — Service#Method / Validations / Biz
-  Rules / State Changes / Calculations / External Calls / Summary / Source /
-  Programs). `Source=cache/fallback` 은 각각 정상 cache hit / LLM 실패 후
-  regex fallback 임을 표시
+`--extract-biz-logic` 한 플래그로 **백엔드 ServiceImpl 의 비즈니스 로직**과
+**React 프론트엔드의 validation / 조건부 로직**을 LLM 으로 구조화 추출해
+별도 시트 + Program Detail 요약 컬럼에 내보냅니다. 기본 off (회귀 없음).
 
-LLM 다운 상황에서도 regex 로 `if N; throw M; sql K` 같은 static summary
-가 채워져 분석이 중단되지 않습니다. 재실행 시 method body SHA-256 기반
-disk cache (`output/legacy_analysis/.biz_cache/`) 가 hit 되어 LLM 호출
-0 건.
+### 실행 예시
+
+```powershell
+# 1) 백엔드만 (Spring/Vert.x) — 가장 작은 scope
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --skip-menu `
+  --extract-biz-logic --biz-scope backend
+
+# 2) 프론트엔드만 (React validation / onClick 조건부 로직)
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --frontend-dir C:\work\frontend `
+  --skip-menu `
+  --extract-biz-logic --biz-scope frontend
+
+# 3) 둘 다 (권장)
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --frontend-dir C:\work\frontend `
+  --menu-md input\menu.md `
+  --patterns output\legacy_analysis\patterns.yaml `
+  --extract-biz-logic --biz-scope both
+
+# 4) 멀티 레포 모노레포 (실무 시나리오)
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backend `
+  --frontends-root C:\workspace\frontend `
+  --menu-md input\menu.md `
+  --patterns output\legacy_analysis\patterns.yaml `
+  --menu-only --extract-biz-logic
+```
+
+### LLM 연결 (`.env`)
+
+추출은 사내 LLM 게이트웨이 (`PATTERN_LLM_*` env) 를 사용. 미설정 시 `LLM_*` 로 fallback:
+
+```env
+PATTERN_LLM_API_BASE=https://사내LLM/v1
+PATTERN_LLM_API_KEY=<key>
+PATTERN_LLM_MODEL=qwen2.5-coder:14b    # 코드 특화 모델 권장
+```
+
+엔드포인트가 죽었거나 네트워크 실패 시에도 분석은 **regex fallback summary**
+로 계속 진행 (`"if 3; throw 2; sql 1 (static heuristic)"` 같은 static 한 줄).
+
+### 추출 결과
+
+| 시트 | 컬럼 |
+|------|------|
+| **Business Logic** (백엔드) | Service#Method \| Validations \| Biz Rules \| State Changes \| Calculations \| External Calls \| Summary \| Source \| Programs |
+| **Frontend Logic** (React) | Screen \| Button \| Handler \| URL \| Field Validations \| Pre-checks \| Conditional Calls \| State Reads \| Summary \| Source |
+| **Programs** (요약 인라인) | 기존 컬럼 + `Business Logic` + `Frontend Validation` |
+
+`Source=fallback` 은 노랑, `Source=cache` 는 재실행 hit (LLM 호출 0건).
+
+### Scope / 성능 통제
+
+- 백엔드: `_resolve_endpoint_chain` 이 도달한 ServiceImpl 메서드 +
+  intra-class self-call 전이 closure (LLM 에 보낼 범위 자동 축소)
+- 프론트: endpoint API URL 에 바인딩된 `onClick` handler 만 분석
+- `get*` / `set*` / trivial 메서드 static 필터
+- SHA-256 기반 디스크 캐시 (`output/legacy_analysis/.biz_cache/`) — 메서드
+  body 가 안 바뀌면 재실행 시 LLM 호출 0건
+- Batch 6 메서드/handler 당 1 LLM call (토큰 절약)
 
 **메뉴 소스 우선순위**: `--skip-menu` > `--menu-md` > `--menu-xlsx` > DB (`config.yaml`)
 - `--menu-md`: Markdown 파이프 테이블 (DRM 환경 권장, `input/menu_template.md` 참조)

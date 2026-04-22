@@ -275,6 +275,42 @@ python main.py analyze-legacy \
 - 네트워크 실패 시에만 재시도.
 - 회귀 테스트 mock 최소 6~8개 돌려서 method-scope / endpoint 수치 확인 후 커밋.
 
+## 다중 에이전트 병행 작업 지침
+
+여러 Claude 세션/에이전트가 동시에 각자 피처 브랜치에서 작업 중 — `main` 이
+쉴 새 없이 갱신됨. PR 올렸을 때 `main` 과 충돌을 최소화하기 위해 **피처
+브랜치를 push 하기 직전에 반드시 최신 main 위로 rebase** 한다.
+
+```bash
+# 작업 중/끝난 피처 브랜치에서
+git fetch origin main
+git rebase origin/main
+
+# 충돌 나면 해결 → git add → git rebase --continue
+# 충돌 범위가 커서 중단하고 싶으면 git rebase --abort 로 원복
+
+git push -u origin claude/<task>     # rebase 후 최초 push 면 그냥 push
+# (이미 push 된 브랜치에 rebase 덮어쓰기가 필요하면 --force-with-lease)
+```
+
+원칙:
+- **rebase > merge** — 피처 브랜치 히스토리는 squash 로 들어갈 예정이지만,
+  rebase 로 올려두면 GitHub PR 의 diff 가 깨끗해지고 리뷰 충돌도 줄어듦
+- **force push 는 `--force-with-lease` 만** — `--force` 는 다른 에이전트가
+  같은 브랜치에 커밋했을 때 덮어쓰는 사고 위험
+- **main 직푸시 금지** — 모든 변경은 PR → squash-merge
+- **TODO.md 는 본인 작업이 속한 카테고리 한 곳만 수정** (TODO.md 상단
+  "사용 규칙" 준수). 다른 카테고리의 `진행 중` 섹션은 건드리지 말기 →
+  에이전트 간 충돌 최소화
+- 작업 시작 시 `git checkout main && git pull` 로 최신 main 확보한 뒤
+  피처 브랜치 분기. 이미 옛날 main 에서 분기된 브랜치는 작업 재개 시에도
+  위 rebase 흐름으로 최신화
+- PR 머지 실패 (`Pull Request is not mergeable`) 는 보통 main 이 그사이
+  진행한 경우 — `rebase --abort` 후 `git fetch origin main && git rebase
+  origin/main` → 충돌 해결 → `git push --force-with-lease` → PR 재머지
+- 머지 후 로컬 정리: `git fetch origin --prune && git checkout main &&
+  git pull && git branch -D claude/<task>` (auto-delete 가 원격 정리)
+
 ## 코딩 스타일 관행
 
 - CLI help 메시지와 로그는 **영문 + 한글 혼용**이 기본. 사용자가 한국 사용자라 핵심 설명은 한글로.
