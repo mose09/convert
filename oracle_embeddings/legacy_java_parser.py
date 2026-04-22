@@ -226,12 +226,38 @@ _NEXCORE_PARAM_TYPES = {"IDataSet", "IBizServiceContext", "IOnlineContext",
 _active_patterns = None
 
 
+# Generic Java Collection/Map/Optional API 메서드. `discover-patterns` 의 LLM
+# 이 uppercase 상수 key 를 인수로 쓰는 `map.get("PARAM_X")` 같은 코드를 SAP
+# 인터페이스 호출 패턴으로 오해해 `rfc_call_methods` 에 포함시키는 경우가
+# 있었음 (예: `execute`, `get`). 이런 일반 메서드가 들어오면 `map.get(...)` /
+# `list.add(...)` 가 전부 RFC false positive 로 걸리므로 `apply_patterns` 에서
+# 자동으로 제거하고 경고를 출력한다. 실제 사내 "RFC 전용" 메서드명은 보통
+# `execute` / `send` / `call` / `invoke` / `request` 같은 동사형.
+_GENERIC_COLLECTION_METHODS = frozenset({
+    "get", "put", "set", "add", "remove", "contains", "containsKey",
+    "containsValue", "size", "clear", "isEmpty", "keySet", "values",
+    "entrySet", "putAll", "putIfAbsent", "replace", "getOrDefault",
+    "indexOf", "lastIndexOf", "subList", "addAll", "removeAll",
+    "retainAll", "iterator", "forEach", "stream", "toArray",
+    "toString", "equals", "hashCode", "hasNext", "next",
+    # Optional API
+    "orElse", "orElseGet", "orElseThrow", "ifPresent", "isPresent",
+    # Generic accessors easily confused
+    "getValue", "setValue",
+})
+
+
 def apply_patterns(patterns: dict | None) -> None:
     """Inject discovered patterns into the parser's detection logic.
 
     Called once before ``parse_all_java`` when ``--patterns`` is used.
     Extends the hardcoded base-class / param-type / SQL-call sets so
     that project-specific conventions are recognised.
+
+    Safety net: generic Java Collection/Map/Optional methods are stripped
+    from ``rfc_call_methods`` at load time (see ``_GENERIC_COLLECTION_METHODS``)
+    so an over-fitted LLM suggestion can't cause thousands of
+    ``map.get("STR")`` false positives.
     """
     global _active_patterns, _NEXCORE_BASE_CLASSES, _NEXCORE_PARAM_TYPES, _SQL_CALL_RE, _rfc_custom_re, _rfc_custom_var_re
     _active_patterns = patterns or {}
@@ -252,11 +278,27 @@ def apply_patterns(patterns: dict | None) -> None:
     if extra_receivers or extra_ops:
         _SQL_CALL_RE = _build_sql_call_re(extra_receivers, extra_ops)
 
-    # Build custom RFC call regex if rfc_call_methods specified
-    rfc_methods = _active_patterns.get("rfc_call_methods") or []
+    # Build custom RFC call regex if rfc_call_methods specified.
+    # Filter out generic Collection/Map/Optional API names before building —
+    # otherwise map.get("STR") / list.add("STR") would all be flagged as
+    # RFC calls. `_active_patterns` is also updated so downstream consumers
+    # (e.g. reporters) see the cleaned list.
+    rfc_methods_raw = _active_patterns.get("rfc_call_methods") or []
+    rfc_methods = [m for m in rfc_methods_raw
+                   if m not in _GENERIC_COLLECTION_METHODS]
+    rejected = [m for m in rfc_methods_raw
+                if m in _GENERIC_COLLECTION_METHODS]
+    if rejected:
+        print(f"  apply_patterns: dropped generic method(s) from "
+              f"rfc_call_methods: {rejected} "
+              f"(prevents Collection/Map false positives)")
+        _active_patterns["rfc_call_methods"] = rfc_methods
     if rfc_methods:
         _rfc_custom_re = _build_rfc_custom_re(rfc_methods)
         _rfc_custom_var_re = _build_rfc_custom_var_re(rfc_methods)
+    else:
+        _rfc_custom_re = None
+        _rfc_custom_var_re = None
 
 _NEXCORE_METHOD_RE = re.compile(
     r"""(?:public)\s+

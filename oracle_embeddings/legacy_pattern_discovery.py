@@ -143,7 +143,7 @@ _USER_PROMPT_TEMPLATE = """아래는 Java 프로젝트에서 추출한 {n_classe
   "sql_receivers": ["SQL 호출에 사용하는 객체명 목록 (예: sqlMapClientTemplate, commonSQL)"],
   "sql_operations": ["SQL 호출 메서드명 목록 (예: queryForList, selectList, insert)"],
   "rfc_patterns": ["RFC/SAP 호출 패턴이 있다면 메서드명 목록 (예: getFunction, getJCoFunction)"],
-  "rfc_call_methods": ["RFC/인터페이스 호출에 사용하는 커스텀 메서드명 (예: execute, send, call). service.execute('IF-GERP-180', param, ZMM_FUNC.class) 같은 패턴이 있으면 해당 메서드명. 없으면 빈 리스트."],
+  "rfc_call_methods": ["RFC/인터페이스 호출에 사용하는 **커스텀 비즈니스 메서드명** (예: execute, send, call, invoke). service.execute('IF-GERP-180', param, ZMM_FUNC.class) 처럼 'SAP 인터페이스를 호출하기 위해 만든 전용 메서드' 만 해당. **절대 포함 금지**: Java 표준 Collection/Map API (get, put, set, add, remove, contains, containsKey, size, clear, isEmpty, keySet, values, entrySet, putAll, indexOf, toString) — 이런 메서드는 map.get('USER_KEY') 처럼 단순 데이터 조회에도 쓰이므로 RFC 호출로 판단하면 수백 건의 false positive 가 생긴다. 커스텀 RFC 메서드가 없거나 확신이 없으면 빈 리스트 [] 로 답하라."],
   "service_suffixes": ["Service 클래스 네이밍 접미사 목록 (예: Service, ServiceImpl, Bo)"],
   "dao_suffixes": ["DAO 클래스 네이밍 접미사 목록 (예: Dao, DaoImpl, Repository)"],
   "di_annotations": ["의존성 주입 어노테이션 목록 (예: Autowired, Inject, Resource)"],
