@@ -1520,6 +1520,13 @@ def cmd_analyze_legacy(args):
 
     menu_only = getattr(args, "menu_only", False)
 
+    # Business logic extraction args (Phase A: backend only; frontend no-op).
+    extract_biz = bool(getattr(args, "extract_biz_logic", False))
+    biz_scope = getattr(args, "biz_scope", "both")
+    biz_max_methods = int(getattr(args, "biz_max_methods", 500))
+    biz_use_cache = not bool(getattr(args, "no_biz_cache", False))
+    biz_config = config if isinstance(config, dict) else {}
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -1531,6 +1538,11 @@ def cmd_analyze_legacy(args):
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
             menu_only=menu_only,
+            extract_biz=extract_biz,
+            biz_scope=biz_scope,
+            biz_max_methods=biz_max_methods,
+            biz_use_cache=biz_use_cache,
+            biz_config=biz_config,
         )
     else:
         result = analyze_legacy(
@@ -1542,6 +1554,11 @@ def cmd_analyze_legacy(args):
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
             menu_only=menu_only,
+            extract_biz=extract_biz,
+            biz_scope=biz_scope,
+            biz_max_methods=biz_max_methods,
+            biz_use_cache=biz_use_cache,
+            biz_config=biz_config,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1730,6 +1747,30 @@ def main():
                            help="Service-of-service walk depth for RFC collection (default 2)")
     al_parser.add_argument("--format", choices=["markdown", "excel", "both"], default="both",
                            help="Output format (default both)")
+    # Business logic extraction (Phase A: backend ServiceImpl).
+    # LLM opt-in — 기본 off. endpoint 체인 걸린 메서드만 분석 (사용자 결정).
+    al_parser.add_argument("--extract-biz-logic", action="store_true",
+                           help="Extract ServiceImpl business logic via LLM "
+                                "(adds Business Logic sheet). Opt-in. "
+                                "Uses PATTERN_LLM_* env; falls back to regex "
+                                "summary on LLM failure.")
+    al_parser.add_argument("--biz-scope",
+                           choices=["backend", "frontend", "both"],
+                           default="both",
+                           help="With --extract-biz-logic, restrict to "
+                                "backend-only / frontend-only / both. "
+                                "Phase A = backend only; frontend is a no-op.")
+    al_parser.add_argument("--biz-max-methods", type=int, default=500,
+                           help="Hard cap on ServiceImpl methods sent to LLM "
+                                "(default 500). Sorted by endpoint fan-in.")
+    al_parser.add_argument("--biz-max-handlers", type=int, default=300,
+                           help="(Phase B) Hard cap on React handlers sent "
+                                "to LLM (default 300). Currently ignored.")
+    al_parser.add_argument("--no-biz-cache", action="store_true",
+                           help="Disable disk cache at "
+                                "output/legacy_analysis/.biz_cache/ "
+                                "(cache is on by default and makes re-runs "
+                                "0-cost for unchanged method bodies).")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
