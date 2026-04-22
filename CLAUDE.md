@@ -26,6 +26,7 @@
 | `enrich-schema` | 빈 코멘트에 LLM이 한글 설명 추가 `(LLM추천)` 표기 | O | X |
 | `erd` / `erd-md` / `erd-group` / `erd-rag` | Mermaid + 인터랙티브 HTML ERD | 선택 | X |
 | `terms` | 스키마 + React 소스에서 용어사전 (약어/영문/한글/Definition 4필드) | O | X |
+| `morpheme` | **형태소분석** — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일시트 xlsx + md 요약) | O | X |
 | `standardize` | 표준화 리포트 (JOIN/타입 불일치, 네이밍 이탈 등 8섹션) | 선택 | 선택 |
 | `review-sql` | SQL 안티패턴 리뷰 + LLM 개선안 | 선택 | X |
 | `validate-naming` | 신규 DDL/이름이 용어사전 표준 준수하는지 검증 | X | X |
@@ -90,6 +91,24 @@
 - `output/sql_migration/impact_report_TIMESTAMP.xlsx`: 사전 영향분석 리포트
 - `output/sql_migration/validation_report_TIMESTAMP.xlsx`: Stage B 리포트
 
+## 주요 모듈 (형태소분석 — `morpheme` 커맨드)
+
+입력 txt (줄당 1속성) + 지침 md 를 받아 LLM 으로 속성명을 단어 단위로
+분해해 단일 시트 xlsx + md 요약 리포트를 생성. ~2만개 속성 기준 사내
+LLM 게이트웨이 (200+ tok/s) 에서 순차 1시간 / 4병렬 15~20분.
+
+| 파일 | 역할 |
+|------|------|
+| `oracle_embeddings/morpheme_analyzer.py` | `analyze_morphemes(attrs, guide_text, config, batch_size, parallel, timeout)` + 입력/지침 로더. 배치 크기 자동 조정 `max(10, min(50, 1200 // avg_len))`, JSON 파싱 실패 시 배치 절반으로 최대 2단계 축소 재시도, ThreadPool 병렬, `_post_process_item` 에서 13번째+ 토큰 잘림 → 비고 기록, confidence < 0.7 → 저신뢰도 플래그. |
+| `oracle_embeddings/morpheme_report.py` | `save_morpheme_markdown` (Summary/저신뢰 top20/실패 top20/잘림 top20) + `save_morpheme_excel` (단일 시트 `속성명 \| 컨피던스 \| 단어1..단어12 \| 비고`, 행 상태별 하이라이트: 노랑=저신뢰, 빨강=파싱실패, 파랑=잘림). Freeze panes C2. |
+| `input/morpheme_guide.md` | **필수 입력** — 역할 / 원칙 6개 / 출력형식 / Few-shot 7개 / 배치처리 규칙 / 품질체크 / 유지관리 가이드. `--guide` 누락 또는 파일 없으면 에러. |
+
+주요 상수 (튜닝 포인트):
+- `DEFAULT_BATCH_SIZE = 30`, `MIN_BATCH_SIZE = 10`, `MAX_BATCH_SIZE = 50`
+- `BATCH_TOKEN_BUDGET = 1200` (자동 배치 계산의 입력 토큰 상한 가정)
+- `MAX_TOKENS_PER_ATTR = 12` (엑셀 컬럼 수에 맞춤)
+- `LOW_CONFIDENCE_THRESHOLD = 0.7`
+
 ## 공유 유틸 (중복 구현 금지)
 
 - `mybatis_parser._read_file_safe(path, limit=None)` — utf-8 → euc-kr → cp949 순서 fallback. 한국어 레거시 코드는 반드시 이걸로 읽을 것.
@@ -105,8 +124,9 @@
 |------|------|------|
 | 일반 리포트 | `output/` | schema, query, erd, terms, standardize 등 |
 | 레거시 분석서 | `output/legacy_analysis/` | `as_is_analysis_<slug>_TIMESTAMP.{md,xlsx}`. 단일 모드는 backend 디렉토리 이름이 slug, 배치 모드는 `batch` |
+| 형태소분석 | `output/morpheme/` | `morpheme_TIMESTAMP.{md,xlsx}` — 단일 시트 xlsx + md 요약. `--output` 으로 override 가능. |
 | 패턴 파일 | `output/legacy_analysis/patterns.yaml` | `discover-patterns` 생성, `analyze-legacy --patterns`로 주입 |
-| 입력 템플릿 | `input/` | `menu_template.xlsx` (1~5레벨 + URL + README 시트), `menu_template.md` (DRM 우회용) |
+| 입력 템플릿 | `input/` | `menu_template.xlsx` (1~5레벨 + URL + README 시트), `menu_template.md` (DRM 우회용), **`morpheme_guide_template.md`** (형태소분석 지침 — 원칙 6 + few-shot 7 + 배치정책) |
 | 설정 | `config.yaml` | DB 연결, LLM 엔드포인트, `legacy.menu.*` 테이블 매핑, `legacy.rfc_depth` |
 | 벡터 DB | `vectordb/` | ChromaDB (erd-rag용) |
 

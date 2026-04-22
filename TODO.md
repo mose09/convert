@@ -1,3 +1,48 @@
+# TODO: 형태소분석 (morpheme) 커맨드 — LLM 기반 속성명 단어 분해 리포트
+
+CLAUDE.md 작업규칙 §1 준수용 상단 할 일 목록.
+
+## 목표
+
+속성명 ~2만개 규모의 txt 입력을 LLM 으로 형태소(단어) 분해하고
+`속성명 | 컨피던스 | 단어1..단어12 | 비고` 단일 시트 xlsx + md 요약을 생성.
+
+## 작업 항목
+
+- [x] 피처 브랜치 `claude/add-morphological-analysis-hC7VI` 체크아웃 + TODO.md 최상단 섹션 추가
+- [x] 기존 `terms_llm` / `terms_report` 배치 + xlsx 스타일 참조
+- [x] `oracle_embeddings/morpheme_analyzer.py` 신규 —
+      `analyze_morphemes(attrs, guide_text, config, batch_size, parallel)`
+      입력 평균 길이 기반 `max(10, min(50, 1200 // avg_len))` 자동 배치
+      JSON 파싱 실패 시 배치 절반으로 자동 축소 재시도
+      `--parallel N` ThreadPool (기본 1)
+      few-shot 은 guide 파일에서 그대로 프롬프트에 주입
+- [x] `oracle_embeddings/morpheme_report.py` 신규 —
+      md 요약 (총/성공/저신뢰/실패/잘림 + 실제 소요시간/배치크기/재시도 + 상위 20 샘플 3종)
+      xlsx 단일 시트 `속성명 | 컨피던스 | 단어1..단어12 | 비고`
+      단어 13개+ → 단어12 잘림 + 비고: "13번째 이후 N개 생략: ..."
+      컨피던스 < 0.7 → 노랑 하이라이트 + 비고: "저신뢰도 (수동 검토 필요)"
+      파싱 실패 → 빨강 + 비고: "파싱 실패 - ..."
+      단어 잘림 → 파랑 + 비고 기록
+- [x] `input/morpheme_guide.md` 템플릿 — 역할 / 원칙 6개 / 출력형식 /
+      Few-shot 7개 / 배치처리 규칙 / 품질체크 / 유지관리 가이드
+- [x] `main.py` — `cmd_morpheme` + argparse (`--input` C1 txt 한줄 1속성,
+      `--guide` D3 필수, `--batch-size` / `--parallel` / `--timeout` /
+      `--output` 옵션) + dispatcher `elif args.command == "morpheme"`
+- [x] smoke test 통과 —
+      * unit: `_compute_batch_size` 3 케이스 (avg 5/10/30)
+      * unit: `_post_process_item` 7 케이스 (normal / truncated / low-conf /
+        missing / empty / bad-type / mix)
+      * integration: LLM unreachable → 8속성 전부 graceful `파싱 실패` 비고
+        + md 요약 / xlsx (15컬럼) 생성 확인
+      * integration: mocked LLM happy-path → success=5, low_conf=1,
+        truncated=1, 하이라이트 색상 3종 적용 확인
+- [x] CLAUDE.md — 커맨드 표에 morpheme 행 + 모듈 표 신규 섹션 +
+      출력/입력 경로 규약 표 + 형태소분석 지원 튜닝 포인트 섹션 추가
+- [ ] conventional commit + push feature branch
+
+---
+
 # TODO: SQL Migration UX — 사용자 표준 9-컬럼 flat 매핑 + 한글 주석 + 포매터 (3단계)
 
 사용자 워크플로우 정렬:
