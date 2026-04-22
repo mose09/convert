@@ -84,61 +84,109 @@ class TypeConversionTransformer(Transformer):
                 _record_change(accum, source, col_name, to_be)
 
         # ── Pass B — INSERT column list + matching VALUES tuple values ──
+        #
+        # 두 가지 INSERT 모양을 모두 처리:
+        #   (1) 일반 INSERT:  Insert.this = Schema(this=Table, expressions=[Identifier])
+        #                     Insert.expression = Values(expressions=[Tuple, ...])
+        #   (2) MERGE INSERT: Insert.this = Tuple(expressions=[Column])
+        #                     Insert.expression = Tuple(expressions=[expr])
+        # MERGE 의 INSERT 는 sqlglot 가 별도 구조로 모델링 → Schema 분기로
+        # 못 잡으면 Pass C 가 컬럼 리스트를 잘못 wrap 하는 버그가 발생.
         for insert in tree.find_all(exp.Insert):
-            schema = insert.this
-            if not isinstance(schema, exp.Schema):
-                continue
-            host = schema.this
-            if not isinstance(host, exp.Table):
-                continue
-            source_table = alias_map.get(host.name.upper())
-            if source_table is None:
-                continue
-
-            # sqlglot 은 ``insert.expression`` 에 값 소스를 둔다.
-            # VALUES literal → exp.Values, SELECT subquery → exp.Select.
+            target_node = insert.this
             value_source = insert.args.get("expression")
-            values_node = (
-                value_source if isinstance(value_source, exp.Values) else None
-            )
 
-            for i, ident in enumerate(list(schema.expressions)):
-                if not isinstance(ident, exp.Identifier):
+            # ── (1) 일반 INSERT ──────────────────────────────────────────
+            if isinstance(target_node, exp.Schema):
+                host = target_node.this
+                if not isinstance(host, exp.Table):
                     continue
-                col_name = ident.name
-                cm = mapping.find_column(source_table, col_name)
-                if cm is None or cm.kind != "type_convert":
+                source_table = alias_map.get(host.name.upper())
+                if source_table is None:
                     continue
-                to_be = cm.to_be
-                if not isinstance(to_be, ColumnRef):
-                    continue
-
-                # Rename the identifier in the column list (header).
-                schema.expressions[i] = exp.to_identifier(
-                    to_be.column,
-                    quoted=bool(getattr(ident, "quoted", False)),
+                tuples = (
+                    value_source.expressions
+                    if isinstance(value_source, exp.Values) else []
                 )
+                for i, ident in enumerate(list(target_node.expressions)):
+                    if not isinstance(ident, exp.Identifier):
+                        continue
+                    col_name = ident.name
+                    cm = mapping.find_column(source_table, col_name)
+                    if cm is None or cm.kind != "type_convert":
+                        continue
+                    to_be = cm.to_be
+                    if not isinstance(to_be, ColumnRef):
+                        continue
+                    target_node.expressions[i] = exp.to_identifier(
+                        to_be.column,
+                        quoted=bool(getattr(ident, "quoted", False)),
+                    )
+                    template = _pick_write_template(cm.transform)
+                    if template:
+                        if not tuples:
+                            warnings.append(
+                                f"INSERT INTO {host.name} column "
+                                f"'{col_name}' is type_convert but the VALUES "
+                                f"source is a SELECT subquery; positional wrap "
+                                f"is not supported — column renamed but RHS "
+                                f"not wrapped."
+                            )
+                        else:
+                            for tup in tuples:
+                                if not isinstance(tup, exp.Tuple):
+                                    continue
+                                tup_vals = tup.expressions
+                                if i >= len(tup_vals):
+                                    continue
+                                _wrap_value(tup_vals[i], template, warnings)
+                    _record_change(accum, source_table, col_name, to_be)
 
-                template = _pick_write_template(cm.transform)
-                if template:
-                    if values_node is None:
-                        warnings.append(
-                            f"INSERT INTO {host.name} column "
-                            f"'{col_name}' is type_convert but the VALUES "
-                            f"source is a SELECT subquery; positional wrap "
-                            f"is not supported — column renamed but RHS not "
-                            f"wrapped."
-                        )
-                    else:
-                        for tup in values_node.expressions:
-                            if not isinstance(tup, exp.Tuple):
-                                continue
-                            tup_vals = tup.expressions
-                            if i >= len(tup_vals):
-                                continue
-                            _wrap_value(tup_vals[i], template, warnings)
+            # ── (2) MERGE INSERT ─────────────────────────────────────────
+            elif isinstance(target_node, exp.Tuple):
+                # MERGE INSERT 의 컬럼 리스트는 exp.Column 들. value 는 단일
+                # Tuple. 컬럼은 ``target.ORIG_COL`` 처럼 alias-qualified.
+                tuples = (
+                    [value_source] if isinstance(value_source, exp.Tuple) else []
+                )
+                for i, col in enumerate(list(target_node.expressions)):
+                    if not isinstance(col, exp.Column):
+                        continue
+                    col_name = col.name
+                    if not col_name:
+                        continue
+                    source_table = self._resolve_source(
+                        col, col_name, alias_map, tables_in_stmt, mapping
+                    )
+                    if source_table is None:
+                        continue
+                    cm = mapping.find_column(source_table, col_name)
+                    if cm is None or cm.kind != "type_convert":
+                        continue
+                    to_be = cm.to_be
+                    if not isinstance(to_be, ColumnRef):
+                        continue
+                    _set_column_name(col, to_be.column)
+                    consumed.add(id(col))
 
-                _record_change(accum, source_table, col_name, to_be)
+                    template = _pick_write_template(cm.transform)
+                    if template:
+                        if not tuples:
+                            warnings.append(
+                                f"MERGE INSERT column '{col_name}' is "
+                                f"type_convert but VALUES is not a literal "
+                                f"tuple; column renamed but RHS not wrapped."
+                            )
+                        else:
+                            for tup in tuples:
+                                if not isinstance(tup, exp.Tuple):
+                                    continue
+                                tup_vals = tup.expressions
+                                if i >= len(tup_vals):
+                                    continue
+                                _wrap_value(tup_vals[i], template, warnings)
+
+                    _record_change(accum, source_table, col_name, to_be)
 
         # ── Pass C — all other column occurrences (SELECT, WHERE, JOIN, ...) ──
         for col in list(tree.find_all(exp.Column)):
@@ -204,12 +252,27 @@ def _classify_context(col: exp.Column) -> str:
     Pass C 에서만 호출되므로 'write' 는 제거. UPDATE SET LHS / INSERT
     column list 는 이미 Pass A/B 가 consume 했기 때문이다. 만약 어쩌다
     여기 다시 오더라도 'read' fallback 이 문법적으로 안전하다.
+
+    Predicate 컨텍스트 (where 템플릿) 로 인정되는 위치:
+      - WHERE 절 (exp.Where 하위)
+      - JOIN ON (exp.Join + exp.Condition 하위)
+      - MERGE 의 ON 절 (Merge.on 서브트리). Merge.on 은 exp.Where /
+        exp.Join 으로 모델링되지 않으므로 별도 검사가 필요함.
     """
     if col.find_ancestor(exp.Where):
         return "where"
     join = col.find_ancestor(exp.Join)
     if join is not None and col.find_ancestor(exp.Condition) is not None:
         return "where"
+    merge = col.find_ancestor(exp.Merge)
+    if merge is not None:
+        on_node = merge.args.get("on")
+        if on_node is not None:
+            anc = col.parent
+            while anc is not None and anc is not merge:
+                if anc is on_node:
+                    return "where"
+                anc = anc.parent
     return "read"
 
 

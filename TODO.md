@@ -338,6 +338,24 @@
       - `_classify_context` 에서 `write` 분기 제거 (A/B 가 처리)
       - 검증 8 시나리오 통과 (UPDATE / INSERT VALUES / SELECT / WHERE /
         INSERT…SELECT / 복합 RHS / 멀티-튜플 / UPDATE+WHERE 같은 컬럼)
+      **B2-followup: MERGE / WITH 커버리지 점검 + MERGE 버그 2종 수정**:
+      - WITH (CTE) 3 케이스 모두 정상 동작 (변경 불필요)
+      - MERGE INSERT 의 `Insert.this` 가 `Schema` 가 아닌 `Tuple` (sqlglot
+        구조 차이) → Pass B 가 skip → Pass C 가 컬럼 리스트를 잘못 wrap
+        하던 버그. Pass B 에 Tuple 분기 추가, MERGE INSERT 컬럼은
+        `_set_column_name` + consumed 마킹, VALUES 단일 Tuple 처리.
+      - MERGE 의 `ON (...)` 절은 `Merge.on` 서브트리 (exp.Where / exp.Join
+        아님) → `_classify_context` 가 read 로 분류해 잘못된 템플릿 사용.
+        `find_ancestor(exp.Merge)` + `merge.on` 서브트리 walk 으로 where
+        분류 추가.
+      - 검증 후 결과:
+        * `MERGE … WHEN MATCHED THEN UPDATE SET t.ORIG_COL = s.NEW_VAL` →
+          `t.NEW_COL = TO_DATE(s.NEW_VAL, ...)` ✓
+        * `MERGE … WHEN NOT MATCHED THEN INSERT (t.ORIG_COL) VALUES (s.NEW_VAL)` →
+          `INSERT (t.NEW_COL) VALUES (TO_DATE(s.NEW_VAL, ...))` ✓
+        * `MERGE … ON (t.ORIG_COL = s.X)` →
+          `ON (TO_CHAR(t.NEW_COL, ...) = s.X)` ✓
+        * 8 prior B2 테스트 회귀 통과
 
 ## 🟡 엣지 케이스 (실환경 드물)
 
