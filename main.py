@@ -1583,6 +1583,8 @@ def cmd_analyze_legacy(args):
     biz_config = config if isinstance(config, dict) else {}
     library_dirs = list(getattr(args, "library_dirs", None) or [])
 
+    terms_md = getattr(args, "terms_md", None) or None
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -1601,6 +1603,7 @@ def cmd_analyze_legacy(args):
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
             library_dirs=library_dirs,
+            terms_md=terms_md,
         )
     else:
         result = analyze_legacy(
@@ -1619,6 +1622,7 @@ def cmd_analyze_legacy(args):
             biz_use_cache=biz_use_cache,
             biz_config=biz_config,
             library_dirs=library_dirs,
+            terms_md=terms_md,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1813,6 +1817,11 @@ def main():
                                 "파서/분석기가 해당 패턴으로 커스텀 분석 수행.")
     al_parser.add_argument("--rfc-depth", type=int, default=None,
                            help="Service-of-service walk depth for RFC collection (default 2)")
+    al_parser.add_argument("--terms-md",
+                           help="용어사전 .md 경로 (옵션). Programs 시트의 "
+                                "Columns 컬럼에 컬럼명 뒤에 [한글] 한글 뜻을 병기할 때 "
+                                "사용. 매칭 안 되는 컬럼은 주석 생략. 없으면 전부 "
+                                "영문 컬럼명만 표시.")
     al_parser.add_argument("--format", choices=["markdown", "excel", "both"], default="both",
                            help="Output format (default both)")
     # Business logic extraction (Phase A: backend ServiceImpl).

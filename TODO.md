@@ -92,64 +92,48 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: CRUD 판정 body-only — MyBatis 태그 완전히 무시
+### 진행 중: Phase I — 컬럼 단위 CRUD 추출 + 용어사전 주입
 
-PR #29 에서 하이브리드 (태그 ∪ 본문) 로 구현했지만 사용자 재확인: "태그
-참조 말고 쿼리 분석으로만". 태그는 dev intent 라서 실제 SQL 과 어긋날
-수 있다는 우려 반영.
+Programs 시트에 기존 Tables 컬럼 (`TBL(CRUD)`) 옆에 컬럼 단위 CRUD 를
+추가. 예: `TBL.col1[고객명](R), TBL.col2[등록일자](U)`.
 
-변경:
+사용자 목표: "어떤 테이블의 어떤 컬럼 정보를 가져오는지/DML 발생하는지"
+의 결정적 데이터 확보. Phase II (endpoint narrative LLM) 의 입력 품질을
+위해 이 단계에서 정밀도 확보.
 
-- [x] `_derive_table_crud` 에서 `_stmt_type_to_crud(...)` 호출 제거.
-      `statement_to_body_crud` 만 소스로 사용.
-- [x] 이제 불필요해진 `_STMT_TYPE_TO_CRUD` dict + `_stmt_type_to_crud`
-      helper + `_build_mybatis_indexes` 의 `statement_to_type` 인덱스
-      모두 삭제 (dead code 제거).
-- [x] 기존 mock (`/tmp/mock_hybrid_crud`) 재검증 — 태그만의 영향이던
-      T2 가 `(RU)` → `(U)` 로 변경됨 (사용자 의도대로). 다른 4 케이스
-      (T1 MERGE, T3 procedure, T4 FOR UPDATE) 는 body scan 이 이미
-      해당 letters 를 잡고 있어서 변화 없음.
-- [x] conventional commit + PR + squash-merge
-
-### 진행 중: CRUD 판정 하이브리드 — 태그 + SQL 본문 키워드 스캔
-
-현재 `_derive_table_crud` 는 MyBatis 태그만 (SELECT→R / INSERT→C 등)
-보고 CRUD letter 를 붙여 네 가지 edge case 를 놓침:
-1. `<select>` 태그에 `BEGIN proc_that_updates(); END;` — tag 는 R 인데
-   실제는 UPDATE
-2. `MERGE INTO ...` (INSERT+UPDATE 복합) 이 `<update>` 태그면 `U` 만
-   나오고 `C` 누락
-3. `<update>` 안에 실제로는 DELETE 만 있는 미스라벨 케이스
-4. `<procedure>` / `<statement>` 태그는 분류 불가 → 공백
-
-**방식** (사용자 선택 — 하이브리드):
-- 태그 타입 letter 는 항상 포함 (dev intent 신뢰)
-- SQL 본문을 regex 로 추가 스캔해 `\b(INSERT|UPDATE|DELETE|MERGE|SELECT)\b`
-  발견 시 해당 letter 도 union
-- 문자열 리터럴 `'...'` / 주석 `--` · `/* */` 은 스캔 전에 제거 (false
-  positive 방지)
-- `MERGE` 는 본문에 INSERT/UPDATE 키워드를 자연 포함하므로 union 으로
-  자동 C+U 획득, 예외 처리 불필요
-- `SELECT ... FOR UPDATE` 의 UPDATE 는 lock 힌트이므로 scan 전에 제거
+sqlglot 은 이미 dependency (migration 모듈에서 사용 중).
 
 작업 항목:
 
-- [x] `mybatis_parser.extract_crud_from_sql(sql) → set[letter]` 공개 함수
-      (리터럴/주석 스트리핑 + 키워드 스캔 + `FOR UPDATE` 제외)
-- [x] `_build_mybatis_indexes` 에 `statement_to_body_crud: {ns.id: set}`
-      신규 인덱스. 파일 로드 시점에 본문 스캔 결과 캐시.
-- [x] `_derive_table_crud` 수정 — tag letter + body letters union.
-      method-scope 경로만 영향 (class-scope fallback 은 기존대로 공백).
-- [x] 단위 검증 10/10 PASS (MERGE / PL/SQL BEGIN / SELECT FOR UPDATE /
-      single-quote 리터럴 / line comment / block comment / INSERT /
-      DELETE / 빈 문자열)
-- [x] end-to-end 검증 (`/tmp/mock_hybrid_crud`, 5 시나리오):
-      * `<update>` + MERGE (USING SELECT) → `T1(CRU)` ✓
-      * `<select>` + 본문 PL/SQL UPDATE → `T2(RU)` ✓
-      * `<procedure>` + INSERT → `T3(C)` ✓ (기존엔 공백)
-      * `<select>` + FOR UPDATE → `T4(R)` ✓ (U 배제)
-      * 리터럴 false positive 는 CRUD scan 은 정상 R 만, 다만 table
-        extractor 의 pre-existing 이슈로 T5 미집계 (별개 건)
+- [x] `mybatis_parser.extract_column_usage(sql) → {table: {col: set[CRUD]}}`
+      sqlglot AST walker. SELECT projection / INSERT cols / UPDATE SET
+      LHS / MERGE WHEN MATCHED+NOT MATCHED recurse. 파싱 실패 시 `{}`
+      반환. `SELECT *` 는 skip, 다중 테이블 unqualified 도 drop.
+- [x] `parse_mapper_file` (XML + fallback) statement dict 에
+      `column_usage` 필드 부착
+- [x] `_build_mybatis_indexes` 에 `statement_to_column_usage` 인덱스
+- [x] `_derive_column_crud(sql_ids, mybatis_idx)` + chain dict `column_crud`
+      (method-scope / class-scope fallback 모두)
+- [x] `_build_row` 에 `related_columns` 필드, menu-only stub 에도 사전 할당
+- [x] `_format_column_crud(column_crud, terms_dict)` — `TBL.col[한글](CRUD),\n`
+      (용어사전 hit 시 `[한글]`, 없으면 생략)
+- [x] `_TERMS_ROW_RE` + `_load_terms_dict(path)` — 3/4-컬럼 용어사전
+      MD 를 파싱해 `{UPPER_ABBR: 한글}` dict 반환
+- [x] `analyze_legacy` / `analyze_legacy_batch` 시그니처에 `terms_md`
+      추가 + base_dirs 통해 _build_row 로 전달
+- [x] CLI `--terms-md` (main.py analyze-legacy 전용) + batch forward
+- [x] Programs 시트 4 개 컬럼 정의 (single with/without menu + batch
+      with/without menu) 전부에 `("Columns", "related_columns")` 를
+      Tables 바로 뒤에 삽입
+- [x] 단위 검증 15/15 PASS (`extract_column_usage`): SELECT / alias /
+      * / multi-table qualified/unqualified / INSERT / INSERT SELECT /
+      UPDATE / UPDATE alias / DELETE / MERGE / FOR UPDATE / PL/SQL 블록
+      (parse fail, empty 반환) / 빈 문자열
+- [x] End-to-end (`/tmp/mock_crud` + terms): `CRHD_W.STATUS[상태](U),\n
+      EQUI_W.V(U),\nIFLOT_W.ID[식별자](C),\nIFLOT_W.NAME[이름](C)` ✓
+- [x] 회귀: terms_md 없을 때 `[한글]` 없이 정상 동작
+- [x] README: Programs 컬럼 수 15→16, 컬럼 포맷 표에 `Columns` 행 +
+      용어사전 예시
 - [x] conventional commit + PR + squash-merge
 
 ---

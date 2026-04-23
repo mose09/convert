@@ -100,6 +100,7 @@ def parse_mapper_file(filepath: str) -> list[dict]:
                     "type": tag.upper(),
                     "sql": sql_text,
                     "procedures": extract_procedure_calls(sql_text, tag),
+                    "column_usage": extract_column_usage(sql_text),
                 })
 
     return statements
@@ -244,6 +245,197 @@ def extract_procedure_calls(sql_text: str, stmt_tag: str = "") -> list[str]:
     return list(seen.keys())
 
 
+# ── Column-level CRUD extraction (sqlglot AST) ────────────────────
+#
+# Table-level CRUD (``extract_crud_from_sql``) answers "which operations
+# touch this table at all". For the Programs report we also want "which
+# columns exactly" so users see e.g.
+#
+#     ORDERS.id(R), ORDERS.status(U), ORDER_HIST.id(C)
+#
+# sqlglot parses the SQL into a real AST so we can walk SELECT
+# projections / INSERT column lists / UPDATE SET LHS / MERGE WHEN
+# clauses. MyBatis ``#{x}`` / ``${x}`` placeholders defeat sqlglot so we
+# reuse the masking helper already in ``migration/sql_rewriter.py``.
+#
+# Parser failure returns an empty dict — the caller should fall back to
+# table-level CRUD which already exists (PR #30). No attempt to guess
+# column lists for ``SELECT *`` — users can inspect the Tables column
+# and the original XML.
+
+
+def extract_column_usage(sql_text: str) -> dict[str, dict[str, set]]:
+    """Return ``{TABLE: {COL: set("C"|"R"|"U"|"D")}}`` for ``sql_text``.
+
+    Table + column identifiers are upper-cased so they align with
+    ``extract_table_usage`` output and ``statement_to_tables``. Only
+    statements with clearly attributable columns are reported:
+
+    * ``SELECT col1, t.col2 FROM T`` → ``{T: {COL1: R, COL2: R}}``
+    * ``INSERT INTO T (a, b) VALUES (...)`` → ``{T: {A: C, B: C}}``
+    * ``UPDATE T t SET t.a = ... WHERE ...`` → ``{T: {A: U}}``
+    * ``MERGE INTO T ... WHEN MATCHED THEN UPDATE SET T.a = ... WHEN NOT
+      MATCHED THEN INSERT (id, a) VALUES (...)`` →
+      ``{T: {A: U, ID: C}}``
+
+    For ``SELECT *`` / unqualified columns in multi-table FROM clauses
+    we intentionally skip (can't disambiguate without schema). DELETE
+    has no column dimension (table-level only). Parse failures return
+    ``{}``.
+    """
+    if not sql_text or not sql_text.strip():
+        return {}
+    try:  # lazy import — sqlglot is already required by migration/
+        import sqlglot
+        from sqlglot import expressions as _exp
+        from .migration.sql_rewriter import mask_mybatis_placeholders
+    except Exception:
+        return {}
+    safe, _tokens = mask_mybatis_placeholders(sql_text)
+    try:
+        tree = sqlglot.parse_one(safe, dialect="oracle")
+    except Exception:
+        return {}
+    if tree is None:
+        return {}
+    out: dict[str, dict[str, set]] = {}
+    _walk_for_columns(tree, out)
+    return out
+
+
+def _alias_map(tree) -> dict[str, str]:
+    """Return ``{alias_upper: table_upper}`` for every ``exp.Table`` in ``tree``."""
+    from sqlglot import expressions as _exp
+    m: dict[str, str] = {}
+    for t in tree.find_all(_exp.Table):
+        name = (t.name or "").upper()
+        if not name:
+            continue
+        alias = (t.alias or "").upper()
+        if alias:
+            m[alias] = name
+        m[name] = name  # table's own name resolves to itself
+    return m
+
+
+def _add_col(out: dict, table: str, col: str, letter: str) -> None:
+    if not table or not col or not letter:
+        return
+    out.setdefault(table.upper(), {}).setdefault(col.upper(), set()).add(letter)
+
+
+def _first_table(tree) -> str:
+    """Best-guess table for unqualified columns: the first FROM table."""
+    from sqlglot import expressions as _exp
+    for t in tree.find_all(_exp.Table):
+        if t.name:
+            return t.name.upper()
+    return ""
+
+
+def _resolve_col_table(col, alias_map: dict[str, str], fallback: str) -> str:
+    """Return the upper-cased table name for a ``Column`` node."""
+    qualifier = (getattr(col, "table", "") or "").upper()
+    if qualifier:
+        return alias_map.get(qualifier, qualifier)
+    return fallback
+
+
+def _walk_for_columns(tree, out: dict) -> None:
+    """Dispatch by statement type. Nested SELECT inside INSERT / MERGE /
+    WITH walks recursively so sub-reads are captured too."""
+    from sqlglot import expressions as _exp
+    if isinstance(tree, _exp.Select):
+        _collect_select_cols(tree, out)
+    elif isinstance(tree, _exp.Insert):
+        _collect_insert_cols(tree, out)
+        sub = tree.expression  # exp.Select inside INSERT ... SELECT
+        if sub is not None:
+            _walk_for_columns(sub, out)
+    elif isinstance(tree, _exp.Update):
+        _collect_update_cols(tree, out)
+    elif isinstance(tree, _exp.Delete):
+        # DELETE has no column dimension — table-level handled elsewhere
+        return
+    elif isinstance(tree, _exp.Merge):
+        _collect_merge_cols(tree, out)
+
+
+def _collect_select_cols(tree, out: dict) -> None:
+    from sqlglot import expressions as _exp
+    alias_map = _alias_map(tree)
+    fallback = _first_table(tree)
+    # If there's more than one table in FROM / JOIN we can't safely
+    # attribute unqualified columns — drop them to avoid over-reporting.
+    tables_in_scope = {t.name.upper() for t in tree.find_all(_exp.Table) if t.name}
+    multi_table = len(tables_in_scope) > 1
+    for e in tree.expressions:
+        col = e.this if isinstance(e, _exp.Alias) else e
+        if isinstance(col, _exp.Star) or not isinstance(col, _exp.Column):
+            continue
+        tbl = _resolve_col_table(col, alias_map, "" if multi_table else fallback)
+        _add_col(out, tbl, col.name, "R")
+
+
+def _collect_insert_cols(tree, out: dict) -> None:
+    from sqlglot import expressions as _exp
+    target = tree.this
+    if isinstance(target, _exp.Schema):
+        table = target.this
+        name = getattr(table, "name", "") or ""
+        for ident in target.expressions:
+            _add_col(out, name, getattr(ident, "name", ""), "C")
+
+
+def _collect_update_cols(tree, out: dict) -> None:
+    from sqlglot import expressions as _exp
+    alias_map = _alias_map(tree)
+    target = tree.this
+    main_table = getattr(target, "name", "") or ""
+    for e in tree.expressions:
+        if not isinstance(e, _exp.EQ):
+            continue
+        lhs = e.left
+        if not isinstance(lhs, _exp.Column):
+            continue
+        tbl = _resolve_col_table(lhs, alias_map, main_table)
+        _add_col(out, tbl, lhs.name, "U")
+
+
+def _collect_merge_cols(tree, out: dict) -> None:
+    from sqlglot import expressions as _exp
+    alias_map = _alias_map(tree)
+    target = tree.this  # exp.Table (MERGE INTO target)
+    main_table = getattr(target, "name", "") or ""
+    # USING subquery columns get R attribution if it's a SELECT
+    using = tree.args.get("using")
+    if using is not None:
+        src = using if isinstance(using, _exp.Select) else using.find(_exp.Select)
+        if src is not None:
+            _collect_select_cols(src, out)
+    whens = tree.args.get("whens")
+    if whens is None:
+        return
+    for when in whens.expressions:
+        then = when.args.get("then")
+        if isinstance(then, _exp.Update):
+            for e in then.expressions:
+                if isinstance(e, _exp.EQ) and isinstance(e.left, _exp.Column):
+                    tbl = _resolve_col_table(e.left, alias_map, main_table)
+                    _add_col(out, tbl, e.left.name, "U")
+        elif isinstance(then, _exp.Insert):
+            inner = then.this
+            if isinstance(inner, _exp.Schema):
+                for ci in inner.expressions:
+                    _add_col(out, main_table, getattr(ci, "name", ""), "C")
+            elif isinstance(inner, _exp.Tuple):
+                # MERGE INSERT can appear as (col, col, col) tuple
+                for ci in inner.expressions:
+                    if isinstance(ci, _exp.Column):
+                        tbl = _resolve_col_table(ci, alias_map, main_table)
+                        _add_col(out, tbl, ci.name, "C")
+
+
 def _parse_mapper_fallback(filepath: str) -> list[dict]:
     """Fallback parser using regex for malformed XML."""
     statements = []
@@ -275,6 +467,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
                 "type": tag.upper(),
                 "sql": sql_text,
                 "procedures": extract_procedure_calls(sql_text, tag_lower),
+                "column_usage": extract_column_usage(sql_text),
             })
 
     return statements

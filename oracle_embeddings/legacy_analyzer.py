@@ -322,6 +322,10 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
     # already strips comments/literals and drops ``SELECT ... FOR UPDATE``
     # before scanning, so false positives are handled.
     statement_to_body_crud: dict[str, set] = {}
+    # Column-level CRUD (Phase I). sqlglot-based AST walker in
+    # ``extract_column_usage`` — empty dict when parse fails, callers
+    # then fall back to table-level CRUD (``statement_to_body_crud``).
+    statement_to_column_usage: dict[str, dict[str, dict[str, set]]] = {}
     for stmt in mybatis_result.get("statements", []):
         ns = stmt.get("namespace") or ""
         stmt_id = stmt.get("id") or ""
@@ -349,6 +353,14 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
                 body_letters = extract_crud_from_sql(stmt.get("sql") or "")
                 if body_letters:
                     statement_to_body_crud.setdefault(key, set()).update(body_letters)
+                col_usage = stmt.get("column_usage") or {}
+                if col_usage:
+                    # Merge (table, col) → letters across duplicate keys.
+                    merged = statement_to_column_usage.setdefault(key, {})
+                    for tbl, cols in col_usage.items():
+                        dst_cols = merged.setdefault(tbl, {})
+                        for col, letters in cols.items():
+                            dst_cols.setdefault(col, set()).update(letters)
 
     return {
         "namespace_to_xml_files": {k: sorted(v) for k, v in namespace_to_xml_files.items()},
@@ -357,6 +369,7 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         "statement_to_xml_file": statement_to_xml_file,
         "statement_to_procs": statement_to_procs,
         "statement_to_body_crud": statement_to_body_crud,
+        "statement_to_column_usage": statement_to_column_usage,
     }
 
 
@@ -390,6 +403,81 @@ def _format_table_crud(tables: list[str], crud_map: dict[str, set]) -> str:
 def _format_list_with_newlines(items: list[str]) -> str:
     """Join a list with ``",\\n"`` so Excel wraps each item per line."""
     return ",\n".join(items)
+
+
+_TERMS_ROW_RE = re.compile(
+    # Matches a terminology table row. Accepts either 3-col
+    # (Abbr | English | Korean) or 4-col (Word | Abbr | English | Korean)
+    # layouts — both exist in terms_report output. We only care about
+    # abbreviation → Korean here, so we grab the first non-header cell
+    # that looks like an uppercase identifier + a subsequent Korean cell.
+    r"^\|\s*([A-Za-z][\w]*)\s*\|\s*([A-Za-z][\w]*)?\s*\|\s*([^|]+?)?\s*\|\s*([^|]+?)?\s*\|",
+    re.MULTILINE,
+)
+
+
+def _load_terms_dict(path: str) -> dict[str, str]:
+    """Load a terms-dictionary Markdown and return ``{upper_word: korean}``.
+
+    Robust to the two common formats emitted by ``terms_report`` —
+    ``| Abbr | English | Korean | Definition |`` or
+    ``| Word | Abbr | English | Korean | DB | FE | Total |``. We map
+    the short token (``Abbr`` or ``Word``) to the Korean label.
+    Duplicate keys: first-seen wins. Lookup in ``_format_column_crud``
+    tries the column name as-is so both ``CUST_NO`` and ``CUST`` hit
+    their respective entries.
+    """
+    out: dict[str, str] = {}
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            content = fh.read()
+    except Exception:
+        return out
+    for m in _TERMS_ROW_RE.finditer(content):
+        token = (m.group(1) or "").strip()
+        if not token or token.lower() in ("word", "abbreviation", "abbr"):
+            continue
+        korean = None
+        # Korean in 3rd column (Abbr|English|Korean) or 4th
+        # (Word|Abbr|English|Korean). Prefer 4th when present.
+        for g in (m.group(4), m.group(3)):
+            if g and any("가" <= ch <= "힣" for ch in g):
+                korean = g.strip()
+                break
+        if not korean:
+            continue
+        out.setdefault(token.upper(), korean)
+    return out
+
+
+def _format_column_crud(column_crud: dict[str, dict[str, set]],
+                         terms_dict: dict[str, str] | None = None) -> str:
+    """Render the Programs-sheet ``Columns`` column.
+
+    Produces ``TBL.col1[한글](R),\\nTBL.col2[등록일자](U)`` with one
+    ``TABLE.COLUMN`` per line. When ``terms_dict`` is provided and the
+    column name has a Korean translation, a bracketed ``[한글]`` token
+    is inserted between the name and the CRUD suffix. Missing terms
+    simply omit the bracket. Letters are sorted in canonical C/R/U/D
+    order to match :func:`_format_table_crud`.
+
+    Input ``column_crud`` comes from :func:`_derive_column_crud`.
+    Tables/columns are upper-cased by the sqlglot walker, so the dict
+    traversal yields deterministic sorted output.
+    """
+    canonical = ("C", "R", "U", "D")
+    terms = terms_dict or {}
+    parts: list[str] = []
+    for tbl in sorted(column_crud):
+        cols = column_crud[tbl]
+        for col in sorted(cols):
+            letters = cols[col] or set()
+            ordered = "".join(ch for ch in canonical if ch in letters)
+            korean = terms.get(col) or terms.get(f"{tbl}.{col}") or ""
+            ko_part = f"[{korean}]" if korean else ""
+            suffix = f"({ordered})" if ordered else ""
+            parts.append(f"{tbl}.{col}{ko_part}{suffix}")
+    return ",\n".join(parts)
 
 
 # Name-based impl discovery suffixes. Legacy projects use many different
@@ -1007,6 +1095,7 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             fqcn for fqcn in services if fqcn in indexes["mappers_by_fqcn"]
         )
         table_crud = _derive_table_crud(sql_ids, mybatis_idx)
+        column_crud = _derive_column_crud(sql_ids, mybatis_idx)
         procs = _derive_procedures(sql_ids, mybatis_idx)
         return {
             "services": sorted(services),
@@ -1014,6 +1103,7 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             "xml_files": sorted(xml_files),
             "tables": sorted(tables),
             "table_crud": table_crud,
+            "column_crud": column_crud,
             "procs": procs,
             "rfcs": sorted(rfcs),
             "sql_ids": sorted(sql_ids),
@@ -1038,6 +1128,7 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
         "xml_files": xml_files_l,
         "tables": tables_l,
         "table_crud": {},
+        "column_crud": {},
         "procs": [],
         "rfcs": rfc_names,
         "sql_ids": [],
@@ -1099,6 +1190,30 @@ def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     return out
 
 
+def _derive_column_crud(sql_ids, mybatis_idx: dict) -> dict[str, dict[str, set]]:
+    """Aggregate per-column CRUD across every resolved statement.
+
+    Parallel to :func:`_derive_table_crud` but with column granularity.
+    Returns ``{TABLE: {COL: set("C"|"R"|"U"|"D")}}``. Tables / columns
+    that never got a letter (e.g. statement sqlglot parse failed) are
+    simply absent — callers fall back to the table-level result which
+    already exists.
+
+    Only statements present in ``statement_to_column_usage`` contribute.
+    Namespace-fallback keys (no ``.id``) have no entry so they're
+    silently skipped.
+    """
+    stmt_to_cols = mybatis_idx.get("statement_to_column_usage", {})
+    out: dict[str, dict[str, set]] = {}
+    for key in sql_ids or ():
+        col_map = stmt_to_cols.get(key) or {}
+        for tbl, cols in col_map.items():
+            dst = out.setdefault(tbl, {})
+            for col, letters in cols.items():
+                dst.setdefault(col, set()).update(letters)
+    return out
+
+
 def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[str]:
     """If a controller has no class-level mapping but extends another
     controller, inherit the parent's class-level path. Recursive to cover
@@ -1152,6 +1267,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "query_xml": "",
         "sql_ids": "",
         "related_tables": "",
+        "related_columns": "",
         "procedures": "",
         "rfc": "",
         "matched": False,
@@ -1277,6 +1393,12 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         # Excel cells wrap neatly (e.g. ``TABLE_A(R),\nTABLE_B(CRU)``).
         # RFC uses the same comma-newline layout for symmetry.
         "related_tables": _format_table_crud(tables, chain.get("table_crud") or {}),
+        # Columns column (Phase I) — per-column CRUD from sqlglot AST
+        # walker. Empty when sqlglot parse fails; table-level CRUD above
+        # still reflects the operation set so no information is lost.
+        "related_columns": _format_column_crud(
+            chain.get("column_crud") or {}, base_dirs.get("terms_dict"),
+        ),
         # Procedures column — Oracle stored procs invoked from this
         # endpoint's chain. Same ",\n" convention as Tables/RFC.
         "procedures": _format_list_with_newlines(chain.get("procs") or []),
@@ -1302,7 +1424,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    biz_max_handlers: int = 300,
                    biz_use_cache: bool = True,
                    biz_config: dict | None = None,
-                   library_dirs: list[str] | None = None) -> dict:
+                   library_dirs: list[str] | None = None,
+                   terms_md: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1568,6 +1691,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "frontend_dir": frontend_dir or "",
         "backend_project": backend_project,
         "backend_framework": framework,
+        # Column→Korean lookup for the Programs "Columns" render. ``None``
+        # is valid — formatter just skips ``[한글]`` annotation when
+        # terms dictionary isn't provided.
+        "terms_dict": _load_terms_dict(terms_md) if terms_md else None,
     }
 
     rows = []
@@ -1884,7 +2011,8 @@ def analyze_legacy_batch(backends_root: str,
                         biz_max_handlers: int = 300,
                         biz_use_cache: bool = True,
                         biz_config: dict | None = None,
-                        library_dirs: list[str] | None = None) -> dict:
+                        library_dirs: list[str] | None = None,
+                        terms_md: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -1985,6 +2113,10 @@ def analyze_legacy_batch(backends_root: str,
             # so a common service repo is available to all backends for
             # chain resolution (FQCN, impls, mapper/XML lookup).
             library_dirs=library_dirs,
+            # Same terms dictionary is applied to every sub-project — a
+            # column-name → Korean translation is project-neutral so one
+            # file serves the whole batch.
+            terms_md=terms_md,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

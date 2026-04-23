@@ -730,7 +730,7 @@ output/legacy_analysis/
 ├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
 └── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 시트)
     ├── Sheet: Summary                 (전체 집계)
-    ├── Sheet: Programs                (메인 — 15개 컬럼)
+    ├── Sheet: Programs                (메인 — 16개 컬럼)
     ├── Sheet: Menu Hierarchy          (메뉴 계층 + 매칭 여부)
     ├── Sheet: Unmatched Controllers   (메뉴 없는 컨트롤러)
     ├── Sheet: Orphan Menu Entries     (컨트롤러 없는 메뉴)
@@ -738,10 +738,10 @@ output/legacy_analysis/
     └── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
 ```
 
-**Programs 시트 컬럼 (15개):**
+**Programs 시트 컬럼 (16개):**
 
 `No, Main, Sub, Tab, Program, HTTP, URL, File, React, Controller, Service,
-Query XML, Tables, Procedure, RFC`
+Query XML, Tables, Columns, Procedure, RFC`
 
 매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
 행은 **회색**으로 하이라이트됩니다.
@@ -755,6 +755,7 @@ Query XML, Tables, Procedure, RFC`
 | 컬럼 | 구분자 | 추가 annotation |
 |---|---|---|
 | `Tables` | `,\n` | 테이블명 뒤에 `(CRUD)` suffix — `C`(INSERT) / `R`(SELECT) / `U`(UPDATE) / `D`(DELETE) 조합 |
+| `Columns` | `,\n` | `TABLE.COLUMN[한글](CRUD)` — sqlglot AST 로 SELECT projection / INSERT column list / UPDATE SET LHS / MERGE WHEN 절 컬럼 단위 CRUD 추출. `--terms-md` 지정 시 용어사전 매칭 컬럼에 `[한글]` 병기, 없으면 생략. `SELECT *` 는 컬럼 열거 불가 → 미표시 (Tables 컬럼에 R 은 여전히 표시) |
 | `Procedure` | `,\n` | MyBatis SQL 에서 호출하는 Oracle 스토어드 프로시저 / 패키지 (`CALL` / `{CALL}` / `EXEC` / `EXECUTE` / PL/SQL `BEGIN...END;` / `<procedure>` 태그) |
 | `RFC` | `,\n` | — |
 | `Service` / `Service method` / `XML` / `XML method` | `;\n` | — |
@@ -771,6 +772,17 @@ INSERT 만, `EQUI_W` 는 네 가지 모두. STATEMENT / PROCEDURE / 네임스페
 fallback 처럼 작업 타입을 단정할 수 없는 경우는 letter 없이 테이블명만
 표시. `Tables Cross-Reference` 시트는 `(CRUD)` suffix 를 자동 제거해서
 bare 테이블명 기준으로 집계합니다.
+
+Columns 컬럼 실제 출력 예 (같은 endpoint, 용어사전 매칭):
+```
+CRHD_W.STATUS[상태](U),
+EQUI_W.V(U),
+IFLOT_W.ID[식별자](C),
+IFLOT_W.NAME[이름](C)
+```
+→ UPDATE SET / INSERT column 리스트 기반. sqlglot 파싱 실패 (PL/SQL 블록,
+Oracle hint 일부 구문 등) 시 해당 statement 만 skip — Tables 컬럼의
+table-level CRUD 는 그대로 유지되므로 정보 손실 없음.
 
 ### 12. SQL Migration — AS-IS → TO-BE 스키마 기반 쿼리 변환
 
