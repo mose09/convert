@@ -329,6 +329,74 @@ def main() -> int:
                 print(f"    config.yaml 읽기 실패: {e}")
         else:
             print(f"    config.yaml 이 현재 디렉토리에 없음 → 기본값 rfc_depth=2")
+
+    # 8) 전체 backend 인덱스 vs 단일 파일 dict 불일치 확인
+    #    실제 walker 가 사용하는 services_by_fqcn 에 caller 의 class 가
+    #    올바로 등재돼 있는지, 그리고 거기 methods 에 callee 가 포함돼
+    #    있는지 (parse_java_file 결과와 동일한지) 검증.
+    _section(f"[8] 전체 backend 인덱스 검증 — walker 가 보는 class dict")
+    if not backend_dir:
+        print(f"  backend_dir 미지정 — skip")
+        return 0
+    try:
+        from oracle_embeddings.legacy_java_parser import parse_all_java
+        from oracle_embeddings.legacy_analyzer import _build_indexes
+    except Exception as e:
+        print(f"  import 실패: {e}")
+        return 0
+    print(f"  전체 backend 파싱 중: {backend_dir}")
+    all_classes = parse_all_java(backend_dir)
+    print(f"  → {len(all_classes)} 개 class 파싱")
+    indexes = _build_indexes(all_classes)
+    target_fqcn = cls.get("fqcn")
+    print(f"\n  단일 파일 class FQCN: {target_fqcn!r}")
+
+    # 후보 4개 인덱스 중 어디 등재됐는지
+    svc_idx = indexes.get("services_by_fqcn") or {}
+    ctrl_idx = indexes.get("controllers_by_fqcn") or {}
+    mapper_idx = indexes.get("mappers_by_fqcn") or {}
+    by_simple = indexes.get("by_simple") or {}
+
+    found_locations = []
+    if target_fqcn in svc_idx:
+        found_locations.append("services_by_fqcn")
+    if target_fqcn in ctrl_idx:
+        found_locations.append("controllers_by_fqcn")
+    if target_fqcn in mapper_idx:
+        found_locations.append("mappers_by_fqcn")
+    print(f"  인덱스 등재: {found_locations or '⚠ 어디에도 없음'}")
+
+    # walker 가 같은 methods 리스트를 보는지 (dict 교체 / 복사 버그 확인)
+    idx_cls = (svc_idx.get(target_fqcn) or mapper_idx.get(target_fqcn)
+               or ctrl_idx.get(target_fqcn))
+    if idx_cls is None:
+        print(f"  ⚠ target class 가 walker 인덱스에 없음 — walker 가 도달 불가")
+        print(f"    → _build_indexes 의 stereotype 판정을 확인해야 함")
+    else:
+        idx_method_names = {m.get("name") for m in idx_cls.get("methods", [])}
+        file_method_names = {m.get("name") for m in cls.get("methods", [])}
+        missing_in_idx = file_method_names - idx_method_names
+        callee_in_idx = callee in idx_method_names
+        print(f"  walker 인덱스 methods 수: {len(idx_method_names)}")
+        print(f"  단일파일 methods 수:       {len(file_method_names)}")
+        if missing_in_idx:
+            print(f"  ⚠ walker 인덱스에 누락된 method: {sorted(missing_in_idx)[:5]}")
+            print(f"    → 인덱스 빌드 시 class dict 교체 / 복사 이슈 의심")
+        print(f"  callee {callee!r} walker 인덱스 존재 여부: "
+              f"{'✓ YES' if callee_in_idx else '✗ NO'}")
+        if not callee_in_idx:
+            print(f"    → 이게 원인일 가능성 높음. walker 가 callee 를 못 찾음")
+
+    # 동일 simple name 을 가진 다른 class 가 있는지 (충돌 가능성)
+    simple_name = (target_fqcn or "").rsplit(".", 1)[-1]
+    same_simple = by_simple.get(simple_name) or []
+    if len(same_simple) > 1:
+        print(f"\n  ⚠ simple name {simple_name!r} 을 가진 class 가 여러 개: {len(same_simple)}")
+        for c in same_simple:
+            print(f"    - {c.get('fqcn')}")
+        print(f"    → FQCN 해석이 엉뚱한 class 로 갈 위험. controller 가 어느 impl "
+              f"을 쓰는지 확인 필요.")
+
     return 0
 
 
