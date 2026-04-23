@@ -81,8 +81,25 @@ def main() -> int:
         print("  → 해당 메서드 선언부 한 줄 (annotation 포함) 공유 부탁드립니다.")
         return 0
     print(f"✓ 등재됨")
+
+    # 같은 이름의 메서드 여러 개 (오버로딩) 체크 — _find_method_in_class 가
+    # 첫 번째만 반환하므로 오버로딩이면 walker 가 틀린 body 볼 수 있음.
+    same_name = [m for m in methods if m.get("name") == callee]
+    if len(same_name) > 1:
+        print(f"\n🔴 callee {callee!r} 가 이 클래스에 {len(same_name)} 개 (오버로딩)!")
+        print(f"   _find_method_in_class 는 첫 번째만 반환 → walker 가 틀린 body 참조.")
+        for i, m in enumerate(same_name):
+            sig = m.get("signature", "")[:80]
+            sqls = len(m.get("body_sql_calls") or [])
+            fcs = len(m.get("body_field_calls") or [])
+            print(f"     [{i}] sig={sig!r}")
+            print(f"         body_sql_calls={sqls}, body_field_calls={fcs}, "
+                  f"body_len={len(m.get('body', '') or '')}")
+        print(f"   → caller 가 부르는 건 'param 리스트' 기준으로 어느 쪽인지 확인 필요.")
+        print(f"     패치: _find_method_in_class 가 overload 중 body 가장 큰 것 선택,")
+        print(f"     또는 전부 병합해서 SQL 누적하도록 변경 고려.")
     body = callee_m.get("body", "") or ""
-    print(f"  body 길이: {len(body)} chars")
+    print(f"  (첫 번째 매치) body 길이: {len(body)} chars")
     if not body:
         print("⚠ body 가 비어있음 — balanced-brace walker 실패 가능성.")
     else:
