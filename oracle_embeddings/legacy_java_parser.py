@@ -612,14 +612,27 @@ _NS_CONST_RE = re.compile(
     re.VERBOSE,
 )
 
+# namespace-candidate value: identifier chars + dots only. 점 없이 `"scp"`
+# 처럼 suffix 쪽 `.findXxx` 와 concat 되는 실제 케이스도 허용. 다른
+# 임의 문자열 (`"Hello World"` 등) 은 제외해 noise 차단.
+_NS_VALUE_RE = re.compile(r"^[\w.]+$")
+
 
 def _extract_ns_constants(content: str) -> dict:
-    """Collect ``{variable_name: string_value}`` for namespace prefix resolution."""
+    """Collect ``{variable_name: string_value}`` for namespace prefix resolution.
+
+    Accepts both dotted prefixes (``"com.example."``) and bare namespace
+    tokens (``"scp"``) — the latter is common in projects that put the
+    ``.`` on the suffix side: ``sqlSession.selectList(NS + ".findXxx")``.
+    Boundary 검증은 resolve 지점 (``_extract_sql_calls`` /
+    ``_collect_body_sql_calls``) 에서 `prefix.endswith(".") or
+    suffix.startswith(".")` 로 처리한다.
+    """
     constants = {}
     for m in _NS_CONST_RE.finditer(content):
         name = m.group("name")
         value = m.group("value")
-        if "." in value:
+        if _NS_VALUE_RE.match(value):
             constants[name] = value
     return constants
 
