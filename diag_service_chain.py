@@ -368,6 +368,25 @@ def main() -> int:
     target_fqcn = cls.get("fqcn")
     print(f"\n  단일 파일 class FQCN: {target_fqcn!r}")
 
+    # 중복 FQCN 체크 — 같은 fqcn 을 가진 class dict 가 parse_all_java 결과에
+    # 여러 개 있으면 _build_indexes 가 마지막 걸로 덮어씀. 그게 "body_sql
+    # 작은 쪽" 일 가능성이 v10-B (오버로딩 아님) 상황에서 가장 유력한 원인.
+    same_fqcn_classes = [c for c in all_classes if c.get("fqcn") == target_fqcn]
+    if len(same_fqcn_classes) > 1:
+        print(f"\n  🔴 동일 FQCN {target_fqcn!r} 을 가진 class 가 "
+              f"{len(same_fqcn_classes)} 개 파싱됨!")
+        for i, c in enumerate(same_fqcn_classes):
+            callee_in = [m for m in c.get("methods", []) if m.get("name") == callee]
+            sql_cnt = sum(len(m.get("body_sql_calls") or []) for m in callee_in)
+            print(f"     [{i}] {c.get('filepath')}")
+            print(f"         methods={len(c.get('methods', []))}, "
+                  f"{callee!r} 매치 {len(callee_in)}개 총 body_sql_calls={sql_cnt}")
+        print(f"  → _build_indexes 는 services[fqcn]=c 로 덮어써서 마지막 인스턴스만 유지.")
+        print(f"     단일파일 diag [2] (14 SQL) vs walker [9] (2 SQL) 차이의 원인.")
+        print(f"     패치 방향: _build_indexes 에서 FQCN 충돌 시 methods 합병 / 경고.")
+    else:
+        print(f"  동일 FQCN class 중복 없음 — 이것도 원인 아님.")
+
     # 후보 4개 인덱스 중 어디 등재됐는지
     svc_idx = indexes.get("services_by_fqcn") or {}
     ctrl_idx = indexes.get("controllers_by_fqcn") or {}
