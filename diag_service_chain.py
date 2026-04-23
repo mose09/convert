@@ -397,6 +397,80 @@ def main() -> int:
         print(f"    → FQCN 해석이 엉뚱한 class 로 갈 위험. controller 가 어느 impl "
               f"을 쓰는지 확인 필요.")
 
+    # 9) 실제 walker 시뮬레이션 — caller 를 synthetic endpoint 로 만들어
+    #    _resolve_endpoint_chain 을 끝까지 실행하고 수집 결과 출력.
+    _section(f"[9] 실제 walker 시뮬레이션 — _resolve_endpoint_chain")
+    if idx_cls is None:
+        print(f"  target class 가 인덱스에 없어 walker 실행 불가 — skip.")
+        return 0
+    try:
+        from oracle_embeddings.legacy_analyzer import (
+            _resolve_endpoint_chain, _build_mybatis_indexes,
+        )
+        from oracle_embeddings.mybatis_parser import parse_all_mappers
+    except Exception as e:
+        print(f"  import 실패: {e}")
+        return 0
+
+    mb_raw = parse_all_mappers(backend_dir)
+    mb_idx = _build_mybatis_indexes(mb_raw)
+
+    # caller 의 class 안에서 caller method 의 index 를 찾음
+    caller_idx = None
+    for i, m in enumerate(idx_cls.get("methods", [])):
+        if m.get("name") == caller:
+            caller_idx = i
+            break
+    if caller_idx is None:
+        print(f"  ⚠ walker 인덱스 class 안에 caller {caller!r} 없음 — skip.")
+        return 0
+
+    synthetic_endpoint = {
+        "method_name": caller,
+        "_method_idx": caller_idx,
+        "url": "/diag/sim",
+        "http_method": "GET",
+    }
+    print(f"  synthetic endpoint 로 caller {caller!r} 를 엔드포인트처럼 walker 돌림")
+    chain = _resolve_endpoint_chain(
+        synthetic_endpoint, idx_cls, indexes, mb_idx, rfc_depth=2,
+    )
+    print(f"\n  === walker 수집 결과 ===")
+    print(f"  resolved_via:      {chain.get('resolved_via')!r}")
+    print(f"  services:          {len(chain.get('services') or [])} 건")
+    for s in (chain.get('services') or [])[:10]:
+        print(f"    - {s}")
+    print(f"  service_methods:   {len(chain.get('service_methods') or [])} 건")
+    for sm in (chain.get('service_methods') or [])[:10]:
+        print(f"    - {sm}")
+    print(f"  tables:            {len(chain.get('tables') or [])} 건")
+    for t in sorted(chain.get('tables') or []):
+        print(f"    - {t}")
+    print(f"  sql_ids:           {len(chain.get('sql_ids') or [])} 건")
+    for sid in sorted(chain.get('sql_ids') or []):
+        marker = "  ← callee 기인" if callee.lower() in sid.lower() else ""
+        print(f"    - {sid}{marker}")
+    print(f"  xml_files:         {len(chain.get('xml_files') or [])} 건")
+    for xf in sorted(chain.get('xml_files') or [])[:10]:
+        print(f"    - {xf}")
+    print(f"  rfcs:              {len(chain.get('rfcs') or [])} 건")
+    for r in sorted(chain.get('rfcs') or [])[:10]:
+        print(f"    - {r}")
+
+    # 최종 판정
+    collected_anything = bool(chain.get('tables') or chain.get('sql_ids'))
+    callee_related_sqls = [s for s in (chain.get('sql_ids') or [])
+                           if callee.lower() in s.lower()]
+    print(f"\n  === 최종 판정 ===")
+    if not collected_anything:
+        print(f"  ⚠ walker 가 아무것도 수집 못함. caller body 자체가 SQL/field_calls 없음.")
+    elif callee_related_sqls:
+        print(f"  ✓ callee 기인 sql_id {len(callee_related_sqls)} 건 수집됨 — walker 정상.")
+        print(f"    → analyze-legacy 결과의 Programs 시트에 원래 나왔어야 함.")
+        print(f"      실제로 해당 endpoint 행이 다른 controller 에 속하는지 확인 필요.")
+    else:
+        print(f"  ⚠ tables/sql_ids 는 수집했지만 callee {callee!r} 기인한 sql_id 는 없음.")
+        print(f"    → callee 의 body_sql_calls 가 수집되지 못한 것. [2] 카운트 재확인.")
     return 0
 
 
