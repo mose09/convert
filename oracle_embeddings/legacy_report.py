@@ -565,6 +565,7 @@ _BATCH_COLUMNS_WITH_MENU = [
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Table",             "related_tables"),
+    ("Procedure",         "procedures"),
     ("RFC",               "rfc"),
 ]
 
@@ -582,6 +583,7 @@ _BATCH_COLUMNS_NO_MENU = [
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Table",             "related_tables"),
+    ("Procedure",         "procedures"),
     ("RFC",               "rfc"),
 ]
 
@@ -607,6 +609,7 @@ _SINGLE_COLUMNS_WITH_MENU = [
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Tables",            "related_tables"),
+    ("Procedure",         "procedures"),
     ("RFC",               "rfc"),
 ]
 
@@ -624,6 +627,7 @@ _SINGLE_COLUMNS_NO_MENU = [
     ("XML",               "query_xml"),
     ("XML method",        "sql_ids"),
     ("Tables",            "related_tables"),
+    ("Procedure",         "procedures"),
     ("RFC",               "rfc"),
 ]
 

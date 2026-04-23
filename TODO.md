@@ -92,43 +92,46 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: Programs 시트 Tables/RFC 컬럼에 CRUD 표기 + 줄바꿈 구분자
+### 진행 중: MyBatis XML 에서 Oracle 프로시저 호출 추출 + Programs 시트 컬럼
 
-Tables 컬럼에 각 테이블의 작업 유형 (C/R/U/D) 을 붙이고, 한 셀 안에
-`,\n` (쉼표 + 줄바꿈) 으로 구분해 한눈에 여러 항목을 읽기 쉽게.
-RFC 컬럼도 동일하게 `,\n` 구분자 적용.
+Programs 시트 Tables 컬럼 다음에 해당 endpoint 의 MyBatis SQL 에서
+호출하는 **Oracle Stored Procedure/Package** 이름을 새 컬럼으로 노출.
+Tables / RFC 와 동일하게 `,\n` 구분자 + wrap_text 포맷.
 
-사용자 샘플:
-```
-CMN_BTN_ROLE(R),
-CRHD_W(RU),
-IFLOT_W(C),
-EQUI_W(CRUD)
-```
+커버 대상 패턴:
+- `CALL [schema.]pkg.proc(...)` / `CALL proc(...)` (MyBatis standard)
+- `{CALL ...}` (JDBC escape syntax)
+- `EXEC` / `EXECUTE pkg.proc(...)`
+- PL/SQL 블록: `BEGIN pkg.proc(...); END;`
+- `<procedure>` 태그로 선언된 statement (id = procedure 이름일 때 참조용)
 
-단일 모드 (`--backend-dir`) + 배치 모드 (`--backends-root`) 양쪽 동일.
+단일 + 배치 모드 양쪽 동일.
 
 작업 항목:
 
-- [x] `_build_mybatis_indexes` 에 `statement_to_type` 추가 —
-      `{"ns.id": "SELECT|INSERT|UPDATE|DELETE|..."}`
-- [x] `_resolve_endpoint_chain` 에서 `table_crud: {table: set[letter]}` 수집
-      (SELECT→R / INSERT→C / UPDATE→U / DELETE→D). method-scope 경로에
-      `_derive_table_crud` helper 추가. class-scope fallback 은 per-statement
-      해석이 없어 CRUD 공백.
-- [x] `_build_row` 가 `_format_table_crud` 로 Tables 렌더, RFC 는
-      `,\n` 구분자. service/service_methods/query_xml/sql_ids 는 기존 `; `
-      를 `;\n` 으로 교체 (사용자 추가 요청).
-- [x] `legacy_report` Programs 시트 데이터 셀 `wrap_text=True` 적용 (단일
-      + 배치 양쪽 `_write_row` 수정). Tables Cross-Reference aggregation 에
-      `_bare_table_name` 으로 `(CRUD)` suffix 제거해서 bare name 키로 집계.
-- [x] mock 검증 PASS:
-      * 단일 모드 (`/tmp/mock_crud`): 4 테이블 × CRUD 믹스 — `CMN_BTN_ROLE(R)`
-        (SELECT), `CRHD_W(UD)` (UPDATE+DELETE), `EQUI_W(RU)` (SELECT+UPDATE),
-        `IFLOT_W(C)` (INSERT) ✓
-      * 배치 모드 (`/tmp/mock_crud_batch/project1, project2`): 양 프로젝트 동일
-        패턴 + Cross-Reference 가 `# Projects=2` 로 정상 집계 ✓
-      * Excel `wrap_text=True` 확인 ✓
+- [x] `mybatis_parser._PROC_CALL_PATTERNS` 4 개 regex (JDBC `{CALL}` /
+      plain CALL / EXEC·EXECUTE / PL/SQL `BEGIN`) + `_PROC_CALL_BUILTINS`
+      필터 (`DBMS_OUTPUT.PUT_LINE` 등 noise 제거)
+- [x] `extract_procedure_calls(sql, tag)` 공개 함수 + `parse_mapper_file`
+      statement dict 에 `procedures: list[str]` 필드 부착 (XML/fallback
+      양쪽 경로)
+- [x] `_build_mybatis_indexes` 에 `statement_to_procs: {ns.id: [proc]}`
+- [x] `_derive_procedures(sql_ids, mybatis_idx)` 헬퍼 + chain dict 에
+      `procs` 키 (method-scope / class-scope fallback 모두)
+- [x] `_build_row` 에 `procedures` 필드 (`,\n` 구분자), menu-only stub
+      row 에도 빈 값 사전 할당
+- [x] `legacy_report` 컬럼 정의 4 개 (single with/without menu + batch
+      with/without menu) 에 "Procedure" 컬럼을 Tables / Table 다음에 삽입
+- [x] mock 검증 PASS (`/tmp/mock_proc`):
+      * 6 statements (5 proc 패턴 + 1 plain SELECT) → procedures =
+        `LEGACY_TOOLS.MIGRATE_DATA, FINANCE_PKG.RECONCILE,
+        ORDER_PKG.START_JOB, ORDER_PKG.PROCESS_BATCH, HR_PKG.GET_EMP` ✓
+      * `<procedure>` 태그 안의 CALL 도 정상 추출 ✓
+      * `BEGIN ... END;` 블록의 첫 procedure 추출, `DBMS_OUTPUT.PUT_LINE`
+        은 builtin filter 로 제외 ✓
+      * Excel 단일 / 배치 양쪽 "Procedure" 헤더 노출 + `wrap_text=True` ✓
+- [x] README "주요 옵션" 컬럼 포맷 표 + "Programs 시트 컬럼" 행 (14→15)
+      갱신
 - [x] conventional commit + PR + squash-merge
 
 ---

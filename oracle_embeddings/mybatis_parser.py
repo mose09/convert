@@ -99,9 +99,69 @@ def parse_mapper_file(filepath: str) -> list[dict]:
                     "id": stmt_id,
                     "type": tag.upper(),
                     "sql": sql_text,
+                    "procedures": extract_procedure_calls(sql_text, tag),
                 })
 
     return statements
+
+
+# Oracle stored-procedure / package invocation patterns, in priority order.
+#
+# 1. JDBC escape ``{CALL ...}`` — unambiguous
+# 2. Plain ``CALL [schema.]pkg.proc(...)`` — MyBatis-standard stored proc call
+# 3. ``EXEC`` / ``EXECUTE [schema.]pkg.proc(...)``
+# 4. PL/SQL block: ``BEGIN [schema.]pkg.proc(...); END;`` — we capture the
+#    first identifier-call immediately after ``BEGIN`` (typically the main
+#    procedure; outer DML inside a block is rare and wouldn't match).
+#
+# Captured group ``proc`` is the dotted identifier (``schema.pkg.proc``),
+# ``[\w.]+`` allows arbitrary depth.
+_PROC_CALL_PATTERNS = [
+    re.compile(r"\{\s*CALL\s+(?P<proc>[\w.]+)\s*\(", re.IGNORECASE),
+    re.compile(r"\bCALL\s+(?P<proc>[\w.]+)\s*\(", re.IGNORECASE),
+    re.compile(r"\b(?:EXEC|EXECUTE)\s+(?P<proc>[\w.]+)\s*\(", re.IGNORECASE),
+    re.compile(r"\bBEGIN\s+(?P<proc>[\w.]+)\s*\(", re.IGNORECASE),
+]
+
+# Oracle PL/SQL built-ins that would masquerade as procedure calls in a
+# naive BEGIN capture (e.g. ``BEGIN DBMS_OUTPUT.PUT_LINE('start'); ...``).
+# We still emit the main first-level call but skip these to reduce noise.
+_PROC_CALL_BUILTINS = frozenset({
+    # Oracle noise that shouldn't surface as "business procedure"
+    "NULL", "DBMS_OUTPUT.PUT_LINE", "COMMIT", "ROLLBACK", "SAVEPOINT",
+})
+
+
+def extract_procedure_calls(sql_text: str, stmt_tag: str = "") -> list[str]:
+    """Return Oracle stored-procedure / package names invoked in ``sql_text``.
+
+    Detects the four common shapes documented on ``_PROC_CALL_PATTERNS``
+    (JDBC ``{CALL}``, plain ``CALL``, ``EXEC``/``EXECUTE``, PL/SQL ``BEGIN``).
+    Deduplicates while preserving first-seen order so the Programs
+    report lists the primary procedure first.
+
+    ``stmt_tag`` lets callers flag that this SQL lived inside an explicit
+    ``<procedure>`` MyBatis tag. We don't synthesize a name from the
+    statement id alone (it's a MyBatis key, not necessarily the Oracle
+    procedure) — we only bump confidence that the regex result is a real
+    procedure call. If regex finds nothing but ``stmt_tag == "procedure"``,
+    we return ``[]`` so the caller can still see the statement in the
+    Programs row via Tables/SQL-ids columns.
+    """
+    if not sql_text:
+        return []
+    seen: dict[str, None] = {}
+    for pat in _PROC_CALL_PATTERNS:
+        for m in pat.finditer(sql_text):
+            name = (m.group("proc") or "").strip()
+            if not name:
+                continue
+            canonical = name.upper()
+            if canonical in _PROC_CALL_BUILTINS:
+                continue
+            if canonical not in seen:
+                seen[canonical] = None
+    return list(seen.keys())
 
 
 def _parse_mapper_fallback(filepath: str) -> list[dict]:
@@ -125,6 +185,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
     for match in re.finditer(pattern, content, re.DOTALL | re.IGNORECASE):
         tag, stmt_id, sql_body = match.groups()
         sql_text = _clean_sql(sql_body)
+        tag_lower = tag.lower()
         if sql_text.strip():
             statements.append({
                 "mapper": mapper_name,
@@ -133,6 +194,7 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
                 "id": stmt_id,
                 "type": tag.upper(),
                 "sql": sql_text,
+                "procedures": extract_procedure_calls(sql_text, tag_lower),
             })
 
     return statements
