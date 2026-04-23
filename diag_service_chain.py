@@ -263,15 +263,23 @@ def main() -> int:
         print("    python diag_service_chain.py <.java> <caller> <callee> <backend_dir>")
     else:
         # (b) MyBatis 스캔 → namespace 인덱스 → callee 의 각 namespace 매칭 시도
+        #
+        # NOTE: ``parse_all_mappers`` 만 부르면 ``namespace_to_xml_files`` 가
+        # 비어 있다 (그 인덱스는 ``legacy_analyzer._build_mybatis_indexes`` 가
+        # 별도로 빌드함). 그래서 v6 부터는 analyzer 의 인덱스 빌더를 직접
+        # 호출해서 실제 analyze-legacy 와 동일한 namespace dict 를 얻음.
         try:
             from oracle_embeddings.mybatis_parser import parse_all_mappers
-            from oracle_embeddings.legacy_analyzer import _match_namespace
+            from oracle_embeddings.legacy_analyzer import (
+                _match_namespace, _build_mybatis_indexes,
+            )
         except Exception as e:
             print(f"  import 실패: {e}")
             return 0
         print(f"  MyBatis XML 스캔 중: {backend_dir}")
-        mb = parse_all_mappers(backend_dir)
-        ns_to_xml = mb.get("namespace_to_xml_files", {}) or {}
+        mb_raw = parse_all_mappers(backend_dir)
+        mb_idx = _build_mybatis_indexes(mb_raw)
+        ns_to_xml = mb_idx.get("namespace_to_xml_files", {}) or {}
         print(f"  → {len(ns_to_xml)} 개 namespace 발견")
         callee_sql_calls = callee_m.get("body_sql_calls", []) or []
         if not callee_sql_calls:
