@@ -441,9 +441,75 @@ def main() -> int:
         "http_method": "GET",
     }
     print(f"  synthetic endpoint 로 caller {caller!r} 를 엔드포인트처럼 walker 돌림")
-    chain = _resolve_endpoint_chain(
-        synthetic_endpoint, idx_cls, indexes, mb_idx, rfc_depth=2,
-    )
+
+    # walker 의 _find_method_in_class 를 monkey-patch 해서 호출마다 trace 로그.
+    # 실제 walker 가 saveDpPubNotiInfo 를 찾으려고 시도하는지, 결과가 None
+    # 인지, 시도조차 안 하는지 즉시 드러남.
+    import oracle_embeddings.legacy_analyzer as _la
+    _orig_find = _la._find_method_in_class
+    trace_log = []
+    def _traced_find(cls_dict, name):
+        result = _orig_find(cls_dict, name)
+        trace_log.append({
+            "owner_fqcn": cls_dict.get("fqcn"),
+            "method_name": name,
+            "found": result is not None,
+            "body_sql_count": len(result.get("body_sql_calls") or []) if result else 0,
+            "body_field_count": len(result.get("body_field_calls") or []) if result else 0,
+        })
+        return result
+    _la._find_method_in_class = _traced_find
+    try:
+        chain = _resolve_endpoint_chain(
+            synthetic_endpoint, idx_cls, indexes, mb_idx, rfc_depth=2,
+        )
+    finally:
+        _la._find_method_in_class = _orig_find
+
+    print(f"\n  === walker trace ({len(trace_log)} 건의 _find_method_in_class 호출) ===")
+    callee_attempts = []
+    for i, t in enumerate(trace_log):
+        marker = ""
+        if t["method_name"] == callee:
+            callee_attempts.append(t)
+            marker = "  ← callee!"
+        print(f"    [{i:2d}] find({t['owner_fqcn']!r:60}, {t['method_name']!r})"
+              f" → {'✓' if t['found'] else '✗'}  "
+              f"(sql={t['body_sql_count']}, fld={t['body_field_count']}){marker}")
+
+    if not callee_attempts:
+        print(f"\n  🔴 walker 가 callee {callee!r} 를 한 번도 찾으려 하지 않음.")
+        print(f"     → caller 의 body_field_calls 안에 this.{callee} 가 있는데도 "
+              f"walker 에 반영 안 됨. walker 인덱스의 caller method dict 와 "
+              f"diag [3] 의 caller method dict 가 다를 가능성.")
+        # caller 를 walker 인덱스에서 꺼내서 body_field_calls 직접 출력
+        walker_caller = None
+        for m in idx_cls.get("methods", []):
+            if m.get("name") == caller:
+                walker_caller = m
+                break
+        if walker_caller:
+            wbfcs = walker_caller.get("body_field_calls", []) or []
+            this_calls_walker = [c for c in wbfcs if c.get("receiver") == "this"]
+            print(f"\n     walker 인덱스의 caller.body_field_calls 중 this.* 목록:")
+            for c in this_calls_walker:
+                m2 = " ← 있음" if c.get("method") == callee else ""
+                print(f"       - this.{c.get('method')}{m2}")
+            has_callee = any(c.get("method") == callee for c in this_calls_walker)
+            if not has_callee:
+                print(f"     ⚠ walker 인덱스에는 this.{callee} 없음!")
+                print(f"       → diag [3] (단일파일) 과 walker 인덱스가 불일치.")
+    else:
+        for t in callee_attempts:
+            if t["found"]:
+                print(f"\n  🟢 walker 가 callee 를 찾음 + body_sql_calls {t['body_sql_count']} 건 로드.")
+                if t['body_sql_count'] == 0:
+                    print(f"     ⚠ 그러나 body_sql_calls 가 0 건. diag [2] 는 14 건이었는데 "
+                          f"불일치 → walker 인덱스의 method dict 가 body_sql_calls 누락.")
+            else:
+                print(f"\n  🔴 walker 가 callee 를 찾으려 했는데 None 반환.")
+                print(f"     → owner={t['owner_fqcn']!r} 의 methods 에 {callee!r} 없음.")
+
     print(f"\n  === walker 수집 결과 ===")
     print(f"  resolved_via:      {chain.get('resolved_via')!r}")
     print(f"  services:          {len(chain.get('services') or [])} 건")
