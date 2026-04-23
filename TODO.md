@@ -92,6 +92,75 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: self-call 체인에서 callee 의 body_sql_calls 유실 — 다른 agent 인수인계
+
+**증상**: ServiceImpl 내부 `this.saveDpPubNotiInfo(param)` 같은 자기호출
+이 있을 때, 최종 Programs 시트의 Tables/Columns 컬럼에 saveDpPubNotiInfo
+가 만지는 테이블이 반영 안 됨. Phase A (ServiceImpl biz 추출) 가 먼저
+실패해서 Phase II (Program Specification) 도 불완전.
+
+**11번에 걸친 diag (PR #33~#46, 전부 이미 rollback/삭제됨) 로 확인된 사실**:
+
+단일 파일 `parse_java_file(target)` 결과:
+- ✓ callee (`saveDpPubNotiInfo`) methods 에 등재됨
+- ✓ body_sql_calls = **14 건** (직접 SQL 호출)
+- ✓ caller 의 body_field_calls 안에 `this.saveDpPubNotiInfo` 존재
+- ✓ `_find_method_in_class(cls, "saveDpPubNotiInfo")` resolve OK
+
+MyBatis 인덱스 / config:
+- ✓ namespace `scp-mailing` 매칭 성공 (hyphen 이름 정상 — PR #39 로 diag
+  버그 잡은 뒤 재확인)
+- ✓ config.yaml legacy.rfc_depth 는 self-call 에 영향 없음
+- ✓ target/classes 빌드 산출물 중복 XML 359 건 스킵됐지만 이슈와 무관
+  (PR #40)
+
+전체 backend 인덱스 (`parse_all_java` + `_build_indexes`):
+- ✓ target_fqcn 이 `services_by_fqcn` 에 등재
+- ✓ walker 의 class dict 안에 callee 이름 존재
+- ✓ walker 의 `_find_method_in_class` trace — callee 를 찾고 method dict
+  를 반환함
+- 🔴 **그러나 반환된 method dict 의 body_sql_calls = 2 건** (단일파일 14 건
+  과 불일치)
+- ✓ callee 가 동일 이름으로 여러 개 (오버로딩) 아님 — **B 확정**
+- ✓ 동일 FQCN 을 가진 class 중복 파싱도 없음 — **B 확정**
+
+**남은 모순**: 같은 파일, 같은 FQCN, 오버로딩 없음, 중복 파싱 없음인데
+단일 parse 14 vs 전체 parse 2. 이론상 불가능해 보이는 조합. 제가 놓친
+state / global variable / parsing side-effect 가 있을 가능성.
+
+**다른 agent 가 확인해볼 가설들** (우선순위 순):
+
+1. `parse_all_java` 호출 중간에 전역 state (`_active_patterns` /
+   `_NEXCORE_BASE_CLASSES` 등) 가 변하면서 같은 파일의 후속 파싱이 달라지는
+   가능성. 실제 analyze-legacy 흐름은 `apply_patterns()` 를 호출하는데
+   diag 는 호출 안 함 — 그래도 14 vs 2 관찰됐으므로 아닐 수도 있지만
+   재확인.
+
+2. 단일파일 `parse_java_file` vs 전체 `parse_all_java` 에서 호출되는
+   `parse_java_file` 결과가 객체 단위로 다를 수 있는지. 동일 파일
+   경로를 양쪽에서 호출해 `id(result)` / body_sql_calls 길이를 직접
+   비교.
+
+3. `_build_indexes` 가 class dict 를 저장하면서 methods 리스트를 어딘가
+   필터링/치환할 가능성. 저장 전/후 `id(c)` 및 `id(c["methods"])` 비교.
+
+4. saveDpPubNotiInfo 가 호출되는 라인 주변에 `_extract_method_bodies`
+   의 brace walker 를 속이는 특수 문자 조합 (유니코드 이스케이프,
+   text block, 에스케이프된 문자열 안의 `{/}/"/'`). diag [5] 는
+   300자만 스캔해서 놓쳤을 가능성.
+
+5. `_collect_body_sql_calls` 의 `_SQL_CALL_RE` 가 method body 의 SQL
+   14 건 중 12 건을 놓치는 특정 문법 패턴 (예: ``sqlSession.selectList(
+   namespace + ".id")`` 가 아니라 ``selectListSafe()`` 같은 커스텀 메서드
+   호출). apply_patterns 로 주입되는 커스텀 receivers 가 단일파일에는
+   적용되지만 전체 파싱엔 안 될 가능성.
+
+**재현 환경**: 실제 사용자 PC (폐쇄망 Windows). 사용자 PC 접근 필요.
+사용자 PC 에서 `parse_java_file(해당_Service.java)` 와
+`parse_all_java(backend_root)` 두 호출을 같은 Python 프로세스에서 연속
+실행하고 같은 파일의 method dict 객체 비교 (`id()`, methods[i].body_sql_calls
+len) 해서 어느 경로가 body_sql_calls 를 탈락시키는지 직접 확인 필요.
+
 ### 진행 중: Phase II — endpoint narrative LLM (Program Specification 시트)
 
 사용자 원문 요구 직접 해소: "프론트 조회 버튼 클릭 → 비즈니스 로직 →
