@@ -210,6 +210,50 @@ def main() -> int:
         else:
             print("\n특별한 의심 패턴은 자동 감지되지 않음 — 실제 context 를 공유해주세요.")
 
+    # 6) walker 시뮬레이션 — [3] 에서 감지됐다면 실제 _find_method_in_class 가
+    #    동작하는지, 그리고 callee body 의 SQL/RFC 가 수집되는지 확인
+    _section(f"[6] walker 시뮬레이션 — caller → this.{callee} 해석 + 수집")
+    try:
+        from oracle_embeddings.legacy_analyzer import (
+            _find_method_in_class as _la_find,
+            _collect_body_calls as _la_collect,
+        )
+    except Exception as e:
+        print(f"  import 실패: {e} — skip.")
+    else:
+        # caller body_field_calls 순회하며 각 호출이 resolve 되는지 체크
+        print(f"caller {caller!r} 의 body_field_calls 해석:")
+        bfcs = caller_m.get("body_field_calls", []) or []
+        if not bfcs:
+            print("  (body_field_calls 없음)")
+        for fc in bfcs:
+            recv = fc.get("receiver", "")
+            meth = fc.get("method", "")
+            if recv != "this":
+                print(f"  - {recv}.{meth} (cross-class — 이 진단은 self-call 에 집중)")
+                continue
+            resolved = _la_find(cls, meth)
+            flag = "✓ resolve OK" if resolved else "✗ NOT FOUND in cls.methods"
+            mark = " ← 문제의 호출" if meth == callee else ""
+            print(f"  - this.{meth}{mark}  [{flag}]")
+            if resolved is None:
+                print(f"    → 이게 None 이 나오면 cls['methods'] 와 비교해서 이름 불일치 확인")
+                print(f"    methods 이름 목록에 {meth!r} 가 있나? "
+                      f"{meth in {m.get('name') for m in cls.get('methods', [])}}")
+
+        # callee body 의 SQL 이 실제로 collect 되는지 (mybatis_idx 없어도
+        # raw body_sql_calls 는 확인 가능)
+        print(f"\ncallee {callee!r} 의 raw body_sql_calls 재확인:")
+        for c in callee_m.get("body_sql_calls", []) or []:
+            ns = c.get("namespace") or ""
+            sid = c.get("sql_id") or ""
+            print(f"  - namespace={ns!r} sql_id={sid!r}")
+        print(f"\n→ 위 목록이 존재하면서도 analyze-legacy 결과에 반영 안 된다면:")
+        print(f"  (a) endpoint 체인이 caller 까지 닿지 못함 (중간 경로 단절)")
+        print(f"  (b) callee 의 namespace 가 mybatis_idx 에 매칭 안 됨 "
+              f"(_match_namespace 실패 — 로그에서 'Namespace not matched' 확인)")
+        print(f"  (c) depth ≥ rfc_depth 로 인해 탐색 중단 (config.yaml legacy.rfc_depth 확인)")
+
     return 0
 
 
