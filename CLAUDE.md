@@ -60,7 +60,7 @@
 | `oracle_embeddings/legacy_util.py` | 공유 유틸 (`normalize_url` 등). |
 | `oracle_embeddings/legacy_pattern_discovery.py` | **LLM 기반 프로젝트 패턴 추출**. stereotype별 샘플 ~40개 클래스 요약 → `patterns.yaml` 생성. 코드 특화 모델 별도 env (`PATTERN_LLM_*`) 지원. `_call_llm(system_prompt=...)` 은 재사용 엔드포인트 — 다른 LLM 용도 모듈 (legacy_biz_extractor, mapping_converter 등) 이 retry/JSON 파싱/raw dump 를 상속. `_DEFAULT_PATTERNS['biz_extraction']` 에 biz 추출 기본값 (skip_methods/min_body_chars/keyword_hints/llm_batch_size 등) 보유. `apply_patterns` 가 `rfc_call_methods` 로드 시 `_GENERIC_COLLECTION_METHODS` (get/put/set/add 등 ~30 Java 컬렉션 API) 자동 필터 + 콘솔 경고로 false positive 방지. |
 | `oracle_embeddings/legacy_biz_extractor.py` | **ServiceImpl 비즈니스 로직 LLM 추출** (analyze-legacy `--extract-biz-logic` opt-in). `_is_biz_candidate` static triage (name skip `get*/set*` + body len + biz keyword hints) → `collect_chain_methods` BFS (service_methods seed + intra-class self-call closure, `legacy_java_parser` 의 bare call synthetic `receiver="this"` 규약 재사용) → `extract_backend_biz_logic` batch LLM (6개씩) + SHA-256 기반 disk cache (`output/legacy_analysis/.biz_cache/`) + regex fallback summary → `enrich_rows_with_biz` / `biz_detail_sheet_rows` 로 row/시트 emit. 스키마: validations/biz_rules/state_changes/calculations/external_calls/summary. `BIZ_SCHEMA_VERSION` bump 으로 캐시 전량 무효화. `_BUILTIN_DEFAULTS` + `_effective_config` 로 `patterns.yaml` 없어도 바로 동작. |
-| `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace/statement 4종 인덱스, Oracle comma-FROM + `(+)` outer join, composite JOIN. `scan_mybatis_dir`는 `.git/.gradle/.idea/.svn/.hg/.next/node_modules`만 스킵 (빌드 산출물명 `target/build/bin/out/dist`는 monorepo에서 실제 프로젝트일 수 있어 스킵 안 함 — `_is_sql_mapper`가 false positive 걸러줌). namespace 변수 2-pass 해석 (`sqlSession.selectList(namespace + "findXxx", ...)`). |
+| `oracle_embeddings/mybatis_parser.py` | MyBatis/iBatis 파싱. `parse_all_mappers` → namespace/statement 4종 인덱스, Oracle comma-FROM + `(+)` outer join, composite JOIN. `scan_mybatis_dir`는 `.git/.gradle/.idea/.svn/.hg/.next/node_modules`만 디렉토리명으로 스킵하고, **path fragment 단위로 Maven/Gradle/IDE 빌드 산출물 (`/target/classes/`, `/target/test-classes/`, `/build/resources/main/`, `/out/production/`, `/bin/main/` 등)** 추가 스킵 (`_is_build_output`). 디렉토리 이름 `target`/`build` 만으로는 절대 스킵 안 함 — monorepo 에서 실제 sub-project 가 그 이름을 가질 수 있어서. namespace 변수 2-pass 해석 (`sqlSession.selectList(namespace + "findXxx", ...)`). |
 
 ## 주요 모듈 (SQL Migration 파이프라인 — `oracle_embeddings/migration/`)
 
@@ -258,6 +258,7 @@ python main.py analyze-legacy \
 | Inner class method가 outer로 새어나감 | nested class skip 로직 없음 | `_NESTED_TYPE_DECL_RE` + brace walker |
 | Javadoc `{@link}`가 class brace로 오인 | `_strip_comments`가 offset 파괴 | offset-preserving strip |
 | XML 2560개 → 142개로 급감 | scan_mybatis_dir가 target/build/bin/out/dist 스킵 | skip 리스트 축소 |
+| 같은 mapper XML 이 namespace 인덱스에 두 번 등록 + statement 카운트 2배 부풀림 | `target/classes/`, `build/resources/main/` 등 Maven/Gradle 가 src/main/resources 를 그대로 복사해둔 빌드 산출물도 함께 스캔 | `_BUILD_OUTPUT_PATH_FRAGMENTS` + `_is_build_output` path-fragment 필터 — 디렉토리명 `target` 자체는 안 잘라서 monorepo 호환 유지 |
 | Nexcore endpoint 0개 | `@RequestMapping` 없이 `Abstract*BizController` 상속 | 상속 기반 Nexcore 감지 |
 | 메서드 필드만 있고 값이 비어있음 | `_METHOD_SIG_RE`가 `public @ResponseBody List` 매칭 실패 | inline annotation 허용 |
 | `--menu-only`가 시간 절약 안 됨 | 전체 분석 후 필터링 방식 | 체인 해석 자체 skip |
