@@ -30,6 +30,47 @@ _MYBATIS_SKIP_DIRS = {".git", ".gradle", ".idea", ".svn", ".hg",
                       ".next", "node_modules"}
 
 
+# Build-output **path fragments** (vs raw directory names). Maven copies
+# every ``src/main/resources/*.xml`` mapper into ``target/classes/...``
+# during ``mvn compile`` / ``mvn package``, and Gradle does the same
+# under ``build/resources/main/``. These copies have IDENTICAL content
+# so they cause:
+#   * each statement counted twice in stats
+#   * ``namespace_to_xml_files`` containing both the source path AND the
+#     output path (Programs sheet then lists 2 XMLs for the same SQL id)
+#   * downstream analyzers (e.g. column_usage / table cross-ref) inflated
+#
+# Filtering by directory NAME alone (``target``/``build``) would break
+# monorepos where a real subproject happens to be named ``target``. We
+# instead match the **deeper sub-path** (``/target/classes/``) which is
+# universally a build output and never user-authored. Path is normalized
+# to forward slashes first so the same fragments match on Windows
+# (``\target\classes\``) and Linux/macOS.
+_BUILD_OUTPUT_PATH_FRAGMENTS = (
+    "/target/classes/",
+    "/target/test-classes/",
+    "/target/generated-resources/",
+    "/build/classes/",
+    "/build/resources/main/",
+    "/build/resources/test/",
+    "/build/generated/",
+    "/out/production/",          # IntelliJ default Gradle output
+    "/out/test/",
+    "/bin/main/",                # Eclipse compiled output
+    "/bin/test/",
+)
+
+
+def _is_build_output(path: str) -> bool:
+    """Return True if ``path`` lies inside a Maven/Gradle/IDE build output.
+
+    Normalises backslashes so Windows paths match the same fragments
+    declared in :data:`_BUILD_OUTPUT_PATH_FRAGMENTS`.
+    """
+    normalized = path.replace("\\", "/")
+    return any(frag in normalized for frag in _BUILD_OUTPUT_PATH_FRAGMENTS)
+
+
 def scan_mybatis_dir(base_dir: str) -> list[str]:
     """Find all MyBatis/iBatis mapper XML files recursively.
 
@@ -37,16 +78,32 @@ def scan_mybatis_dir(base_dir: str) -> list[str]:
     path can be passed safely (the legacy analyzer does this). Each
     candidate XML is still validated via ``_is_sql_mapper`` to filter out
     pom.xml, config files, and other non-mapper XML.
+
+    Build-output paths (``/target/classes/``, ``/build/resources/main/``,
+    ``/out/production/`` 등) 은 Maven/Gradle 가 ``src/main/resources``
+    의 mapper XML 을 그대로 복사한 것이라 동일 statement 가 두 번
+    파싱되어 namespace 인덱스에 중복 등록 + 통계 부풀림을 일으킨다.
+    이걸 :func:`_is_build_output` 로 추가 필터.
     """
     xml_files = []
+    skipped_build_outputs = 0
     for root, dirs, files in os.walk(base_dir):
         dirs[:] = [d for d in dirs if d.lower() not in _MYBATIS_SKIP_DIRS]
         for f in files:
             if f.endswith(".xml"):
                 filepath = os.path.join(root, f)
+                if _is_build_output(filepath):
+                    skipped_build_outputs += 1
+                    continue
                 if _is_sql_mapper(filepath):
                     xml_files.append(filepath)
     logger.info("Found %d mapper files (MyBatis + iBatis) in %s", len(xml_files), base_dir)
+    if skipped_build_outputs:
+        logger.info("Skipped %d XML(s) from build outputs "
+                    "(target/classes, build/resources, etc.)",
+                    skipped_build_outputs)
+        print(f"  Skipped {skipped_build_outputs} duplicate XML(s) from build outputs "
+              f"(target/classes, build/resources, etc.)")
     return xml_files
 
 
