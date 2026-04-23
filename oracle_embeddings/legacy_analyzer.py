@@ -1029,6 +1029,17 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                     self_method = _find_method_in_class(owner, target_method_name)
                     if self_method is not None:
                         queue.append((self_method, owner, depth))
+                        # 같은 클래스 helper 도 service_methods 컬럼에 노출 —
+                        # 원 메서드만 드러나면 `this.saveX()` 같은 비즈니스
+                        # 핵심 helper 가 리포트에서 사라지고, biz extractor 의
+                        # service_methods seed 에서도 빠져 체인이 끊긴다.
+                        owner_fqcn = owner.get("fqcn") or ""
+                        sm_key = (owner_fqcn, target_method_name)
+                        if owner_fqcn and sm_key not in seen_service_methods:
+                            seen_service_methods.add(sm_key)
+                            service_methods.append(
+                                f"{owner_fqcn}#{target_method_name}"
+                            )
                     continue
                 svc_fqcn = _resolve_field_type_fqcn(receiver, owner, indexes)
                 if not svc_fqcn:
