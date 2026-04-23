@@ -306,18 +306,21 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         from ``TB_ORDER, TB_CUSTOMER`` for ``order.findAll``.
       * statement_to_xml_file  — ``{"ns.id": str}`` — the XML file path
         that contains the statement.
-      * statement_to_type      — ``{"ns.id": "SELECT"|"INSERT"|...}`` —
-        used to derive CRUD letters per table in the Programs report.
+      * statement_to_body_crud — ``{"ns.id": set("C"|"R"|"U"|"D")}`` —
+        letters derived purely from SQL body analysis
+        (:func:`mybatis_parser.extract_crud_from_sql`). MyBatis tag
+        type is intentionally NOT consulted so ``<select>`` containing
+        a PL/SQL ``BEGIN ... UPDATE ... END;`` gets ``U`` instead of ``R``.
+      * statement_to_procs     — ``{"ns.id": [proc_name, ...]}``
     """
     namespace_to_xml_files = {}
     namespace_to_tables = {}
     statement_to_tables = {}
     statement_to_xml_file = {}
-    statement_to_type = {}
     statement_to_procs: dict[str, list[str]] = {}
-    # Body-derived CRUD (hybrid detection): union with tag letter in
-    # ``_derive_table_crud`` so MERGE / PL/SQL body / mislabeled tags
-    # surface the right letters.
+    # CRUD letters from pure SQL body analysis. ``extract_crud_from_sql``
+    # already strips comments/literals and drops ``SELECT ... FOR UPDATE``
+    # before scanning, so false positives are handled.
     statement_to_body_crud: dict[str, set] = {}
     for stmt in mybatis_result.get("statements", []):
         ns = stmt.get("namespace") or ""
@@ -333,9 +336,6 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
                 statement_to_tables.setdefault(key, set()).update(tables_for_stmt)
                 if "mapper_path" in stmt:
                     statement_to_xml_file.setdefault(key, stmt["mapper_path"])
-                stmt_type = (stmt.get("type") or "").upper()
-                if stmt_type and key not in statement_to_type:
-                    statement_to_type[key] = stmt_type
                 procs = stmt.get("procedures") or []
                 if procs:
                     # Statements are unique per key, but namespace fallback
@@ -355,26 +355,9 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         "namespace_to_tables": {k: sorted(v) for k, v in namespace_to_tables.items()},
         "statement_to_tables": {k: sorted(v) for k, v in statement_to_tables.items()},
         "statement_to_xml_file": statement_to_xml_file,
-        "statement_to_type": statement_to_type,
         "statement_to_procs": statement_to_procs,
         "statement_to_body_crud": statement_to_body_crud,
     }
-
-
-# MyBatis statement type → CRUD letter mapping. ``STATEMENT`` /
-# ``PROCEDURE`` / unknown are returned as ``None`` — they won't
-# contribute a letter but the table still appears in the list.
-_STMT_TYPE_TO_CRUD = {
-    "SELECT": "R",
-    "INSERT": "C",
-    "UPDATE": "U",
-    "DELETE": "D",
-}
-
-
-def _stmt_type_to_crud(stmt_type: str) -> str | None:
-    """Return ``"C"`` / ``"R"`` / ``"U"`` / ``"D"`` or None for ambiguous."""
-    return _STMT_TYPE_TO_CRUD.get((stmt_type or "").upper())
 
 
 def _format_table_crud(tables: list[str], crud_map: dict[str, set]) -> str:
@@ -1086,32 +1069,29 @@ def _derive_procedures(sql_ids, mybatis_idx: dict) -> list[str]:
 def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     """Build ``{table: set("C"|"R"|"U"|"D")}`` from resolved statement keys.
 
-    Hybrid detection — union of two signals per statement:
-      1. **MyBatis tag** (``<select>`` → R, etc.) captures developer
-         intent. ``<procedure>`` / ``<statement>`` / unknown tag
-         contributes no letter.
-      2. **SQL body scan** (``statement_to_body_crud``) catches MERGE
-         (C+U), PL/SQL blocks that mutate inside a ``<select>``,
-         mislabeled tags, and ``<procedure>`` tags whose body still
-         has plain DML. ``SELECT … FOR UPDATE`` 는 body scanner 에서
-         미리 제외됨 (lock hint, not mutation).
+    CRUD letters come **only from SQL body analysis** (not the MyBatis
+    tag). Tag-based classification was dropped because it follows
+    developer intent rather than the actual query — e.g. a ``<select>``
+    with a PL/SQL ``BEGIN ... UPDATE ... END;`` body should NOT be
+    labeled R. ``extract_crud_from_sql`` already:
 
-    Letters accumulate across every statement the endpoint resolves.
+    * Strips block / line comments and single-quoted string literals
+    * Drops ``SELECT ... FOR UPDATE`` (lock hint) before scanning
+    * Matches ``\\b(INSERT|UPDATE|DELETE|MERGE|SELECT)\\b`` — MERGE
+      bodies naturally contain INSERT+UPDATE in WHEN clauses so C+U
+      fall out for free.
 
-    Namespace-only fallback keys (no ``.id``) have no body-scan entry
-    either — tables still render with no suffix.
+    Trade-off: a pure ``CALL pkg.proc(...)`` statement with no DML
+    keyword in its body produces an empty letter set. Tables (if any
+    get extracted) render with no suffix — acceptable because the
+    actual mutation happens inside the stored procedure, which the
+    static scanner cannot see anyway.
     """
     stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
-    stmt_to_type = mybatis_idx.get("statement_to_type", {})
     stmt_to_body_crud = mybatis_idx.get("statement_to_body_crud", {})
     out: dict[str, set] = {}
     for key in sql_ids or ():
-        letters: set = set()
-        tag_letter = _stmt_type_to_crud(stmt_to_type.get(key, ""))
-        if tag_letter:
-            letters.add(tag_letter)
-        body_letters = stmt_to_body_crud.get(key) or set()
-        letters.update(body_letters)
+        letters = stmt_to_body_crud.get(key) or set()
         if not letters:
             continue
         for tbl in stmt_to_tbl.get(key, ()):

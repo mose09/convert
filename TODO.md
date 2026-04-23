@@ -92,6 +92,25 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: CRUD 판정 body-only — MyBatis 태그 완전히 무시
+
+PR #29 에서 하이브리드 (태그 ∪ 본문) 로 구현했지만 사용자 재확인: "태그
+참조 말고 쿼리 분석으로만". 태그는 dev intent 라서 실제 SQL 과 어긋날
+수 있다는 우려 반영.
+
+변경:
+
+- [x] `_derive_table_crud` 에서 `_stmt_type_to_crud(...)` 호출 제거.
+      `statement_to_body_crud` 만 소스로 사용.
+- [x] 이제 불필요해진 `_STMT_TYPE_TO_CRUD` dict + `_stmt_type_to_crud`
+      helper + `_build_mybatis_indexes` 의 `statement_to_type` 인덱스
+      모두 삭제 (dead code 제거).
+- [x] 기존 mock (`/tmp/mock_hybrid_crud`) 재검증 — 태그만의 영향이던
+      T2 가 `(RU)` → `(U)` 로 변경됨 (사용자 의도대로). 다른 4 케이스
+      (T1 MERGE, T3 procedure, T4 FOR UPDATE) 는 body scan 이 이미
+      해당 letters 를 잡고 있어서 변화 없음.
+- [x] conventional commit + PR + squash-merge
+
 ### 진행 중: CRUD 판정 하이브리드 — 태그 + SQL 본문 키워드 스캔
 
 현재 `_derive_table_crud` 는 MyBatis 태그만 (SELECT→R / INSERT→C 등)
