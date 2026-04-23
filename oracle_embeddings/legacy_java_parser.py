@@ -612,10 +612,11 @@ _NS_CONST_RE = re.compile(
     re.VERBOSE,
 )
 
-# namespace-candidate value: identifier chars + dots only. 점 없이 `"scp"`
-# 처럼 suffix 쪽 `.findXxx` 와 concat 되는 실제 케이스도 허용. 다른
-# 임의 문자열 (`"Hello World"` 등) 은 제외해 noise 차단.
-_NS_VALUE_RE = re.compile(r"^[\w.]+$")
+# namespace-candidate value: identifier chars + dots + hyphens. 점 없이
+# `"scp"` 처럼 suffix 쪽 `.findXxx` 와 concat 되는 케이스, 그리고 MyBatis
+# 에서 흔한 하이픈 namespace (``"equip-invest-10673"``) 도 허용. 다른
+# 임의 문자열 (``"Hello World"`` 등) 은 boundary 체크와 함께 제외된다.
+_NS_VALUE_RE = re.compile(r"^[\w.\-]+$")
 
 
 def _extract_ns_constants(content: str) -> dict:
