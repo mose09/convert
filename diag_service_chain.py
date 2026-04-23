@@ -13,6 +13,10 @@
      → _FIELD_CALL_RE 가 놓침 (복합 선언문 / 멀티라인 등)
   4) body_field_calls 에 있는데 analyzer 의 체인 walker 가
      ``_find_method_in_class`` 에서 실패 → 다른 클래스 / 상속 관계
+  5) (확장) caller body 가 balanced-brace walker 에서 조기 종료 —
+     호출 라인 자체가 body 에 안 포함됨. cut-off 위치 주변의
+     char literal / 텍스트 블록 등이 원인일 가능성 → [5] 섹션에서
+     cut-off 주변 context 출력.
 
 사용법 (Windows PowerShell):
   python diag_service_chain.py <Service파일.java> <호출자메서드명> [<callee메서드명>]
@@ -25,12 +29,17 @@ callee 이름 생략 시 기본값 ``saveDpPubNotiInfo`` — 사용자 케이스
 import sys
 
 from oracle_embeddings.legacy_java_parser import parse_java_file
+from oracle_embeddings.mybatis_parser import _read_file_safe
 
 
 def _section(title: str) -> None:
     print("\n" + "=" * 60)
     print(title)
     print("=" * 60)
+
+
+def _line_of(text: str, pos: int) -> int:
+    return text.count("\n", 0, pos) + 1 if pos >= 0 else -1
 
 
 def main() -> int:
@@ -113,10 +122,73 @@ def main() -> int:
         if idx < 0:
             print(f"  → caller body 에 {callee!r} 문자열 자체가 없음.")
             print(f"    body 추출 범위가 잘못됐을 가능성 (balanced-brace walker).")
+            print(f"    [5] 섹션에서 cut-off 위치 주변 context 확인.")
         else:
             excerpt = caller_body[max(0, idx - 40):idx + 80]
             print(f"  → body 위치 {idx} 에 있음. 주변:\n    {excerpt!r}")
             print("    _FIELD_CALL_RE 가 이 패턴을 못 잡음 — regex 확장 필요.")
+
+    # 4) 파일 전체에서 callee 문자열 위치 vs caller body 범위 비교
+    _section(f"[4] 원본 파일 전체에서 {callee!r} 문자열 위치 탐색")
+    raw = _read_file_safe(target)
+    # caller body_* 인덱스는 파서가 가지고 있음
+    body_start = caller_m.get("body_start", -1)
+    body_end = caller_m.get("body_end", -1)
+    sig_start = caller_m.get("sig_start", -1)
+    print(f"caller sig_start = {sig_start} (line {_line_of(raw, sig_start)})")
+    print(f"caller body_start = {body_start} (line {_line_of(raw, body_start)})")
+    print(f"caller body_end   = {body_end} (line {_line_of(raw, body_end)})")
+    print(f"caller body size = {body_end - body_start if body_end > body_start else 0} chars")
+
+    positions = []
+    start = 0
+    while True:
+        p = raw.find(callee, start)
+        if p < 0:
+            break
+        positions.append(p)
+        start = p + len(callee)
+    print(f"\n파일 전체에서 {callee!r} 발견 {len(positions)} 건:")
+    for p in positions:
+        line = _line_of(raw, p)
+        in_caller = (body_start <= p < body_end) if body_end > 0 else False
+        tag = "✓ caller body 안" if in_caller else "✗ caller body 밖"
+        excerpt = raw[max(0, p - 30):p + 50].replace("\n", " ⏎ ")
+        print(f"  - pos {p} (line {line}) [{tag}]")
+        print(f"    {excerpt!r}")
+
+    # 5) body cut-off 위치 주변 context
+    _section(f"[5] caller body 끝 지점 주변 — balanced-brace 조기 종료 의심")
+    if body_end <= 0 or body_end > len(raw):
+        print("  body_end 값이 비정상 — skip.")
+    else:
+        # body_end 직전 300자 + body_end 직후 300자
+        before = raw[max(0, body_end - 300):body_end]
+        after = raw[body_end:min(len(raw), body_end + 300)]
+        print(f"body_end={body_end} 직전 300자:")
+        print("─" * 40)
+        print(before)
+        print("─" * 40)
+        print(f"body_end={body_end} 직후 300자 (← 이 구간에 호출이 있으면 body 잘림 확정):")
+        print("─" * 40)
+        print(after)
+        print("─" * 40)
+        # 잘린 경계 직전의 suspicious 문자 패턴 확인
+        hints = []
+        tail = before[-60:]
+        if '"""' in tail or '"""' in after[:60]:
+            hints.append("텍스트 블록 (Java 15+) 의심 — walker 가 지원 안 함")
+        if tail.count("'") % 2 != 0:
+            hints.append("홀수 개 char literal — 이스케이프 misparse 가능성")
+        if "\\u" in tail:
+            hints.append("유니코드 이스케이프 (\\uXXXX) — walker 가 지원 안 함")
+        if hints:
+            print("\n의심 패턴:")
+            for h in hints:
+                print(f"  - {h}")
+        else:
+            print("\n특별한 의심 패턴은 자동 감지되지 않음 — 실제 context 를 공유해주세요.")
+
     return 0
 
 
