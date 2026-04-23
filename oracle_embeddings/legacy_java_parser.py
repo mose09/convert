@@ -158,9 +158,11 @@ _STEREOTYPE_RE = re.compile(
 
 # @Autowired private OrderService orderService;  (also @Resource, @Inject)
 _AUTOWIRED_FIELD_RE = re.compile(
-    r"""@(?:Autowired|Resource|Inject)\b[^\n]*\n\s*
+    r"""@(?:Autowired|Resource|Inject)\b         # annotation
+        (?:\s*\([^)]*\))?                         # optional args: @Autowired(required=false)
+        \s+                                        # whitespace (space OR newline OK)
         (?:private|protected|public)?\s*
-        (?:final\s+)?
+        (?:final\s+|transient\s+|volatile\s+)*
         (?P<type>[\w.]+)(?:\s*<[^>]*>)?\s+
         (?P<name>\w+)\s*[=;]
     """,
