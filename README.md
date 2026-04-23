@@ -728,14 +728,17 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
 output/legacy_analysis/
 ├── patterns.yaml                           # discover-patterns 산출물
 ├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
-└── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 시트)
+└── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 기본 시트 + 최대 3개 opt-in)
     ├── Sheet: Summary                 (전체 집계)
     ├── Sheet: Programs                (메인 — 16개 컬럼)
     ├── Sheet: Menu Hierarchy          (메뉴 계층 + 매칭 여부)
     ├── Sheet: Unmatched Controllers   (메뉴 없는 컨트롤러)
     ├── Sheet: Orphan Menu Entries     (컨트롤러 없는 메뉴)
     ├── Sheet: RFC Calls               (SAP 인터페이스 cross-reference)
-    └── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
+    ├── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
+    ├── Sheet: Business Logic          (opt-in `--extract-biz-logic` Phase A)
+    ├── Sheet: Frontend Logic          (opt-in `--extract-biz-logic` Phase B)
+    └── Sheet: Program Specification   (opt-in `--extract-program-spec` Phase II)
 ```
 
 **Programs 시트 컬럼 (16개):**
@@ -783,6 +786,41 @@ IFLOT_W.NAME[이름](C)
 → UPDATE SET / INSERT column 리스트 기반. sqlglot 파싱 실패 (PL/SQL 블록,
 Oracle hint 일부 구문 등) 시 해당 statement 만 skip — Tables 컬럼의
 table-level CRUD 는 그대로 유지되므로 정보 손실 없음.
+
+**Program Specification 시트 — endpoint narrative 자동 생성 (`--extract-program-spec`)**:
+
+"프론트 버튼 클릭 → validation → 비즈니스 로직 → DML 컬럼" 을 한 줄 narrative
+로 LLM 에서 자동 생성. Phase A (`--extract-biz-logic` 백엔드 biz summary) +
+Phase B (React handler summary) 결과 + Phase I 컬럼 CRUD 를 **원본 body 없이
+요약만 재조립** 해서 LLM 에 전달 → 토큰 절감 + 중복 호출 회피.
+
+```powershell
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --frontend-dir C:\work\frontend `
+  --menu-md input\menu.md `
+  --extract-biz-logic `
+  --extract-program-spec
+```
+
+옵트인 플래그. `--extract-biz-logic` 없이는 에러 (narrative 는 Phase A/B 결과
+가 입력).
+
+Program Specification 시트 컬럼 (15개):
+- Main / Sub / Tab / Program / HTTP / URL — 메뉴 + endpoint 식별
+- Trigger label / Trigger type — 버튼 label (React 에서 추출) + READ /
+  CREATE / UPDATE / DELETE / COMPOSITE / OTHER 분류
+- Input fields / Validations / Business flow — 프론트 수집 field, 검증,
+  서비스 chain narrative
+- Read targets / Write targets — `TABLE.col(R)` / `TABLE.col(C/U/D)` 나열.
+  LLM 이 column_crud 외 임의 컬럼 만들면 후처리에서 drop (hallucination
+  차단)
+- Purpose / Source — 한 문장 목적, `llm` / `fallback` / `cache`
+
+LLM 호출 당 endpoint 10개 배치, 캐시 `output/legacy_analysis/.spec_cache/`.
+재실행 시 변경 없는 endpoint 는 0 cost. LLM endpoint down 시 `fallback`
+source 로 trigger_type + write_targets 는 채워 주고 narrative 필드는
+공백 (노란색 하이라이트).
 
 ### 12. SQL Migration — AS-IS → TO-BE 스키마 기반 쿼리 변환
 

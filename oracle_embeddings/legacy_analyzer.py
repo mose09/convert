@@ -1425,7 +1425,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    biz_use_cache: bool = True,
                    biz_config: dict | None = None,
                    library_dirs: list[str] | None = None,
-                   terms_md: str | None = None) -> dict:
+                   terms_md: str | None = None,
+                   extract_program_spec: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1896,6 +1897,22 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         else:
             print("  frontend biz: no API calls indexed — skip")
 
+    # Phase II — endpoint narrative (Program Specification sheet).
+    # Opt-in via ``extract_program_spec`` flag + depends on Phase A/B
+    # having run (otherwise ``biz_summary`` / ``frontend_*`` fields are
+    # empty and the LLM has nothing to summarize).
+    endpoint_spec_map: dict = {}
+    if extract_program_spec and extract_biz:
+        from . import legacy_biz_extractor as biz
+        endpoint_spec_map = biz.extract_endpoint_narrative(
+            rows,
+            patterns or {},
+            use_cache=biz_use_cache,
+            config=biz_config or {},
+        )
+        biz.enrich_rows_with_endpoint_spec(rows, endpoint_spec_map)
+        print(f"  endpoint spec: {len(endpoint_spec_map)} endpoints narrated")
+
     resolved_method_scope = sum(
         1 for r in rows if r.get("resolved_via") == "method-scope"
     )
@@ -1956,6 +1973,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "frontend_dir": frontend_dir or "",
         "biz_map": biz_map,
         "fe_biz_map": fe_biz_map,
+        "endpoint_spec_map": endpoint_spec_map,
     }
 
 
@@ -2012,7 +2030,8 @@ def analyze_legacy_batch(backends_root: str,
                         biz_use_cache: bool = True,
                         biz_config: dict | None = None,
                         library_dirs: list[str] | None = None,
-                        terms_md: str | None = None) -> dict:
+                        terms_md: str | None = None,
+                        extract_program_spec: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -2086,6 +2105,7 @@ def analyze_legacy_batch(backends_root: str,
     all_unmatched = []
     all_biz_map: dict = {}
     all_fe_biz_map: dict = {}
+    all_endpoint_spec_map: dict = {}
     all_orphans = []
     per_project_stats = {}
     project_frameworks = {}
@@ -2117,6 +2137,10 @@ def analyze_legacy_batch(backends_root: str,
             # column-name → Korean translation is project-neutral so one
             # file serves the whole batch.
             terms_md=terms_md,
+            # Opt-in endpoint narrative (Phase II). Each sub-project
+            # extracts independently — keys are endpoint-level hashes so
+            # no collisions across projects.
+            extract_program_spec=extract_program_spec,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.
@@ -2137,6 +2161,9 @@ def analyze_legacy_batch(backends_root: str,
         sub_fe = result.get("fe_biz_map") or {}
         if sub_fe:
             all_fe_biz_map.update(sub_fe)
+        sub_spec = result.get("endpoint_spec_map") or {}
+        if sub_spec:
+            all_endpoint_spec_map.update(sub_spec)
 
     # Aggregate stats across projects
     def _sum(key):
@@ -2187,4 +2214,5 @@ def analyze_legacy_batch(backends_root: str,
         "is_batch": True,
         "biz_map": all_biz_map,
         "fe_biz_map": all_fe_biz_map,
+        "endpoint_spec_map": all_endpoint_spec_map,
     }
