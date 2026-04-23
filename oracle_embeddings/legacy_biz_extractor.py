@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 # 프롬프트 스키마 버전 — 변경 시 bump 해서 캐시 자동 무효화
 BIZ_SCHEMA_VERSION = "v1"
 
+# Phase II endpoint narrative 스키마 버전 — Phase A/B 와 독립 캐시.
+# 프롬프트 / EndpointSpec dataclass / 후처리 규칙 바뀔 때 bump.
+ENDPOINT_SPEC_SCHEMA_VERSION = "v1"
+
 
 # 자체 default (patterns.yaml 미지정 / biz_extraction 섹션 누락 시 fallback).
 # ``legacy_pattern_discovery._DEFAULT_PATTERNS['biz_extraction']`` 와 동일
@@ -1015,5 +1019,418 @@ def frontend_biz_sheet_rows(
             "state_reads":       ", ".join(r.state_reads),
             "summary":           r.summary,
             "source":            r.source,
+        })
+    return out
+
+
+# ===========================================================================
+# Phase II — endpoint-level narrative (Program Specification)
+# ===========================================================================
+#
+# "프론트 버튼 → validation → 비즈니스 로직 → DML 컬럼" 한 줄 narrative.
+# Phase A 의 per-method summary + Phase B 의 per-handler summary + 체인
+# 워커가 이미 수집한 column_crud / table_crud / frontend_trigger 를
+# 재조립해 LLM 에 **원본 body 없이** 요약만 전달 → 토큰 절감 + 중복
+# LLM 호출 회피. opt-in 플래그 ``--extract-program-spec`` (Phase A/B
+# 없이는 자동 skip).
+
+
+@dataclass
+class EndpointSpec:
+    """Phase II 출력 스키마. endpoint 당 한 행."""
+
+    key: str  # controller_fqcn#method_name (SHA cache key의 baseline)
+    trigger_type: str = ""       # READ / CREATE / UPDATE / DELETE / COMPOSITE / OTHER
+    input_fields: str = ""       # 버튼 → 수집 field + 검증 간단 설명
+    validations: str = ""        # 프론트 validation / 백엔드 pre-check 병합
+    business_flow: str = ""      # 서비스 체인 narrative (한 단락)
+    read_targets: str = ""       # TABLE.col(R) 목록 (column_crud 에서 R)
+    write_targets: str = ""      # TABLE.col(C/U/D) 목록
+    purpose_ko: str = ""         # 한 문장 목적 (사용자 요구: "기능이 무엇을 하는지")
+    source: str = "llm"          # "llm" | "fallback" | "cache"
+
+
+# 프롬프트. Phase A 의 `_BACKEND_SYSTEM_PROMPT` 패턴 따라 짧고 명확하게.
+_ENDPOINT_SPEC_SYSTEM_PROMPT = (
+    "당신은 레거시 Java + MyBatis 기반 엔터프라이즈 애플리케이션의 "
+    "endpoint 를 분석해 '프로그램 명세서' 를 생성하는 도우미입니다. "
+    "각 endpoint 에 대해 아래 JSON 스키마 그대로 응답하세요. "
+    "주석/설명/코드펜스 없이 순수 JSON 배열만. "
+    "write_targets 는 제공된 column_crud 의 C/U/D 컬럼만 사용하고 "
+    "임의 컬럼을 생성하지 마세요. read_targets 도 column_crud 의 "
+    "R 컬럼만 사용."
+)
+
+_ENDPOINT_SPEC_USER_PROMPT_TEMPLATE = """아래 {n} 개의 endpoint 에 대해 각각 JSON 객체 하나씩 반환하세요.
+
+입력 정보 (원본 코드 아님, 이미 추출된 요약):
+{endpoints_json}
+
+응답 스키마 (배열 길이는 입력과 동일):
+[
+  {{
+    "key": "<입력의 key 그대로>",
+    "trigger_type": "READ | CREATE | UPDATE | DELETE | COMPOSITE | OTHER",
+    "input_fields": "프론트에서 수집하는 필드와 간단 설명 (한 단락)",
+    "validations": "프론트 validation + 백엔드 pre-check 요약 (한 단락)",
+    "business_flow": "endpoint 실행 흐름을 3~5 문장으로 narrative. 서비스 chain 순서대로",
+    "read_targets": "읽는 테이블.컬럼 나열 (column_crud 의 R)",
+    "write_targets": "쓰는 테이블.컬럼 나열 (column_crud 의 C/U/D)",
+    "purpose_ko": "이 endpoint 가 무엇을 하는지 한 문장"
+  }},
+  ...
+]"""
+
+
+def _make_spec_key(row: Dict[str, Any]) -> str:
+    """Stable cache key — controller#method + sql_ids + trigger fingerprint."""
+    parts = [
+        row.get("controller_class", "") or "",
+        row.get("program_name", "") or "",
+        row.get("url", "") or "",
+        row.get("service_methods", "") or "",
+        row.get("sql_ids", "") or "",
+        row.get("related_columns", "") or "",
+        row.get("biz_summary", "") or "",
+        row.get("frontend_validation_summary", "") or "",
+        row.get("frontend_trigger", "") or "",
+    ]
+    h = hashlib.sha256()
+    h.update(ENDPOINT_SPEC_SCHEMA_VERSION.encode("utf-8"))
+    for p in parts:
+        h.update(b"\x00")
+        h.update(p.encode("utf-8"))
+    return h.hexdigest()
+
+
+def _parse_column_crud_cell(cell: str) -> Dict[str, set]:
+    """``TBL.col[한글](CRUD),\nTBL.col2(U)`` → ``{TBL.col: {C,R,U,D}}``.
+
+    Phase I 의 ``_format_column_crud`` 역파싱. LLM 후처리에서 write_targets
+    가 실제 CRUD 컬럼 부분집합인지 확인할 때 사용.
+    """
+    out: Dict[str, set] = {}
+    if not cell:
+        return out
+    for raw in re.split(r",\s*\n?|\n", cell):
+        raw = raw.strip()
+        if not raw:
+            continue
+        m = re.match(r"([A-Za-z_][\w.]*?)(?:\[[^\]]*\])?\s*\(([CRUD]+)\)\s*$", raw)
+        if not m:
+            continue
+        key = m.group(1).upper()
+        letters = set(m.group(2).upper())
+        out.setdefault(key, set()).update(letters)
+    return out
+
+
+def _collect_spec_inputs(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Assemble the compact LLM input payload for a single endpoint.
+
+    No original source code — just summaries that Phase A / Phase B
+    already produced, plus the column_crud string from Phase I. Keeps
+    prompts small and avoids leaking sensitive code to the LLM.
+    """
+    return {
+        "key": _make_spec_key(row),
+        "http_method": row.get("http_method", "") or "",
+        "url": row.get("url", "") or "",
+        "program_name": row.get("program_name", "") or "",
+        "controller": row.get("controller_class", "") or "",
+        "service_methods": row.get("service_methods", "") or "",
+        "sql_ids": row.get("sql_ids", "") or "",
+        "tables": row.get("related_tables", "") or "",
+        "column_crud": row.get("related_columns", "") or "",
+        "procedures": row.get("procedures", "") or "",
+        "rfc": row.get("rfc", "") or "",
+        "backend_biz_summary": row.get("biz_summary", "") or "",
+        "frontend_trigger": row.get("frontend_trigger", "") or "",
+        "frontend_validation": row.get("frontend_validation_summary", "") or "",
+    }
+
+
+def _build_spec_batch_prompt(batch: List[Dict[str, Any]]) -> str:
+    payload = [_collect_spec_inputs(r) for r in batch]
+    return _ENDPOINT_SPEC_USER_PROMPT_TEMPLATE.format(
+        n=len(batch),
+        endpoints_json=json.dumps(payload, ensure_ascii=False, indent=2),
+    )
+
+
+def _filter_spec_targets(spec_str: str, allowed: Dict[str, set],
+                          letters: str) -> str:
+    """Drop any ``TBL.col`` in ``spec_str`` not present in ``allowed`` for
+    the given ``letters`` (e.g. "CUD" for write_targets, "R" for read).
+
+    ``allowed`` comes from ``_parse_column_crud_cell(row["related_columns"])``
+    so the LLM can't hallucinate columns outside what the static AST
+    walker actually found. Preserves order + separators.
+    """
+    if not spec_str:
+        return ""
+    allowed_letters = set(letters)
+    parts = re.split(r",\s*\n?|\n", spec_str)
+    kept: List[str] = []
+    dropped: List[str] = []
+    for p in parts:
+        p = p.strip()
+        if not p:
+            continue
+        # Accept either bare "TBL.col" or with suffix like "(R)" / "[한글](U)"
+        m = re.match(r"([A-Za-z_][\w.]*)(?:\[[^\]]*\])?(?:\([CRUD]+\))?", p)
+        if not m:
+            continue
+        key = m.group(1).upper()
+        cand = allowed.get(key, set())
+        if cand & allowed_letters:
+            kept.append(p)
+        else:
+            dropped.append(p)
+    if dropped:
+        logger.warning(
+            "EndpointSpec: filtered %d targets outside column_crud: %s",
+            len(dropped), dropped[:5],
+        )
+    return ", ".join(kept)
+
+
+def _parse_spec_batch(raw: Any, batch: List[Dict[str, Any]]) -> List[EndpointSpec]:
+    """LLM 응답 → EndpointSpec 리스트. Phase I column_crud 기반 후처리."""
+    items: List[Any] = []
+    if isinstance(raw, list):
+        items = raw
+    elif isinstance(raw, dict):
+        for k in ("results", "data", "endpoints", "items"):
+            v = raw.get(k)
+            if isinstance(v, list):
+                items = v
+                break
+    out: List[EndpointSpec] = []
+    for i, row in enumerate(batch):
+        key = _make_spec_key(row)
+        allowed = _parse_column_crud_cell(row.get("related_columns", "") or "")
+        item = items[i] if i < len(items) and isinstance(items[i], dict) else {}
+        trig = str(item.get("trigger_type", "") or "").upper().strip()
+        spec = EndpointSpec(
+            key=key,
+            trigger_type=trig or _infer_trigger_type_from_row(row),
+            input_fields=str(item.get("input_fields", "") or "").strip(),
+            validations=str(item.get("validations", "") or "").strip(),
+            business_flow=str(item.get("business_flow", "") or "").strip(),
+            read_targets=_filter_spec_targets(
+                str(item.get("read_targets", "") or ""), allowed, "R",
+            ),
+            write_targets=_filter_spec_targets(
+                str(item.get("write_targets", "") or ""), allowed, "CUD",
+            ),
+            purpose_ko=str(item.get("purpose_ko", "") or "").strip(),
+            source="llm" if item else "fallback",
+        )
+        # Fill in trivial targets from column_crud if LLM returned empty
+        # (common for tiny endpoints where body_flow is bare CRUD).
+        if not spec.read_targets:
+            spec.read_targets = _format_targets(allowed, "R")
+        if not spec.write_targets:
+            spec.write_targets = _format_targets(allowed, "CUD")
+        out.append(spec)
+    return out
+
+
+def _format_targets(allowed: Dict[str, set], letters: str) -> str:
+    """Render ``{TBL.col: letters}`` as ``TBL.col(R), TBL.col2(U)``."""
+    allowed_letters = set(letters)
+    canonical = ("C", "R", "U", "D")
+    parts: List[str] = []
+    for key in sorted(allowed):
+        cands = allowed[key] & allowed_letters
+        if not cands:
+            continue
+        ordered = "".join(ch for ch in canonical if ch in cands)
+        parts.append(f"{key}({ordered})")
+    return ", ".join(parts)
+
+
+def _infer_trigger_type_from_row(row: Dict[str, Any]) -> str:
+    """Cheap deterministic classification used when LLM is unavailable.
+
+    Heuristic: aggregate the CRUD letters present in the row's
+    column_crud / related_tables string. If only R → READ, mostly C → CREATE,
+    etc. HTTP method is a weaker hint (POST can be any DML).
+    """
+    cells = (row.get("related_columns", "") or "") + ";" + (row.get("related_tables", "") or "")
+    letters = set(re.findall(r"\(([CRUD]+)\)", cells))
+    flat = "".join(letters)
+    has_c = "C" in flat
+    has_r = "R" in flat
+    has_u = "U" in flat
+    has_d = "D" in flat
+    mutations = sum([has_c, has_u, has_d])
+    if mutations == 0 and has_r:
+        return "READ"
+    if mutations > 1:
+        return "COMPOSITE"
+    if has_c:
+        return "CREATE"
+    if has_u:
+        return "UPDATE"
+    if has_d:
+        return "DELETE"
+    return "OTHER"
+
+
+def _spec_cache_dir(base: str = "output/legacy_analysis/.spec_cache") -> Path:
+    d = Path(base)
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _spec_cache_get(key: str, enabled: bool) -> Optional[EndpointSpec]:
+    if not enabled:
+        return None
+    path = _spec_cache_dir() / f"{key}.json"
+    if not path.exists():
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as fh:
+            raw = json.load(fh)
+        if raw.get("schema_version") != ENDPOINT_SPEC_SCHEMA_VERSION:
+            return None
+        spec = EndpointSpec(**{k: v for k, v in raw.items() if k in EndpointSpec.__annotations__})
+        spec.source = "cache"
+        return spec
+    except Exception:
+        return None
+
+
+def _spec_cache_put(key: str, spec: EndpointSpec, enabled: bool) -> None:
+    if not enabled:
+        return
+    path = _spec_cache_dir() / f"{key}.json"
+    data = asdict(spec)
+    data["schema_version"] = ENDPOINT_SPEC_SCHEMA_VERSION
+    try:
+        with path.open("w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False, indent=2)
+    except Exception as e:
+        logger.debug("spec cache put failed: %s", e)
+
+
+def extract_endpoint_narrative(
+    rows: List[Dict[str, Any]],
+    patterns: Optional[Dict[str, Any]] = None,
+    *,
+    use_cache: bool = True,
+    batch_size: int = 10,
+    config: Optional[Dict[str, Any]] = None,
+) -> Dict[str, EndpointSpec]:
+    """Generate a per-endpoint specification narrative using LLM.
+
+    Relies on Phase A (``biz_summary``) and Phase B (``frontend_*``)
+    having already populated the row dicts. For an endpoint without any
+    biz summary the resulting spec is fallback-only: trigger_type is
+    inferred from CRUD letters, purpose/flow fields stay empty.
+
+    LLM endpoint is the same one configured via ``PATTERN_LLM_*`` / ``LLM_*``
+    env (``legacy_pattern_discovery._call_llm``). If the call fails the
+    batch silently falls back to the static inference path.
+    """
+    result: Dict[str, EndpointSpec] = {}
+    if not rows:
+        return result
+
+    # Collect fallback-only specs up front so cache / LLM only needs the
+    # diff. Also serves as the guaranteed non-empty return for each row.
+    pending: List[Dict[str, Any]] = []
+    for row in rows:
+        if not row.get("matched") and not row.get("service_methods") and not row.get("related_tables"):
+            # menu-only stub rows with nothing to describe
+            continue
+        key = _make_spec_key(row)
+        cached = _spec_cache_get(key, use_cache)
+        if cached is not None:
+            result[key] = cached
+            continue
+        pending.append(row)
+
+    if not pending:
+        return result
+
+    # Attempt LLM batch. On any failure fall back to the deterministic
+    # empty spec so the user at least gets trigger_type + targets.
+    try:
+        from .legacy_pattern_discovery import _call_llm as llm_call
+    except Exception:
+        llm_call = None
+    cfg = config or {}
+
+    for start in range(0, len(pending), batch_size):
+        batch = pending[start:start + batch_size]
+        prompt = _build_spec_batch_prompt(batch)
+        raw: Any = None
+        if llm_call is not None:
+            try:
+                raw = llm_call(
+                    prompt,
+                    cfg,
+                    label=f"endpoint_spec_batch_{start // batch_size}",
+                    system_prompt=_ENDPOINT_SPEC_SYSTEM_PROMPT,
+                )
+            except Exception as e:
+                logger.warning("EndpointSpec LLM call failed: %s", e)
+                raw = None
+        specs = _parse_spec_batch(raw or [], batch)
+        for spec, row in zip(specs, batch):
+            result[spec.key] = spec
+            _spec_cache_put(spec.key, spec, use_cache)
+    return result
+
+
+def enrich_rows_with_endpoint_spec(
+    rows: List[Dict[str, Any]],
+    spec_map: Dict[str, EndpointSpec],
+) -> None:
+    """Attach ``program_spec_key`` / ``purpose_ko`` to each row in place."""
+    for row in rows:
+        key = _make_spec_key(row)
+        spec = spec_map.get(key)
+        if spec is None:
+            continue
+        row["program_spec_key"] = key
+        row.setdefault("purpose_ko", spec.purpose_ko)
+
+
+def program_spec_sheet_rows(
+    spec_map: Dict[str, EndpointSpec],
+    rows: List[Dict[str, Any]],
+) -> List[Dict[str, str]]:
+    """Payload for the ``Program Specification`` sheet.
+
+    Joins each row in ``rows`` with its EndpointSpec (by spec key). Rows
+    without a spec are skipped — caller decides whether to still write
+    the sheet for consistency.
+    """
+    out: List[Dict[str, str]] = []
+    for row in rows:
+        key = _make_spec_key(row)
+        spec = spec_map.get(key)
+        if spec is None:
+            continue
+        out.append({
+            "main_menu": row.get("main_menu", "") or "",
+            "sub_menu": row.get("sub_menu", "") or "",
+            "tab": row.get("tab", "") or "",
+            "program_name": row.get("program_name", "") or "",
+            "http_method": row.get("http_method", "") or "",
+            "url": row.get("url", "") or "",
+            "trigger_label": row.get("frontend_trigger", "") or "",
+            "trigger_type": spec.trigger_type,
+            "input_fields": spec.input_fields,
+            "validations": spec.validations,
+            "business_flow": spec.business_flow,
+            "read_targets": spec.read_targets,
+            "write_targets": spec.write_targets,
+            "purpose_ko": spec.purpose_ko,
+            "spec_source": spec.source,
         })
     return out

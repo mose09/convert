@@ -92,48 +92,55 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
-### 진행 중: Phase I — 컬럼 단위 CRUD 추출 + 용어사전 주입
+### 진행 중: Phase II — endpoint narrative LLM (Program Specification 시트)
 
-Programs 시트에 기존 Tables 컬럼 (`TBL(CRUD)`) 옆에 컬럼 단위 CRUD 를
-추가. 예: `TBL.col1[고객명](R), TBL.col2[등록일자](U)`.
+사용자 원문 요구 직접 해소: "프론트 조회 버튼 클릭 → 비즈니스 로직 →
+어떤 테이블·컬럼 / 저장 버튼 → validation → DML column" narrative 를
+endpoint 당 한 줄로 자동 생성.
 
-사용자 목표: "어떤 테이블의 어떤 컬럼 정보를 가져오는지/DML 발생하는지"
-의 결정적 데이터 확보. Phase II (endpoint narrative LLM) 의 입력 품질을
-위해 이 단계에서 정밀도 확보.
+Phase A (backend ServiceImpl biz summary) + Phase B (frontend handler
+summary) 결과와 Phase I 의 column_crud / frontend_trigger 를 **원본 body
+재전송 없이 조립** 해서 LLM 에 구조화 JSON 요청. 중복 LLM 호출 회피 +
+token 절감.
 
-sqlglot 은 이미 dependency (migration 모듈에서 사용 중).
+옵트인 플래그 `--extract-program-spec` (`--extract-biz-logic` 의존).
+결과는 신규 `Program Specification` 시트에 endpoint 당 한 행.
 
 작업 항목:
 
-- [x] `mybatis_parser.extract_column_usage(sql) → {table: {col: set[CRUD]}}`
-      sqlglot AST walker. SELECT projection / INSERT cols / UPDATE SET
-      LHS / MERGE WHEN MATCHED+NOT MATCHED recurse. 파싱 실패 시 `{}`
-      반환. `SELECT *` 는 skip, 다중 테이블 unqualified 도 drop.
-- [x] `parse_mapper_file` (XML + fallback) statement dict 에
-      `column_usage` 필드 부착
-- [x] `_build_mybatis_indexes` 에 `statement_to_column_usage` 인덱스
-- [x] `_derive_column_crud(sql_ids, mybatis_idx)` + chain dict `column_crud`
-      (method-scope / class-scope fallback 모두)
-- [x] `_build_row` 에 `related_columns` 필드, menu-only stub 에도 사전 할당
-- [x] `_format_column_crud(column_crud, terms_dict)` — `TBL.col[한글](CRUD),\n`
-      (용어사전 hit 시 `[한글]`, 없으면 생략)
-- [x] `_TERMS_ROW_RE` + `_load_terms_dict(path)` — 3/4-컬럼 용어사전
-      MD 를 파싱해 `{UPPER_ABBR: 한글}` dict 반환
-- [x] `analyze_legacy` / `analyze_legacy_batch` 시그니처에 `terms_md`
-      추가 + base_dirs 통해 _build_row 로 전달
-- [x] CLI `--terms-md` (main.py analyze-legacy 전용) + batch forward
-- [x] Programs 시트 4 개 컬럼 정의 (single with/without menu + batch
-      with/without menu) 전부에 `("Columns", "related_columns")` 를
-      Tables 바로 뒤에 삽입
-- [x] 단위 검증 15/15 PASS (`extract_column_usage`): SELECT / alias /
-      * / multi-table qualified/unqualified / INSERT / INSERT SELECT /
-      UPDATE / UPDATE alias / DELETE / MERGE / FOR UPDATE / PL/SQL 블록
-      (parse fail, empty 반환) / 빈 문자열
-- [x] End-to-end (`/tmp/mock_crud` + terms): `CRHD_W.STATUS[상태](U),\n
-      EQUI_W.V(U),\nIFLOT_W.ID[식별자](C),\nIFLOT_W.NAME[이름](C)` ✓
-- [x] 회귀: terms_md 없을 때 `[한글]` 없이 정상 동작
-- [x] README: Programs 컬럼 수 15→16, 컬럼 포맷 표에 `Columns` 행 +
-      용어사전 예시
+- [x] `legacy_biz_extractor.py` 하단에 Phase II 섹션 추가 (~300 라인):
+      `EndpointSpec` dataclass / `ENDPOINT_SPEC_SCHEMA_VERSION` /
+      `_ENDPOINT_SPEC_SYSTEM_PROMPT` / `_ENDPOINT_SPEC_USER_PROMPT_TEMPLATE` /
+      `_make_spec_key` (SHA-256) / `_parse_column_crud_cell` /
+      `_build_spec_batch_prompt` / `_filter_spec_targets` (column_crud
+      부분집합 강제) / `_parse_spec_batch` / `_format_targets` /
+      `_infer_trigger_type_from_row` (LLM down fallback) /
+      `_spec_cache_get/put` (디스크 캐시) / `extract_endpoint_narrative` /
+      `enrich_rows_with_endpoint_spec` / `program_spec_sheet_rows`
+- [x] `analyze_legacy` / `analyze_legacy_batch` 에 `extract_program_spec`
+      파라미터 추가. Phase A/B 실행 직후 Phase II 호출. 결과 dict 에
+      `endpoint_spec_map` 노출 (batch 은 `all_endpoint_spec_map` 로 merge)
+- [x] `main.py` CLI `--extract-program-spec` 신규 플래그 +
+      `--extract-biz-logic` 없이 사용 시 에러 + 양 경로 (single / batch)
+      forwarding
+- [x] `legacy_report.py` `_write_program_spec_sheet` 신규 — 15 컬럼
+      `(Main, Sub, Tab, Program, HTTP, URL, Trigger label, Trigger type,
+      Input fields, Validations, Business flow, Read targets, Write
+      targets, Purpose, Source)`. single + batch 양쪽 call site 에
+      emit. `endpoint_spec_map` 비었으면 시트 생성 skip (회귀 없음)
+- [x] pilot mock (`/tmp/mock_crud` + terms):
+      * LLM down → `source=fallback`, trigger_type=COMPOSITE 추론,
+        write_targets 는 column_crud 에서 deterministic 채움, narrative
+        공백, Program Specification 시트 1행 생성 ✓
+      * LLM mocked (mocked `_call_llm` 반환) → `source=llm`, 모든 narrative
+        필드 정상 채움, hallucinated `FAKE.FAKE(U)` / `CMN_BTN_ROLE.ROLE(R)`
+        는 후처리 filter 에서 drop 확인 ✓
+      * `--extract-program-spec` 없이 돌리면 "Program Specification"
+        시트 미생성 (회귀 없음) ✓
+      * CLI 가드: `--extract-program-spec` 단독 사용 시 에러 exit code 2 ✓
+- [x] README: Sheet 목록에 "Business Logic / Frontend Logic / Program
+      Specification" (opt-in) 추가 + Program Specification 사용 예시 +
+      15 컬럼 설명 + LLM down fallback 동작 설명
 - [x] conventional commit + PR + squash-merge
 
 ---

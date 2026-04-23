@@ -330,6 +330,78 @@ def _write_frontend_biz_sheet(wb, fe_biz_map: dict) -> None:
     ws.freeze_panes = "A2"
 
 
+def _write_program_spec_sheet(wb, spec_map: dict, rows: list[dict]) -> None:
+    """Phase II: Program Specification 시트 (endpoint 단위).
+
+    columns: Main / Sub / Tab / Program / HTTP / URL / Trigger label /
+             Trigger type / Input fields / Validations / Business flow /
+             Read targets / Write targets / Purpose / Source
+
+    spec_map 이 비어있으면 시트 생성 자체를 skip (회귀 없음). rows 는
+    controller/menu context 를 endpoint_spec 에 join 하기 위해 필요.
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from .legacy_biz_extractor import program_spec_sheet_rows
+
+    ws = wb.create_sheet("Program Specification")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(
+        start_color="0F3460", end_color="0F3460", fill_type="solid",
+    )
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    headers = [
+        "Main", "Sub", "Tab", "Program", "HTTP", "URL",
+        "Trigger label", "Trigger type",
+        "Input fields", "Validations", "Business flow",
+        "Read targets", "Write targets",
+        "Purpose", "Source",
+    ]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    sheet_rows = program_spec_sheet_rows(spec_map, rows)
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    # Rows where the LLM call failed (fallback-only) are tinted so the
+    # operator can spot them quickly.
+    fallback_fill = PatternFill(
+        start_color="FFF2CC", end_color="FFF2CC", fill_type="solid",
+    )
+    for i, r in enumerate(sheet_rows, 2):
+        values = [
+            r["main_menu"], r["sub_menu"], r["tab"], r["program_name"],
+            r["http_method"], r["url"],
+            r["trigger_label"], r["trigger_type"],
+            r["input_fields"], r["validations"], r["business_flow"],
+            r["read_targets"], r["write_targets"],
+            r["purpose_ko"], r["spec_source"],
+        ]
+        fill = fallback_fill if r["spec_source"] == "fallback" else None
+        for col, v in enumerate(values, 1):
+            cell = ws.cell(row=i, column=col, value=v)
+            cell.border = thin_border
+            cell.alignment = wrap_align
+            if fill is not None:
+                cell.fill = fill
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                longest = max(len(line) for line in str(cell.value).split("\n"))
+                max_len = max(max_len, longest)
+        ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
+    ws.freeze_panes = "A2"
+
+
 def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
@@ -527,6 +599,9 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     fe_biz_map = result.get("fe_biz_map") or {}
     if fe_biz_map:
         _write_frontend_biz_sheet(wb, fe_biz_map)
+    spec_map = result.get("endpoint_spec_map") or {}
+    if spec_map:
+        _write_program_spec_sheet(wb, spec_map, rows)
 
     wb.save(filepath)
     logger.info("Legacy excel saved: %s", filepath)
@@ -930,6 +1005,9 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     fe_biz_map = result.get("fe_biz_map") or {}
     if fe_biz_map:
         _write_frontend_biz_sheet(wb, fe_biz_map)
+    spec_map = result.get("endpoint_spec_map") or {}
+    if spec_map:
+        _write_program_spec_sheet(wb, spec_map, rows)
 
     wb.save(filepath)
     logger.info("Legacy batch excel saved: %s", filepath)

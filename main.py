@@ -1585,6 +1585,12 @@ def cmd_analyze_legacy(args):
 
     terms_md = getattr(args, "terms_md", None) or None
 
+    extract_program_spec = bool(getattr(args, "extract_program_spec", False))
+    if extract_program_spec and not extract_biz:
+        print("Error: --extract-program-spec requires --extract-biz-logic "
+              "(endpoint narrative 는 Phase A/B 결과를 입력으로 씁니다).")
+        return 2
+
     if backends_root:
         result = analyze_legacy_batch(
             backends_root=backends_root,
@@ -1604,6 +1610,7 @@ def cmd_analyze_legacy(args):
             biz_config=biz_config,
             library_dirs=library_dirs,
             terms_md=terms_md,
+            extract_program_spec=extract_program_spec,
         )
     else:
         result = analyze_legacy(
@@ -1623,6 +1630,7 @@ def cmd_analyze_legacy(args):
             biz_config=biz_config,
             library_dirs=library_dirs,
             terms_md=terms_md,
+            extract_program_spec=extract_program_spec,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1848,6 +1856,14 @@ def main():
                                 "output/legacy_analysis/.biz_cache/ "
                                 "(cache is on by default and makes re-runs "
                                 "0-cost for unchanged method bodies).")
+    al_parser.add_argument("--extract-program-spec", action="store_true",
+                           help="Phase II — endpoint 별로 '프론트 버튼 → "
+                                "validation → 비즈니스 로직 → DML 컬럼' narrative 를 "
+                                "LLM 으로 생성해 'Program Specification' 시트에 emit. "
+                                "Phase A/B 결과 (biz_summary / frontend_validation_summary) 를 "
+                                "재조립해 원본 body 재전송 없이 요약만 LLM 에 전달. "
+                                "캐시 (output/legacy_analysis/.spec_cache/) 로 재실행 0 cost. "
+                                "--extract-biz-logic 필수 의존.")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
