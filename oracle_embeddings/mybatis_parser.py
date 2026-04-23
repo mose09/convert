@@ -132,6 +132,86 @@ _PROC_CALL_BUILTINS = frozenset({
 })
 
 
+# ── CRUD body scanner (hybrid detection) ──────────────────────────
+#
+# MyBatis tag (``<select>`` / ``<insert>`` / ``<update>`` / ``<delete>``)
+# captures developer intent but misses:
+#   1. ``<select>BEGIN proc_that_updates(); END;</select>`` — tag says R,
+#      body actually runs UPDATE
+#   2. ``<update>`` containing ``MERGE INTO ...`` — tag says U, body also
+#      INSERTs (MERGE = C+U)
+#   3. ``<procedure>`` / ``<statement>`` — no tag letter at all
+# The analyzer's ``_derive_table_crud`` unions tag letter with
+# ``extract_crud_from_sql(sql)`` below so CRUD column reflects both the
+# developer's label AND any operation the body actually performs.
+
+_CRUD_KEYWORD_TO_LETTER = {
+    "INSERT": "C",
+    "UPDATE": "U",
+    "DELETE": "D",
+    # MERGE bodies always contain both INSERT and UPDATE keywords in
+    # their WHEN clauses, so the regex picks up C+U automatically —
+    # no special case needed.
+    "MERGE": None,
+    "SELECT": "R",
+}
+
+_CRUD_KEYWORD_RE = re.compile(
+    r"\b(INSERT|UPDATE|DELETE|MERGE|SELECT)\b",
+    re.IGNORECASE,
+)
+
+# ``SELECT ... FOR UPDATE`` is a row-lock hint, not a mutation. Strip
+# the ``FOR UPDATE`` fragment before keyword scanning so the statement
+# stays classified as R only.
+_FOR_UPDATE_RE = re.compile(r"\bFOR\s+UPDATE\b(?:\s+OF\s+[\w.,\s]+)?(?:\s+NOWAIT|\s+WAIT\s+\d+)?",
+                              re.IGNORECASE)
+
+# Strip string literals + comments before scanning so ``SELECT 'note
+# about UPDATE' FROM T`` doesn't falsely flag U. Order: block comments
+# first, then line comments, then single-quoted strings (with doubled
+# single-quote escape).
+_BLOCK_COMMENT_RE = re.compile(r"/\*.*?\*/", re.DOTALL)
+_LINE_COMMENT_RE = re.compile(r"--[^\n]*")
+_STRING_LITERAL_RE = re.compile(r"'(?:''|[^'])*'")
+
+
+def _strip_sql_noise(sql: str) -> str:
+    """Remove block/line comments and string literals from ``sql``.
+
+    Replacements use a single space so tokens stay separable (e.g.
+    ``UPDATE'x'FROM`` → ``UPDATE FROM``).
+    """
+    s = _BLOCK_COMMENT_RE.sub(" ", sql)
+    s = _LINE_COMMENT_RE.sub(" ", s)
+    s = _STRING_LITERAL_RE.sub(" ", s)
+    return s
+
+
+def extract_crud_from_sql(sql_text: str) -> set[str]:
+    """Return the set of CRUD letters implied by the SQL body.
+
+    Letters: ``"C"`` (INSERT) / ``"R"`` (SELECT) / ``"U"`` (UPDATE) /
+    ``"D"`` (DELETE). MERGE statements emit both ``"C"`` and ``"U"``
+    via the regex naturally (their body contains INSERT + UPDATE
+    clauses). ``SELECT ... FOR UPDATE`` is treated as ``R`` only —
+    the lock hint's ``UPDATE`` keyword is stripped before scanning.
+
+    String literals + comments are removed first to prevent false
+    positives (e.g. ``'UPDATE the record'`` inside a constant).
+    """
+    if not sql_text:
+        return set()
+    cleaned = _strip_sql_noise(sql_text)
+    cleaned = _FOR_UPDATE_RE.sub(" ", cleaned)
+    letters: set[str] = set()
+    for m in _CRUD_KEYWORD_RE.finditer(cleaned):
+        letter = _CRUD_KEYWORD_TO_LETTER.get(m.group(1).upper())
+        if letter:
+            letters.add(letter)
+    return letters
+
+
 def extract_procedure_calls(sql_text: str, stmt_tag: str = "") -> list[str]:
     """Return Oracle stored-procedure / package names invoked in ``sql_text``.
 
