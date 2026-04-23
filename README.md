@@ -473,6 +473,19 @@ python main.py analyze-legacy `
   --menu-md input\menu.md `
   --patterns output\legacy_analysis\patterns.yaml
 
+# 메인 레포 + 별도의 공용 서비스 레포 (--library-dir)
+# common 레포의 서비스/매퍼가 메인 레포 chain 해석에 참여하지만
+# Controller 행으로는 emit 안 됨. 배치 모드에서도 모든 sub-project 이
+# 공유 라이브러리를 공통으로 참조.
+python main.py analyze-legacy `
+  --backend-dir C:\workspace\gipms-main `
+  --library-dir C:\workspace\gipms-common `
+  --menu-md input\menu.md
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backends `
+  --library-dir C:\workspace\gipms-common `
+  --menu-md input\menu.md
+
 # 메뉴 매칭된 endpoint 만 Program Detail 에 표시
 python main.py analyze-legacy `
   --backends-root C:\workspace\backend `
@@ -495,6 +508,7 @@ python main.py analyze-legacy `
 | 옵션 | 설명 |
 |------|------|
 | `--backend-dir` / `--backends-root` | 단일 백엔드 / 여러 백엔드 레포 상위 |
+| `--library-dir` | 추가 라이브러리 레포 경로 (**반복 가능**). 해당 경로의 `.java` / MyBatis XML 은 **service / mapper 인덱스에만** 포함되고 Controller / endpoint 행은 생성 안 함. 별도 레포의 공용 서비스 (예: `gipms-common`) 를 메인 레포의 chain 해석에 붙일 때 사용. 단일 + 배치 모드 양쪽에서 작동 |
 | `--frontend-dir` / `--frontends-root` | 단일 프론트엔드 / 여러 프론트엔드 레포 상위 |
 | `--patterns` | `discover-patterns` 로 생성한 패턴 파일 (없으면 기본값) |
 | `--menu-md` / `--menu-xlsx` / `--menu-table` | 메뉴 소스 (우선순위: skip > md > xlsx > DB) |
@@ -731,6 +745,31 @@ Query XML, Tables, RFC`
 
 매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
 행은 **회색**으로 하이라이트됩니다.
+
+**컬럼 포맷 — 가독성 개선**:
+
+여러 항목이 들어가는 컬럼은 Excel 셀 안에서 **한 항목당 한 줄씩** 보이도록
+구분자에 개행을 넣어 emit 합니다 (`wrap_text=True` 적용). 단일 항목일 때는
+개행 없이 그대로 표시.
+
+| 컬럼 | 구분자 | 추가 annotation |
+|---|---|---|
+| `Tables` | `,\n` | 테이블명 뒤에 `(CRUD)` suffix — `C`(INSERT) / `R`(SELECT) / `U`(UPDATE) / `D`(DELETE) 조합 |
+| `RFC` | `,\n` | — |
+| `Service` / `Service method` / `XML` / `XML method` | `;\n` | — |
+
+Tables 컬럼 실제 출력 예 (1 셀 안 4 줄):
+```
+CMN_BTN_ROLE(R),
+CRHD_W(RU),
+IFLOT_W(C),
+EQUI_W(CRUD)
+```
+→ `CMN_BTN_ROLE` 은 SELECT 만, `CRHD_W` 는 SELECT+UPDATE, `IFLOT_W` 는
+INSERT 만, `EQUI_W` 는 네 가지 모두. STATEMENT / PROCEDURE / 네임스페이스
+fallback 처럼 작업 타입을 단정할 수 없는 경우는 letter 없이 테이블명만
+표시. `Tables Cross-Reference` 시트는 `(CRUD)` suffix 를 자동 제거해서
+bare 테이블명 기준으로 집계합니다.
 
 ### 12. SQL Migration — AS-IS → TO-BE 스키마 기반 쿼리 변환
 
