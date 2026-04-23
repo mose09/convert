@@ -406,6 +406,7 @@ def main() -> int:
     try:
         from oracle_embeddings.legacy_analyzer import (
             _resolve_endpoint_chain, _build_mybatis_indexes,
+            _resolve_service_impls,
         )
         from oracle_embeddings.mybatis_parser import parse_all_mappers
     except Exception as e:
@@ -414,6 +415,14 @@ def main() -> int:
 
     mb_raw = parse_all_mappers(backend_dir)
     mb_idx = _build_mybatis_indexes(mb_raw)
+
+    # _resolve_endpoint_chain 은 indexes["iface_to_impl"] 도 요구 —
+    # _build_indexes 가 만들지 않고 main analyzer 흐름에서 별도로 채움.
+    # diag 에서도 동일하게 만들어야 KeyError 안 남.
+    if "iface_to_impl" not in indexes:
+        indexes["iface_to_impl"] = _resolve_service_impls(
+            indexes["services_by_fqcn"], indexes["by_simple"],
+        )
 
     # caller 의 class 안에서 caller method 의 index 를 찾음
     caller_idx = None
