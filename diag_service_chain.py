@@ -156,6 +156,27 @@ def main() -> int:
         excerpt = raw[max(0, p - 30):p + 50].replace("\n", " ⏎ ")
         print(f"  - pos {p} (line {line}) [{tag}]")
         print(f"    {excerpt!r}")
+        # "caller body 밖" 인 경우 — 실제로는 어느 메서드 body 안인지 탐색
+        if not in_caller:
+            owning = None
+            for m in methods:
+                mbs = m.get("body_start", -1)
+                mbe = m.get("body_end", -1)
+                if mbs <= p < mbe:
+                    owning = m
+                    break
+            if owning:
+                print(f"    → 실제로는 {owning.get('name')!r} 의 body 안 "
+                      f"(body_start={owning.get('body_start')} "
+                      f"line {_line_of(raw, owning.get('body_start', 0))}, "
+                      f"body_end={owning.get('body_end')} "
+                      f"line {_line_of(raw, owning.get('body_end', 0))})")
+                print(f"    ⚠ caller 이름이 잘못 지정됐을 수 있음 — 실제 caller는 "
+                      f"{owning.get('name')!r} 로 추정")
+            else:
+                print(f"    → 어떤 메서드 body 에도 속하지 않음. "
+                      f"brace walker 로 인해 range 가 전체적으로 꼬였거나 "
+                      f"inner class / lambda 내부일 가능성.")
 
     # 5) body cut-off 위치 주변 context
     _section(f"[5] caller body 끝 지점 주변 — balanced-brace 조기 종료 의심")
