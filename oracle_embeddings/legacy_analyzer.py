@@ -311,6 +311,7 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
     statement_to_tables = {}
     statement_to_xml_file = {}
     statement_to_type = {}
+    statement_to_procs: dict[str, list[str]] = {}
     for stmt in mybatis_result.get("statements", []):
         ns = stmt.get("namespace") or ""
         stmt_id = stmt.get("id") or ""
@@ -328,6 +329,16 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
                 stmt_type = (stmt.get("type") or "").upper()
                 if stmt_type and key not in statement_to_type:
                     statement_to_type[key] = stmt_type
+                procs = stmt.get("procedures") or []
+                if procs:
+                    # Statements are unique per key, but namespace fallback
+                    # can re-hit the same key — union preserving first-seen
+                    # order to keep the "primary proc first" convention
+                    # from ``extract_procedure_calls``.
+                    existing = statement_to_procs.setdefault(key, [])
+                    for p in procs:
+                        if p not in existing:
+                            existing.append(p)
 
     return {
         "namespace_to_xml_files": {k: sorted(v) for k, v in namespace_to_xml_files.items()},
@@ -335,6 +346,7 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         "statement_to_tables": {k: sorted(v) for k, v in statement_to_tables.items()},
         "statement_to_xml_file": statement_to_xml_file,
         "statement_to_type": statement_to_type,
+        "statement_to_procs": statement_to_procs,
     }
 
 
@@ -1001,12 +1013,14 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             fqcn for fqcn in services if fqcn in indexes["mappers_by_fqcn"]
         )
         table_crud = _derive_table_crud(sql_ids, mybatis_idx)
+        procs = _derive_procedures(sql_ids, mybatis_idx)
         return {
             "services": sorted(services),
             "service_methods": service_methods,
             "xml_files": sorted(xml_files),
             "tables": sorted(tables),
             "table_crud": table_crud,
+            "procs": procs,
             "rfcs": sorted(rfcs),
             "sql_ids": sorted(sql_ids),
             "mapper_fqcns": mapper_fqcns,
@@ -1030,11 +1044,32 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
         "xml_files": xml_files_l,
         "tables": tables_l,
         "table_crud": {},
+        "procs": [],
         "rfcs": rfc_names,
         "sql_ids": [],
         "mapper_fqcns": mapper_fqcns,
         "resolved_via": "class-scope-fallback",
     }
+
+
+def _derive_procedures(sql_ids, mybatis_idx: dict) -> list[str]:
+    """Collect Oracle procedure calls across every resolved statement.
+
+    Uses the per-statement ``procedures`` lists produced by
+    :func:`mybatis_parser.extract_procedure_calls`. Deduplicates while
+    preserving first-seen order so the Programs row lists the primary
+    procedure first. Statements not present in ``statement_to_procs`` or
+    matched only via the namespace fallback produce no entries.
+    """
+    stmt_to_procs = mybatis_idx.get("statement_to_procs", {})
+    out: list[str] = []
+    seen: set[str] = set()
+    for key in sql_ids or ():
+        for p in stmt_to_procs.get(key, ()):
+            if p not in seen:
+                seen.add(p)
+                out.append(p)
+    return out
 
 
 def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
@@ -1114,6 +1149,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "query_xml": "",
         "sql_ids": "",
         "related_tables": "",
+        "procedures": "",
         "rfc": "",
         "matched": False,
         "resolved_via": "",
@@ -1238,6 +1274,9 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         # Excel cells wrap neatly (e.g. ``TABLE_A(R),\nTABLE_B(CRU)``).
         # RFC uses the same comma-newline layout for symmetry.
         "related_tables": _format_table_crud(tables, chain.get("table_crud") or {}),
+        # Procedures column — Oracle stored procs invoked from this
+        # endpoint's chain. Same ",\n" convention as Tables/RFC.
+        "procedures": _format_list_with_newlines(chain.get("procs") or []),
         "rfc": _format_list_with_newlines(rfc_names),
         "matched": menu_entry is not None,
         "resolved_via": chain.get("resolved_via", "method-scope"),

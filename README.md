@@ -730,7 +730,7 @@ output/legacy_analysis/
 ├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
 └── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 시트)
     ├── Sheet: Summary                 (전체 집계)
-    ├── Sheet: Programs                (메인 — 14개 컬럼)
+    ├── Sheet: Programs                (메인 — 15개 컬럼)
     ├── Sheet: Menu Hierarchy          (메뉴 계층 + 매칭 여부)
     ├── Sheet: Unmatched Controllers   (메뉴 없는 컨트롤러)
     ├── Sheet: Orphan Menu Entries     (컨트롤러 없는 메뉴)
@@ -738,10 +738,10 @@ output/legacy_analysis/
     └── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
 ```
 
-**Programs 시트 컬럼 (14개):**
+**Programs 시트 컬럼 (15개):**
 
 `No, Main, Sub, Tab, Program, HTTP, URL, File, React, Controller, Service,
-Query XML, Tables, RFC`
+Query XML, Tables, Procedure, RFC`
 
 매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
 행은 **회색**으로 하이라이트됩니다.
@@ -755,6 +755,7 @@ Query XML, Tables, RFC`
 | 컬럼 | 구분자 | 추가 annotation |
 |---|---|---|
 | `Tables` | `,\n` | 테이블명 뒤에 `(CRUD)` suffix — `C`(INSERT) / `R`(SELECT) / `U`(UPDATE) / `D`(DELETE) 조합 |
+| `Procedure` | `,\n` | MyBatis SQL 에서 호출하는 Oracle 스토어드 프로시저 / 패키지 (`CALL` / `{CALL}` / `EXEC` / `EXECUTE` / PL/SQL `BEGIN...END;` / `<procedure>` 태그) |
 | `RFC` | `,\n` | — |
 | `Service` / `Service method` / `XML` / `XML method` | `;\n` | — |
 
