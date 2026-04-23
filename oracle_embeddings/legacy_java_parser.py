@@ -158,9 +158,10 @@ _STEREOTYPE_RE = re.compile(
 
 # @Autowired private OrderService orderService;  (also @Resource, @Inject)
 _AUTOWIRED_FIELD_RE = re.compile(
-    r"""@(?:Autowired|Resource|Inject)\b         # annotation
-        (?:\s*\([^)]*\))?                         # optional args: @Autowired(required=false)
-        \s+                                        # whitespace (space OR newline OK)
+    r"""@(?:[\w.]+\.)?(?:Autowired|Resource|Inject)\b   # 옵셔널 FQ qualifier (@javax.inject.Inject)
+        (?:\s*\([^)]*\))?                                # optional args: @Autowired(required=false)
+        (?:\s+@\w+(?:\s*\([^)]*\))?)*                    # 복수 어노테이션 허용 (@Inject @Qualifier("x"))
+        \s+                                               # whitespace (space OR newline OK)
         (?:private|protected|public)?\s*
         (?:final\s+|transient\s+|volatile\s+)*
         (?P<type>[\w.]+)(?:\s*<[^>]*>)?\s+
