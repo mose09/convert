@@ -17,14 +17,20 @@
      호출 라인 자체가 body 에 안 포함됨. cut-off 위치 주변의
      char literal / 텍스트 블록 등이 원인일 가능성 → [5] 섹션에서
      cut-off 주변 context 출력.
+  6) (확장) walker 시뮬레이션 — caller → this.callee 가 실제 resolve
+     되는지 + callee 의 namespace 가 mybatis_idx 에 매칭되는지 자동 체크
 
 사용법 (Windows PowerShell):
-  python diag_service_chain.py <Service파일.java> <호출자메서드명> [<callee메서드명>]
+  python diag_service_chain.py <Service파일.java> <호출자메서드명> [<callee메서드명>] [<backend_dir>]
 
 예시:
   python diag_service_chain.py "C:\\work\\backend\\DpPubNotiServiceImpl.java" savePubNoti saveDpPubNotiInfo
+  python diag_service_chain.py "...Service.java" savePubNoti saveDpPubNotiInfo "C:\\work\\backend"
 
-callee 이름 생략 시 기본값 ``saveDpPubNotiInfo`` — 사용자 케이스 재현용.
+backend_dir 지정 시 MyBatis XML 까지 스캔해서 [7] 에서 namespace 매칭
+자동 검증. config.yaml 의 legacy.rfc_depth 도 읽어서 함께 보고.
+
+callee 이름 생략 시 기본값 ``saveDpPubNotiInfo``.
 """
 import sys
 
@@ -49,6 +55,7 @@ def main() -> int:
     target = sys.argv[1]
     caller = sys.argv[2]
     callee = sys.argv[3] if len(sys.argv) >= 4 else "saveDpPubNotiInfo"
+    backend_dir = sys.argv[4] if len(sys.argv) >= 5 else ""
 
     cls = parse_java_file(target)
     if not cls:
@@ -248,12 +255,72 @@ def main() -> int:
             ns = c.get("namespace") or ""
             sid = c.get("sql_id") or ""
             print(f"  - namespace={ns!r} sql_id={sid!r}")
-        print(f"\n→ 위 목록이 존재하면서도 analyze-legacy 결과에 반영 안 된다면:")
-        print(f"  (a) endpoint 체인이 caller 까지 닿지 못함 (중간 경로 단절)")
-        print(f"  (b) callee 의 namespace 가 mybatis_idx 에 매칭 안 됨 "
-              f"(_match_namespace 실패 — 로그에서 'Namespace not matched' 확인)")
-        print(f"  (c) depth ≥ rfc_depth 로 인해 탐색 중단 (config.yaml legacy.rfc_depth 확인)")
+    # 7) 자동 검증 — backend_dir 제공 시 namespace 매칭 + rfc_depth 직접 확인
+    _section(f"[7] 자동 검증 — (b) namespace 매칭 + (c) rfc_depth")
+    if not backend_dir:
+        print("  backend_dir 미지정 — 4번째 인자로 backend 루트 경로 주시면")
+        print("  (b)/(c) 자동 검증. 예:")
+        print("    python diag_service_chain.py <.java> <caller> <callee> <backend_dir>")
+    else:
+        # (b) MyBatis 스캔 → namespace 인덱스 → callee 의 각 namespace 매칭 시도
+        try:
+            from oracle_embeddings.mybatis_parser import parse_all_mappers
+            from oracle_embeddings.legacy_analyzer import _match_namespace
+        except Exception as e:
+            print(f"  import 실패: {e}")
+            return 0
+        print(f"  MyBatis XML 스캔 중: {backend_dir}")
+        mb = parse_all_mappers(backend_dir)
+        ns_to_xml = mb.get("namespace_to_xml_files", {}) or {}
+        print(f"  → {len(ns_to_xml)} 개 namespace 발견")
+        callee_sql_calls = callee_m.get("body_sql_calls", []) or []
+        if not callee_sql_calls:
+            print(f"  callee {callee!r} 에 body_sql_calls 가 없음 — SQL 호출을 안 함")
+            print(f"  → (b) 아님. (a) endpoint 체인 도달 실패 또는 다른 원인 가능성.")
+        else:
+            print(f"\n  (b) callee 의 SQL namespace 매칭:")
+            unmatched = []
+            for c in callee_sql_calls:
+                ns = c.get("namespace") or ""
+                sid = c.get("sql_id") or ""
+                matched = _match_namespace(ns, ns_to_xml)
+                flag = f"✓ matched → {matched!r}" if matched else "✗ NOT matched"
+                print(f"    - ns={ns!r} sql_id={sid!r}  [{flag}]")
+                if not matched:
+                    unmatched.append(ns)
+            if unmatched:
+                print(f"\n  ⚠ 매칭 실패 namespace {len(unmatched)} 건 — 이게 원인!")
+                print(f"    → (b) 확정. namespace 해석 실패 ({set(unmatched)!r})")
+                print(f"    원인 가능성:")
+                print(f"      * XML 의 namespace 속성이 실제 사용값과 다름 (오타)")
+                print(f"      * 변수 namespace 를 2-pass 로 해석했지만 정답 이름이 XML 에 없음")
+                print(f"      * MyBatis XML 이 --library-dir 같은 외부 디렉토리에 있음")
+            else:
+                print(f"\n  ✓ 모든 namespace 매칭 성공 — (b) 는 원인 아님.")
 
+        # (c) config.yaml 의 legacy.rfc_depth 확인
+        print(f"\n  (c) rfc_depth 설정 확인:")
+        import os
+        cfg_path = os.path.join(os.getcwd(), "config.yaml")
+        if os.path.exists(cfg_path):
+            try:
+                import yaml
+                with open(cfg_path, "r", encoding="utf-8") as fh:
+                    cfg = yaml.safe_load(fh) or {}
+                rfc_depth = ((cfg.get("legacy") or {}).get("rfc_depth"))
+                if rfc_depth is None:
+                    print(f"    legacy.rfc_depth 미설정 → 기본값 2 적용")
+                    rfc_depth = 2
+                else:
+                    print(f"    legacy.rfc_depth = {rfc_depth}")
+                print(f"    → self-call (this.X) 은 depth 증가 안 함. rfc_depth={rfc_depth}")
+                print(f"      여도 controller→service 체인 깊이가 rfc_depth 이내면 문제없음.")
+                if rfc_depth < 2:
+                    print(f"    ⚠ rfc_depth 가 2 미만이면 여러 층 service 호출이 끊길 수 있음.")
+            except Exception as e:
+                print(f"    config.yaml 읽기 실패: {e}")
+        else:
+            print(f"    config.yaml 이 현재 디렉토리에 없음 → 기본값 rfc_depth=2")
     return 0
 
 
