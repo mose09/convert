@@ -400,6 +400,34 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     if len(set(detected_frameworks)) > 1:
         overall_fw = "mixed"
 
+    # Route path slug 을 bucket 의 alias 로 등록. 사용자 사례: 폴더명
+    # (``hypm_materialMaster``) 과 메뉴 URL slug (``gipms-materialmasternew``) 이
+    # 달라 2-hop 매칭이 실패했던 문제. 각 bucket 안 Route path 가
+    # ``/apps/<slug>/...`` 형태면 해당 slug 를 같은 url_map / api_idx /
+    # triggers 버킷의 alias key 로 추가 등록한다. 이미 같은 slug bucket
+    # 이 있으면 건드리지 않음 (first-win) — 충돌 방지.
+    _APPS_SLUG_RE = re.compile(r"^/apps/([^/]+)", re.IGNORECASE)
+    alias_count = 0
+    for folder_slug in list(by_frontend.keys()):
+        url_map_for_folder = by_frontend[folder_slug]
+        for url_path in url_map_for_folder:
+            m = _APPS_SLUG_RE.match(url_path)
+            if not m:
+                continue
+            route_slug = m.group(1).lower()
+            if not route_slug or route_slug == folder_slug:
+                continue
+            if route_slug not in by_frontend:
+                by_frontend[route_slug] = url_map_for_folder
+                alias_count += 1
+                if folder_slug in api_by_frontend:
+                    api_by_frontend.setdefault(route_slug, api_by_frontend[folder_slug])
+                if folder_slug in triggers_by_frontend:
+                    triggers_by_frontend.setdefault(route_slug, triggers_by_frontend[folder_slug])
+    if alias_count:
+        logger.info("Frontend multi-repo: %d Route-slug aliases registered "
+                    "(folder name ≠ Route path slug)", alias_count)
+
     if skipped:
         logger.info("Frontend multi-repo: %d buckets skipped (not referenced by menu): %s",
                     len(skipped),

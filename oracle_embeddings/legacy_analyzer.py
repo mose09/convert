@@ -775,20 +775,26 @@ def _collect_rfc_transitive(root_fqcns: list[str], indexes: dict,
 
 
 def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
-                         app_slug: str) -> dict | None:
+                         app_slug: str,
+                         by_frontend: dict | None = None) -> dict | None:
     """Return the first menu row whose URL maps to ``app_slug``.
 
-    Two matching strategies, tried in order:
+    Matching strategies, tried in order:
 
       1. Structured (preferred): when ``app_key_spec`` is configured,
          extract slug from each menu URL with :func:`_extract_app_key`
          and compare.
-      2. Substring fallback: if no structured match (or spec missing),
-         look for the ``app_slug`` string inside the raw menu URL
-         (case-insensitive). This catches cases where the learned
-         ``app_key.index`` is off by one (common LLM mistake) — instead
-         of silently returning no match, we still get a best-effort
-         attribution so 2-hop matching keeps producing useful rows.
+      2. Route-path alias: when ``by_frontend`` is provided and the
+         structured match fails, leverage the alias that
+         ``build_frontend_url_map_multi`` registers for each Route path.
+         Menu slug may differ from folder name (사용자 사례: folder
+         ``hypm_materialMaster`` + Route path ``/apps/gipms-materialmasternew``).
+         If ``by_frontend[menu_slug]`` points to the SAME bucket object
+         as ``by_frontend[app_slug]`` (alias pair), this menu row
+         declared a Route living in ``app_slug``'s folder → match.
+      3. Substring fallback: if all structured matches fail, look for
+         the ``app_slug`` string inside the raw menu URL
+         (case-insensitive).
     """
     if not menu_rows or not app_slug:
         return None
@@ -797,7 +803,18 @@ def _lookup_menu_by_app(menu_rows: list[dict], app_key_spec: dict | None,
         for row in menu_rows:
             if _extract_app_key(row.get("url", ""), app_key_spec) == app_slug_lower:
                 return row
-        # Structured match failed — fall through to substring below.
+        # Structured match failed — try Route-path alias before substring.
+        if by_frontend:
+            target_bucket = by_frontend.get(app_slug_lower)
+            if target_bucket is not None:
+                for row in menu_rows:
+                    menu_slug = _extract_app_key(row.get("url", ""), app_key_spec)
+                    if not menu_slug:
+                        continue
+                    # `is` check — build_frontend_url_map_multi aliases by
+                    # reusing the same dict object for both keys.
+                    if by_frontend.get(menu_slug) is target_bucket:
+                        return row
     for row in menu_rows:
         if app_slug_lower in (row.get("url", "") or "").lower():
             return row
@@ -1972,7 +1989,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             # If no direct menu but 2-hop found an app bucket, attribute
             # endpoint to that app's menu row.
             if menu_entry is None and two_hop_app:
-                promoted = _lookup_menu_by_app(menu_rows or [], app_key_spec, two_hop_app)
+                promoted = _lookup_menu_by_app(menu_rows or [], app_key_spec,
+                                                two_hop_app, by_frontend)
                 if promoted:
                     menu_entry = promoted
                     raw_menu_url = menu_entry.get("url", "")
