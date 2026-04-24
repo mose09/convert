@@ -1655,6 +1655,13 @@ def cmd_analyze_legacy(args):
             xlsx_path = save_legacy_excel(result, output_dir, menu_only=menu_only)
             print(f"  Excel:    {os.path.abspath(xlsx_path)}")
 
+    # Mermaid sequence diagrams: endpoint 당 .md 하나씩 폴더에 건별 저장.
+    # --sequence-diagram 으로 rows 에 sequence_diagram 필드가 채워졌을
+    # 때만 동작 (empty rows 면 자동 skip).
+    if emit_sequence_diagram:
+        from oracle_embeddings.legacy_report import save_sequence_diagrams_folder
+        save_sequence_diagrams_folder(result, output_dir)
+
     s = result["stats"]
     print()
     if result.get("is_batch"):

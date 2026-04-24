@@ -79,6 +79,128 @@ def _build_filename(output_dir: str, result: dict, ts: str, ext: str) -> str:
     return os.path.join(_legacy_output_dir(output_dir), f"{prefix}{ts}.{ext}")
 
 
+def _build_diagram_folder(output_dir: str, result: dict, ts: str) -> str:
+    """리포트 파일명과 동일한 이름의 폴더 경로를 반환 + 생성.
+
+    예: ``<output>/legacy_analysis/as_is_analysis_myapp_20260424_123456/``
+
+    이 폴더 안에 endpoint 별 ``.md`` (Mermaid 코드블럭 포함) 가 건별
+    저장됨. 리포트 파일 (md / xlsx) 과 폴더가 같은 prefix 라 사용자가
+    쉽게 짝지어 찾을 수 있음.
+    """
+    slug = _backend_slug(result.get("backend_dir", ""))
+    prefix = f"as_is_analysis_{slug}_" if slug else "as_is_analysis_"
+    folder = os.path.join(_legacy_output_dir(output_dir), f"{prefix}{ts}")
+    os.makedirs(folder, exist_ok=True)
+    return folder
+
+
+def _slugify_for_filename(text: str, fallback: str = "endpoint") -> str:
+    """URL / 프로그램명을 파일명으로 안전한 slug 로 변환.
+
+    Windows/macOS/Linux 공통 금지 문자 (``<>:"/\\|?*``) + 공백/슬래시 를
+    ``_`` 로. 길이 80 자 상한.
+    """
+    if not text:
+        return fallback
+    slug = re.sub(r'[<>:"/\\|?*\s]+', "_", text).strip("_.")
+    slug = re.sub(r"_+", "_", slug)
+    if not slug:
+        return fallback
+    return slug[:80]
+
+
+def save_sequence_diagrams_folder(result: dict, output_dir: str) -> str:
+    """endpoint 별 Mermaid ``.md`` 파일을 폴더에 건별 저장.
+
+    ``result["rows"]`` 의 각 row 에 ``sequence_diagram`` 이 있으면
+    그 endpoint 전용 ``.md`` 하나를 생성. 파일명은 고유성 + 가독성
+    을 위해 ``<idx>_<HTTP>_<slug>.md`` 형식.
+
+    폴더 경로는 리포트 파일명과 같은 prefix (``as_is_analysis_<slug>_<ts>/``).
+    sequence_diagram 이 있는 row 가 하나도 없으면 폴더 자체를
+    생성하지 않고 빈 문자열 반환 (회귀 없음).
+    """
+    rows = result.get("rows") or []
+    diagram_rows = [r for r in rows if (r.get("sequence_diagram") or "").strip()]
+    if not diagram_rows:
+        return ""
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    folder = _build_diagram_folder(output_dir, result, ts)
+    seen_names: dict[str, int] = {}
+    for idx, r in enumerate(diagram_rows, 1):
+        http = (r.get("http_method") or "").upper() or "ANY"
+        program = r.get("program_name") or ""
+        url = r.get("url") or ""
+        slug_source = program or url or f"endpoint_{idx}"
+        slug = _slugify_for_filename(slug_source, fallback=f"endpoint_{idx}")
+        base = f"{idx:03d}_{http}_{slug}"
+        # 중복 파일명 방어 (program 이 같은 경우)
+        fname = base
+        if base in seen_names:
+            seen_names[base] += 1
+            fname = f"{base}_{seen_names[base]}"
+        else:
+            seen_names[base] = 1
+        filepath = os.path.join(folder, f"{fname}.md")
+        _write_single_diagram_md(filepath, r)
+    logger.info("Sequence diagrams folder saved: %s (%d files)", folder, len(diagram_rows))
+    print(f"  Sequence diagrams: {len(diagram_rows)} files → {folder}")
+    return folder
+
+
+def _write_single_diagram_md(filepath: str, row: dict) -> None:
+    """한 endpoint 의 정보 + Mermaid 코드블럭을 ``.md`` 로 저장."""
+    title_bits = []
+    program = row.get("program_name") or ""
+    http = row.get("http_method") or ""
+    url = row.get("url") or ""
+    if program:
+        title_bits.append(program)
+    if http or url:
+        title_bits.append(f"{http} {url}".strip())
+    title = " — ".join(b for b in title_bits if b) or "Endpoint"
+
+    lines: list[str] = []
+    lines.append(f"# {title}")
+    lines.append("")
+    lines.append("## Endpoint")
+    lines.append("")
+    meta_pairs = [
+        ("Main menu", row.get("main_menu", "")),
+        ("Sub menu", row.get("sub_menu", "")),
+        ("Tab", row.get("tab", "")),
+        ("Program", program),
+        ("HTTP", http),
+        ("URL", url),
+        ("Controller", row.get("controller_class", "")),
+        ("File", row.get("file_name", "")),
+        ("Service", row.get("service", "")),
+        ("Service method", row.get("service_method", "")),
+        ("XML", row.get("query_xml", "")),
+        ("XML method", row.get("sql_ids", "")),
+        ("Tables", row.get("related_tables", "")),
+        ("Columns", row.get("related_columns", "")),
+        ("Procedures", row.get("procedures", "")),
+        ("RFC", row.get("rfc", "")),
+    ]
+    for label, value in meta_pairs:
+        if not value:
+            continue
+        # 여러 줄 (,\n / ;\n) 인 항목은 `<br>` 으로 합쳐서 한 셀처럼
+        inline = str(value).replace("\n", "<br>")
+        lines.append(f"- **{label}**: {inline}")
+    lines.append("")
+    lines.append("## Sequence Diagram")
+    lines.append("")
+    lines.append("```mermaid")
+    lines.append(row.get("sequence_diagram", "") or "")
+    lines.append("```")
+    lines.append("")
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
+
+
 def _md_escape(text) -> str:
     """Escape pipes/newlines so Markdown tables don't break."""
     if text is None:
