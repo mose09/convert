@@ -1902,6 +1902,71 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         except Exception as e:
             logger.warning("Frontend scan skipped: %s", e)
 
+    # Menu scope resolver — **import chain 기반** endpoint 매칭.
+    # 사용자 지적: 폴더명 heuristic 은 hypm_materialMaster / gipms-... 처럼
+    # folder 이름과 메뉴 URL slug 가 다를 때 부정확. 메뉴 URL → Route 선언
+    # 파일 → import BFS 로 scope 파일 집합 → 그 파일들의 API 호출 → backend
+    # endpoint 매칭 인덱스를 미리 구축.
+    #
+    # endpoint_to_menus: {normalized_endpoint_url: [menu_url_norm, ...]}
+    # menu_to_scope_files: {menu_url_norm: [rel_file, ...]} — presentation/
+    #   screen_files 소스로도 활용 가능.
+    endpoint_to_menus: dict[str, list[str]] = {}
+    menu_to_scope_files: dict[str, list[str]] = {}
+    if frontend_dir and react_url_map and menu_rows:
+        try:
+            from .legacy_react_router import (
+                build_import_graph, collect_menu_scope_files,
+            )
+            from .legacy_react_api_scanner import (
+                _build_api_url_index_from_files,
+            )
+            # frontend_dir 이 multi-repo root 면 각 서브 레포별로 graph 를
+            # 만들고 합집합. 단순 단일 모드면 바로.
+            import_graphs: list[tuple[str, dict]] = []
+            if frontends_root is not None:
+                from .legacy_frontend import _enumerate_buckets
+                for _name, bucket_path in _enumerate_buckets(frontend_dir):
+                    import_graphs.append(
+                        (bucket_path, build_import_graph(bucket_path))
+                    )
+            else:
+                import_graphs.append((frontend_dir, build_import_graph(frontend_dir)))
+            merged_graph: dict[str, set[str]] = {}
+            for _root, g in import_graphs:
+                merged_graph.update(g)
+            # 각 menu 별 scope → scope 파일들의 API URL 추출 → reverse index.
+            scope_linked_count = 0
+            for r in (menu_rows or []):
+                m_url = normalize_url(r.get("url", ""), url_strip)
+                if not m_url or m_url not in react_url_map:
+                    continue
+                scope = collect_menu_scope_files(m_url, react_url_map, merged_graph)
+                if not scope:
+                    continue
+                # scope 안 파일 들에서 API URL 스캔. frontend_dir 을 base 로
+                # relpath 가 사람 읽기 쉬운 형태 유지.
+                api_idx = _build_api_url_index_from_files(
+                    sorted(scope), frontend_dir,
+                    patterns=patterns, strip_patterns=url_strip,
+                )
+                if not api_idx:
+                    continue
+                # 파일 목록 저장 (screen_files fallback 용).
+                import os as _os
+                menu_to_scope_files[m_url] = sorted(
+                    _os.path.relpath(f, frontend_dir) for f in scope
+                )
+                for endpoint_url, _files in api_idx.items():
+                    endpoint_to_menus.setdefault(endpoint_url, []).append(m_url)
+                scope_linked_count += 1
+            if scope_linked_count:
+                print(f"  Menu import-chain scope: {scope_linked_count} menus "
+                      f"linked to {len(endpoint_to_menus)} backend endpoints "
+                      f"via {len(merged_graph)} files' imports")
+        except Exception as e:
+            logger.warning("Menu scope resolver skipped: %s", e)
+
     # Menu URL index — preserve raw_url alongside the normalized key so
     # the app_key extractor can inspect the pre-normalization form later.
     menu_url_index = {}
@@ -1945,6 +2010,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         interesting_urls.update(_idx.keys())
     if single_api_index:
         interesting_urls.update(single_api_index.keys())
+    # import-chain 으로 menu 에 귀속되는 backend endpoint 도 scope 에 포함.
+    interesting_urls.update(endpoint_to_menus.keys())
     if menu_only:
         print(f"  Menu-driven interesting URLs: {len(interesting_urls)}")
 
@@ -1958,6 +2025,18 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             key = normalize_url(ep["full_url"], url_strip)
             controller_urls.add(key)
             menu_entry = menu_url_index.get(key)
+
+            # 신규: import-chain 기반 매칭.
+            # endpoint URL 이 menu 의 scope 파일들에서 API 로 호출됐으면
+            # 그 menu 로 귀속. 폴더 이름 heuristic 보다 정확 —
+            # Route 선언이 있는 index.js 에서 import 로 연결된 실제 파일만
+            # scope 에 포함되므로 false positive 거의 없음.
+            import_chain_menu_key = ""
+            if menu_entry is None:
+                menu_keys = endpoint_to_menus.get(key) or []
+                if menu_keys:
+                    import_chain_menu_key = menu_keys[0]
+                    menu_entry = menu_url_index.get(import_chain_menu_key)
 
             # menu_only optimization: skip expensive chain resolution
             # for endpoints that aren't in the interesting URL set. This

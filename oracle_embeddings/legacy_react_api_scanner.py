@@ -272,6 +272,23 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}
 
+    files = _scan_dir(frontend_dir)
+    return _build_api_url_index_from_files(
+        files, frontend_dir, patterns=patterns, strip_patterns=strip_patterns,
+    )
+
+
+def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
+                                     patterns: dict | None = None,
+                                     strip_patterns=None) -> dict[str, list[str]]:
+    """Core implementation of :func:`build_api_url_index` with the file
+    set injected by caller. Reused by the menu-scope resolver which
+    passes only the subset of files reachable via imports from a Route
+    declaration (사용자 요청: 폴더가 아니라 import chain 이 scope).
+    """
+    if not files:
+        return {}
+
     fe = (patterns or {}).get("frontend") or {}
     methods = list(_DEFAULT_API_METHODS) + list(fe.get("api_call_methods") or [])
     const_files_hint = fe.get("api_url_const_files") or []
@@ -280,7 +297,6 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
     if call_re is None:
         return {}
 
-    files = _scan_dir(frontend_dir)
     const_map = _collect_url_constants(files, const_files_hint)
 
     index: dict[str, set[str]] = {}
