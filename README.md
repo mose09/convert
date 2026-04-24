@@ -751,8 +751,14 @@ output/legacy_analysis/
     ├── Sheet: Tables Cross-Reference  (테이블별 사용 프로그램)
     ├── Sheet: Business Logic          (opt-in `--extract-biz-logic` Phase A)
     ├── Sheet: Frontend Logic          (opt-in `--extract-biz-logic` Phase B)
-    └── Sheet: Program Specification   (opt-in `--extract-program-spec` Phase II)
+    ├── Sheet: Program Specification   (opt-in `--extract-program-spec` Phase II)
+    └── Sheet: Sequence Diagrams       (opt-in `--sequence-diagram`)
 ```
+
+`--sequence-diagram` 은 리포트 파일명과 같은 이름의 폴더
+(`as_is_analysis_<slug>_<ts>/`) 도 같이 만들어 endpoint 별 `.md` 파일
+(Mermaid 코드 포함) 을 건별 저장합니다. 상세는 아래 "Sequence Diagram"
+섹션 참고.
 
 **Programs 시트 컬럼 (16개):**
 
@@ -834,6 +840,96 @@ LLM 호출 당 endpoint 10개 배치, 캐시 `output/legacy_analysis/.spec_cache
 재실행 시 변경 없는 endpoint 는 0 cost. LLM endpoint down 시 `fallback`
 source 로 trigger_type + write_targets 는 채워 주고 narrative 필드는
 공백 (노란색 하이라이트).
+
+**Sequence Diagram — Mermaid 시퀀스 다이어그램 자동 생성 (`--sequence-diagram`)**:
+
+endpoint 당 **Controller → Service → Mapper → DB / RFC** 호출 체인을
+Mermaid `sequenceDiagram` 으로 자동 렌더. **LLM 불필요** — 파서만으로
+source offset 기반 호출 순서 + 제어 블록 (if/else/for/while/switch/try)
+을 결정적으로 추출해서 `alt/loop/opt/end` 래핑까지 emit.
+
+```powershell
+python main.py analyze-legacy `
+  --backend-dir C:\work\backend `
+  --frontend-dir C:\work\frontend `
+  --menu-md input\menu.md `
+  --sequence-diagram
+```
+
+**출력 위치** (리포트 파일과 같은 prefix 로 폴더 생성):
+
+```
+output/legacy_analysis/
+├── as_is_analysis_myapp_20260424_123456.md       # 통합 리포트 (Mermaid 섹션 포함)
+├── as_is_analysis_myapp_20260424_123456.xlsx     # Excel (+ Sequence Diagrams 시트)
+└── as_is_analysis_myapp_20260424_123456/         # endpoint 별 .md 폴더
+    ├── 001_POST_saveOrder.md
+    ├── 002_GET_findCustomers.md
+    └── ...
+```
+
+각 endpoint `.md` 파일은 메타데이터 (Controller / Service / Tables /
+Columns / RFC / procedures) + ```` ```mermaid ```` 코드블럭. GitHub /
+VSCode Mermaid Preview 에서 즉시 렌더, 아니면 <https://mermaid.live>
+에 복붙.
+
+**다이어그램 구조 — 고정 참가자 순서**:
+
+```
+User → Controller → Service (체인 순) → Mapper → DB → SAP
+```
+
+등장 안 하는 카테고리는 선언 생략 (RFC 없으면 SAP 생략 등).
+
+**제어 블록 → Mermaid 매핑 (Phase B, 파서 기반)**:
+
+| Java | Mermaid | 예시 |
+|---|---|---|
+| `if` / `else if` / `else` | `alt IF <cond>` / `else ELSE IF <cond>` / `else ELSE` | `alt IF param != null` |
+| `for` / `while` / `do-while` | `loop FOR` / `loop WHILE` / `loop DO-WHILE` | `loop FOR Order o : orders` |
+| `switch` | `alt SWITCH <cond>` | `alt SWITCH type` |
+| `try` / `catch` / `finally` | `opt TRY` / `else CATCH <ex>` / `else FINALLY` | `else CATCH Exception e` |
+
+Mermaid 자체 키워드는 `alt/loop/opt/else/end` 로 고정이지만, 조건 앞에
+`IF` / `FOR` / `TRY` 같은 접두어를 붙여 Java 원래 구조가 한눈에
+들어오게 함.
+
+**실제 출력 예**:
+
+````
+```mermaid
+sequenceDiagram
+    actor User
+    participant C as OrderController
+    participant S as OrderServiceImpl
+    participant Mapper as Mapper
+    participant DB as DB
+    User->>C: GET /orders
+    Note over C: handle()
+    C->>S: go()
+    loop FOR int i = 0, i ＜ list.size(), i++
+        S->>Mapper: SELECTONE OrderMapper.findById
+        Mapper->>DB: TB_ORDER
+    end
+    alt IF list.size() ＞ 0
+        S->>Mapper: INSERT OrderMapper.log
+        Mapper->>DB: TB_ORDER_LOG
+    end
+```
+````
+
+**특수 문자 처리**:
+
+- `<` → `＜` (U+FF1C 전각), `>` → `＞` (U+FF1E 전각) — Mermaid 가
+  화살표 문법 (`->>`, `<<-`) 으로 오해하는 것 방지. 시각은 부등호와
+  동일
+- `;` → `,` — statement separator 오인 방지 (for-loop 조건 안전)
+- `:` → ` `, `"` → `'` — Mermaid label 구분자 회피
+- 80자 초과 조건 → `…` 절단 — 장문 Java 조건이 block label 깨는 케이스 방지
+
+**Phase II 와 독립**: `--extract-program-spec` 없이 단독 사용 가능 (LLM
+불필요). `--extract-biz-logic` / `--extract-program-spec` 과 함께 쓰면
+비즈니스 narrative + 시퀀스 다이어그램 양쪽 다 생성됨.
 
 ### 12. SQL Migration — AS-IS → TO-BE 스키마 기반 쿼리 변환
 
