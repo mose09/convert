@@ -74,35 +74,48 @@ def _participant_id(fqcn_or_role: str, used_aliases: Dict[str, str]) -> str:
 
 
 def _block_open_text(block: dict) -> str:
-    """block dict → Mermaid 열기 라인 (없으면 빈 문자열)."""
+    """block dict → Mermaid 열기 라인 (없으면 빈 문자열).
+
+    Mermaid 자체 키워드 (alt / loop / opt) 뒤에 ``IF`` / ``FOR`` / ``TRY``
+    같은 익숙한 접두어를 붙여서 다이어그램 프레임에 ``alt IF cond`` 처럼
+    표시되게 함. 순수 Mermaid 는 if/for 를 지원 안 해 alt/loop 으로
+    통일돼 있지만, 사용자 가독성 위해 접두어로 Java 원래 의도를 명시.
+    """
     kind = block.get("kind")
     cond = _escape_label(block.get("condition", ""))
     if kind == "if":
-        return f"alt {cond}" if cond else "alt"
-    if kind in ("for", "while"):
-        return f"loop {cond}" if cond else "loop"
+        return f"alt IF {cond}" if cond else "alt IF"
+    if kind == "for":
+        return f"loop FOR {cond}" if cond else "loop FOR"
+    if kind == "while":
+        return f"loop WHILE {cond}" if cond else "loop WHILE"
     if kind == "do_while":
-        return f"loop do-while {cond}" if cond else "loop do-while"
+        return f"loop DO-WHILE {cond}" if cond else "loop DO-WHILE"
     if kind == "switch":
-        return f"alt switch({cond})" if cond else "alt switch"
+        return f"alt SWITCH {cond}" if cond else "alt SWITCH"
     if kind == "try":
-        return "opt try"
+        return "opt TRY"
     # else_if / else / catch / finally 는 sibling — 여기선 opener 아님
     return ""
 
 
 def _block_sibling_text(block: dict) -> str:
-    """sibling 전환 시 ``else <label>`` 라인."""
+    """sibling 전환 시 ``else <label>`` 라인.
+
+    Mermaid 의 sibling 전환 키워드는 ``else`` 고정 (alt/opt 블록 모두 공용).
+    가독성 위해 뒤에 ``ELSE IF`` / ``ELSE`` / ``CATCH`` / ``FINALLY``
+    레이블을 붙여서 원래 Java 구조를 명시.
+    """
     kind = block.get("kind")
     cond = _escape_label(block.get("condition", ""))
     if kind == "else_if":
-        return f"else {cond}" if cond else "else"
+        return f"else ELSE IF {cond}" if cond else "else ELSE IF"
     if kind == "else":
-        return "else"
+        return "else ELSE"
     if kind == "catch":
-        return f"else catch {cond}" if cond else "else catch"
+        return f"else CATCH {cond}" if cond else "else CATCH"
     if kind == "finally":
-        return "else finally"
+        return "else FINALLY"
     return "else"
 
 
