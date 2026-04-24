@@ -176,6 +176,23 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
             )
         f.write("\n")
 
+        # Mermaid Sequence Diagrams (Phase A) — row 에 sequence_diagram
+        # 있을 때만 섹션 생성. GitHub / VSCode 는 ```mermaid 코드블럭을
+        # 자동 렌더. 그 외 환경은 Mermaid Live (https://mermaid.live) 에
+        # 복붙해서 확인.
+        diagram_rows = [r for r in rows if (r.get("sequence_diagram") or "").strip()]
+        if diagram_rows:
+            f.write(f"## Sequence Diagrams ({len(diagram_rows)})\n\n")
+            f.write("endpoint 당 controller → service → XML → DB / RFC 호출 체인 "
+                    "(source offset 순서, LLM 없이 static 추출).\n\n")
+            for r in diagram_rows:
+                title = (f"{r.get('http_method','')} {r.get('url','')}".strip()
+                         or r.get("program_name", "") or "endpoint")
+                f.write(f"### {title}\n\n")
+                f.write("```mermaid\n")
+                f.write(r["sequence_diagram"])
+                f.write("\n```\n\n")
+
         if unmatched:
             f.write(f"## Unmatched Controllers ({len(unmatched)})\n\n")
             f.write("메뉴 테이블에 매칭되지 않은 컨트롤러 엔드포인트. 내부 API 이거나 메뉴 누락일 수 있습니다.\n\n")
@@ -402,6 +419,63 @@ def _write_program_spec_sheet(wb, spec_map: dict, rows: list[dict]) -> None:
     ws.freeze_panes = "A2"
 
 
+def _write_sequence_diagram_sheet(wb, rows: list[dict]) -> None:
+    """Phase A: Mermaid Sequence Diagrams 시트.
+
+    각 endpoint row 가 ``sequence_diagram`` 필드 (Mermaid 텍스트) 를 가질
+    때만 한 행 emit. columns: Main / Sub / Program / HTTP / URL /
+    Mermaid. 사용자가 Mermaid 텍스트를 <https://mermaid.live> 또는
+    VSCode 의 Mermaid Preview 확장에 복붙해서 다이어그램 확인.
+
+    비어있는 row 는 skip — opt-in 플래그 없이 돌린 경우 아무것도 안
+    그려지는 회귀 없는 동작.
+    """
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+
+    diagram_rows = [r for r in rows if (r.get("sequence_diagram") or "").strip()]
+    if not diagram_rows:
+        return
+
+    ws = wb.create_sheet("Sequence Diagrams")
+    header_font = Font(bold=True, color="FFFFFF", size=11)
+    header_fill = PatternFill(
+        start_color="0F3460", end_color="0F3460", fill_type="solid",
+    )
+    header_align = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+    headers = ["Main", "Sub", "Program", "HTTP", "URL", "Mermaid"]
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_align
+        cell.border = thin_border
+
+    wrap_align = Alignment(vertical="top", wrap_text=True)
+    for i, r in enumerate(diagram_rows, 2):
+        vals = [
+            r.get("main_menu", "") or "",
+            r.get("sub_menu", "") or "",
+            r.get("program_name", "") or "",
+            r.get("http_method", "") or "",
+            r.get("url", "") or "",
+            r.get("sequence_diagram", "") or "",
+        ]
+        for col, v in enumerate(vals, 1):
+            cell = ws.cell(row=i, column=col, value=v)
+            cell.border = thin_border
+            cell.alignment = wrap_align
+
+    # Mermaid 열은 긴 텍스트 — 넉넉히
+    widths = [20, 20, 30, 8, 40, 80]
+    for col_i, w in enumerate(widths, 1):
+        ws.column_dimensions[ws.cell(row=1, column=col_i).column_letter].width = w
+    ws.freeze_panes = "A2"
+
+
 def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
@@ -602,6 +676,9 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     spec_map = result.get("endpoint_spec_map") or {}
     if spec_map:
         _write_program_spec_sheet(wb, spec_map, rows)
+    # Mermaid Sequence Diagrams (Phase A) — row 에 sequence_diagram 필드가
+    # 있는 경우에만 시트 생성. 없으면 skip → 회귀 없음.
+    _write_sequence_diagram_sheet(wb, rows)
 
     wb.save(filepath)
     logger.info("Legacy excel saved: %s", filepath)
@@ -791,6 +868,23 @@ def save_legacy_batch_markdown(result: dict, output_dir: str, menu_only: bool = 
                 ) + " |\n"
             )
         f.write("\n")
+
+        # Mermaid Sequence Diagrams (Phase A) — single-mode 와 동일 구조
+        diagram_rows = [r for r in rows if (r.get("sequence_diagram") or "").strip()]
+        if diagram_rows:
+            f.write(f"## Sequence Diagrams ({len(diagram_rows)})\n\n")
+            f.write("endpoint 당 controller → service → XML → DB / RFC 호출 체인 "
+                    "(source offset 순서, LLM 없이 static 추출).\n\n")
+            for r in diagram_rows:
+                title = (f"{r.get('http_method','')} {r.get('url','')}".strip()
+                         or r.get("program_name", "") or "endpoint")
+                project = r.get("backend_project", "")
+                if project:
+                    title = f"[{project}] {title}"
+                f.write(f"### {title}\n\n")
+                f.write("```mermaid\n")
+                f.write(r["sequence_diagram"])
+                f.write("\n```\n\n")
 
         unmatched = result.get("unmatched_controllers", [])
         if unmatched:
@@ -1008,6 +1102,9 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
     spec_map = result.get("endpoint_spec_map") or {}
     if spec_map:
         _write_program_spec_sheet(wb, spec_map, rows)
+    # Mermaid Sequence Diagrams (Phase A) — row 에 sequence_diagram 필드가
+    # 있는 경우에만 시트 생성. 없으면 skip → 회귀 없음.
+    _write_sequence_diagram_sheet(wb, rows)
 
     wb.save(filepath)
     logger.info("Legacy batch excel saved: %s", filepath)

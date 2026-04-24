@@ -1586,6 +1586,7 @@ def cmd_analyze_legacy(args):
     terms_md = getattr(args, "terms_md", None) or None
 
     extract_program_spec = bool(getattr(args, "extract_program_spec", False))
+    emit_sequence_diagram = bool(getattr(args, "sequence_diagram", False))
     if extract_program_spec and not extract_biz:
         print("Error: --extract-program-spec requires --extract-biz-logic "
               "(endpoint narrative 는 Phase A/B 결과를 입력으로 씁니다).")
@@ -1611,6 +1612,7 @@ def cmd_analyze_legacy(args):
             library_dirs=library_dirs,
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
+            emit_sequence_diagram=emit_sequence_diagram,
         )
     else:
         result = analyze_legacy(
@@ -1631,6 +1633,7 @@ def cmd_analyze_legacy(args):
             library_dirs=library_dirs,
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
+            emit_sequence_diagram=emit_sequence_diagram,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -1864,6 +1867,14 @@ def main():
                                 "재조립해 원본 body 재전송 없이 요약만 LLM 에 전달. "
                                 "캐시 (output/legacy_analysis/.spec_cache/) 로 재실행 0 cost. "
                                 "--extract-biz-logic 필수 의존.")
+    al_parser.add_argument("--sequence-diagram", action="store_true",
+                           help="Mermaid sequence diagram Phase A — endpoint "
+                                "당 controller → service → XML → DB / RFC 호출 "
+                                "체인을 source offset 정렬로 수집해 Mermaid "
+                                "``sequenceDiagram`` 으로 렌더. LLM 불필요 "
+                                "(파서만 사용). Markdown 리포트에 endpoint 별 "
+                                "코드블럭 + Excel 에 'Sequence Diagrams' 시트 "
+                                "신규. Phase II 와 독립 — 단독 사용 가능.")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
