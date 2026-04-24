@@ -1214,6 +1214,139 @@ def _derive_column_crud(sql_ids, mybatis_idx: dict) -> dict[str, dict[str, set]]
     return out
 
 
+def trace_chain_events(endpoint: dict, controller: dict,
+                         indexes: dict, mybatis_idx: dict,
+                         rfc_depth: int = 2) -> list[dict]:
+    """Walk the endpoint chain and return per-call events in source order.
+
+    Mermaid sequence diagram (Phase A) 용. ``_resolve_endpoint_chain`` 과
+    동일한 탐색 로직을 가지지만 set 누적 대신 **호출 순서를 보존한 event
+    리스트** 를 반환. 각 event 는 ``kind`` 로 분기:
+
+    * ``call``   — cross-class or self method call. ``from_class`` →
+                   ``to_class`` (method 이름 포함)
+    * ``sql``    — MyBatis mapper 호출. ``from_class`` → XML namespace
+                   (sql_id 포함). 매칭된 statement 의 tables 는
+                   ``tables`` 필드로 동봉.
+    * ``rfc``    — SAP RFC 호출. ``from_class`` → ``RFC`` participant.
+
+    Event 순서는 source offset 기반 (depth-first). 같은 method 내에서는
+    파서가 기록한 ``offset`` 필드로 정렬. 서브 호출은 부모의 offset
+    자리에 inline 으로 재귀 삽입 (sequence 가 자연스러운 호출-복귀 형태).
+    """
+    svc_index = indexes["services_by_fqcn"]
+    iface_to_impl = indexes.get("iface_to_impl", {})
+    mapper_index = indexes.get("mappers_by_fqcn", {})
+    ctrl_index = indexes.get("controllers_by_fqcn", {})
+
+    events: list[dict] = []
+    visited: set[tuple] = set()
+
+    stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
+    ns_to_tbl = mybatis_idx.get("namespace_to_tables", {})
+
+    def _emit_method_events(method: dict, owner: dict, depth: int) -> None:
+        """Walk one method body emitting events in offset order."""
+        key = (owner.get("fqcn"), method.get("name"))
+        if key in visited:
+            return
+        visited.add(key)
+
+        # 세 가지 call 종류를 offset 정렬로 merge
+        calls_by_offset: list[tuple[int, str, dict]] = []
+        for fc in method.get("body_field_calls") or []:
+            calls_by_offset.append((fc.get("offset", 0), "field", fc))
+        for sc in method.get("body_sql_calls") or []:
+            calls_by_offset.append((sc.get("offset", 0), "sql", sc))
+        for rc in method.get("body_rfc_calls") or []:
+            calls_by_offset.append((rc.get("offset", 0), "rfc", rc))
+
+        # SQL / RFC 가 같은 offset 의 field_call 을 가린다 (sqlSession.selectList
+        # 는 field_call 과 sql_call 양쪽에 기록되기 때문에 중복 제거).
+        sql_rfc_offsets = {o for o, k, _ in calls_by_offset if k != "field"}
+        calls_by_offset.sort(key=lambda t: t[0])
+
+        for off, kind, call in calls_by_offset:
+            if kind == "field":
+                if off in sql_rfc_offsets:
+                    continue  # SQL / RFC 가 우선
+                recv = call.get("receiver", "") or ""
+                meth = call.get("method", "") or ""
+                if not meth:
+                    continue
+                if recv == "this":
+                    # self-call: 동일 owner 안에서 재귀. depth 증가 안 함
+                    self_method = _find_method_in_class(owner, meth)
+                    if self_method is None:
+                        continue
+                    events.append({
+                        "kind": "call", "from_class": owner.get("fqcn"),
+                        "to_class": owner.get("fqcn"), "method": meth,
+                        "depth": depth, "self_call": True,
+                    })
+                    _emit_method_events(self_method, owner, depth)
+                    continue
+                # cross-class: receiver field → FQCN 해석
+                svc_fqcn = _resolve_field_type_fqcn(recv, owner, indexes)
+                if not svc_fqcn:
+                    continue
+                impl_fqcn = iface_to_impl.get(svc_fqcn, svc_fqcn)
+                impl_cls = (svc_index.get(impl_fqcn) or svc_index.get(svc_fqcn)
+                            or mapper_index.get(impl_fqcn) or mapper_index.get(svc_fqcn)
+                            or ctrl_index.get(impl_fqcn) or ctrl_index.get(svc_fqcn))
+                if impl_cls is None:
+                    continue
+                events.append({
+                    "kind": "call", "from_class": owner.get("fqcn"),
+                    "to_class": impl_fqcn, "method": meth,
+                    "depth": depth, "self_call": False,
+                })
+                if depth + 1 > rfc_depth:
+                    continue  # 체인은 명시하되 그 안쪽 body 는 탐색 중단
+                target_method = _find_method_in_class(impl_cls, meth)
+                if target_method is not None:
+                    _emit_method_events(target_method, impl_cls, depth + 1)
+            elif kind == "sql":
+                ns_raw = call.get("namespace") or ""
+                sid = call.get("sql_id") or ""
+                matched = _match_namespace(ns_raw, mybatis_idx["namespace_to_xml_files"])
+                tables: list[str] = []
+                if matched:
+                    stmt_key = f"{matched}.{sid}"
+                    tables = list(stmt_to_tbl.get(stmt_key, ()))
+                    if not tables:
+                        tables = list(ns_to_tbl.get(matched, ()))
+                events.append({
+                    "kind": "sql",
+                    "from_class": owner.get("fqcn"),
+                    "namespace": matched or ns_raw,
+                    "sql_id": sid,
+                    "op": call.get("op", "").lower(),
+                    "tables": tables,
+                    "depth": depth,
+                })
+            elif kind == "rfc":
+                events.append({
+                    "kind": "rfc",
+                    "from_class": owner.get("fqcn"),
+                    "rfc_name": call.get("name", ""),
+                    "depth": depth,
+                })
+
+    methods_list = controller.get("methods") or []
+    mname = endpoint.get("method_name") or ""
+    idx = endpoint.get("_method_idx")
+    root_method = None
+    if idx is not None and 0 <= idx < len(methods_list):
+        root_method = methods_list[idx]
+    elif mname:
+        root_method = _find_method_in_class(controller, mname)
+    if root_method is None:
+        return events
+    _emit_method_events(root_method, controller, 0)
+    return events
+
+
 def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[str]:
     """If a controller has no class-level mapping but extends another
     controller, inherit the parent's class-level path. Recursive to cover
@@ -1270,6 +1403,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "related_columns": "",
         "procedures": "",
         "rfc": "",
+        "sequence_diagram": "",
         "matched": False,
         "resolved_via": "",
     }
@@ -1318,7 +1452,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                rfc_depth: int = 2,
                menu_raw_url: str = "",
                react_entry: dict | None = None,
-               frontend_trigger: str = "") -> dict:
+               frontend_trigger: str = "",
+               emit_sequence_diagram: bool = False) -> dict:
     """Assemble a single program-row dict for one controller endpoint.
 
     Resolution runs against the **controller method's own body** when
@@ -1334,6 +1469,21 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
     tables = chain["tables"]
     mapper_fqcns = chain["mapper_fqcns"]
     rfc_names = chain["rfcs"]
+
+    # Mermaid sequence diagram (Phase A) — opt-in. 같은 체인을 한 번 더
+    # walk 하지만 event 순서 (source offset) 보존. LLM 불필요.
+    sequence_diagram_text = ""
+    if emit_sequence_diagram:
+        try:
+            events = trace_chain_events(
+                endpoint, controller, indexes, mybatis_idx, rfc_depth=rfc_depth,
+            )
+            from .legacy_mermaid import render_sequence_diagram
+            sequence_diagram_text = render_sequence_diagram(
+                events, endpoint, controller.get("fqcn", ""),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.warning("sequence diagram render failed: %s", e)
     sql_ids = chain.get("sql_ids", [])
 
     # Relative file paths for readability. Both Java sources and MyBatis
@@ -1403,6 +1553,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         # endpoint's chain. Same ",\n" convention as Tables/RFC.
         "procedures": _format_list_with_newlines(chain.get("procs") or []),
         "rfc": _format_list_with_newlines(rfc_names),
+        "sequence_diagram": sequence_diagram_text,
         "matched": menu_entry is not None,
         "resolved_via": chain.get("resolved_via", "method-scope"),
     }
@@ -1426,7 +1577,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    biz_config: dict | None = None,
                    library_dirs: list[str] | None = None,
                    terms_md: str | None = None,
-                   extract_program_spec: bool = False) -> dict:
+                   extract_program_spec: bool = False,
+                   emit_sequence_diagram: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -1827,6 +1979,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 menu_raw_url=raw_menu_url,
                 react_entry=react_entry,
                 frontend_trigger="; ".join(trigger_labels),
+                emit_sequence_diagram=emit_sequence_diagram,
             )
             rows.append(row)
             if not row["matched"]:
@@ -2031,7 +2184,8 @@ def analyze_legacy_batch(backends_root: str,
                         biz_config: dict | None = None,
                         library_dirs: list[str] | None = None,
                         terms_md: str | None = None,
-                        extract_program_spec: bool = False) -> dict:
+                        extract_program_spec: bool = False,
+                        emit_sequence_diagram: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -2141,6 +2295,9 @@ def analyze_legacy_batch(backends_root: str,
             # extracts independently — keys are endpoint-level hashes so
             # no collisions across projects.
             extract_program_spec=extract_program_spec,
+            # Mermaid sequence diagram (Phase A). Opt-in, parser-only,
+            # LLM 불필요. 각 row 에 sequence_diagram 필드가 붙음.
+            emit_sequence_diagram=emit_sequence_diagram,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.

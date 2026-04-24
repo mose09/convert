@@ -92,6 +92,36 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: Mermaid 시퀀스 다이어그램 — Phase A (call offset + 순서)
+
+사용자 요구: analyze-legacy 결과에 endpoint 별 Mermaid sequenceDiagram
+을 추가. 컨트롤러 메서드 → 서비스 메서드 → RFC / XML / 테이블까지.
+LLM 없이 파서만으로 3단계 (A/B/C) 로 구현하기로 합의.
+
+Phase A (이 섹션) — 호출 순서 먼저:
+
+작업 항목:
+
+- [x] `legacy_java_parser._collect_body_field_calls` / `_body_sql_calls` /
+      `_body_rfc_calls` 에 `offset` 필드 추가 (`m.start()` 저장)
+- [x] `legacy_analyzer.trace_chain_events(endpoint, controller, indexes,
+      mybatis_idx, rfc_depth)` 신규 — `_resolve_endpoint_chain` 과 병렬로
+      체인을 walk 하면서 호출마다 event 를 발행 (kind=call/sql/rfc,
+      source offset 정렬 + depth-first recurse)
+- [x] `legacy_mermaid.py` 신규 모듈 — event 리스트 → Mermaid
+      ``sequenceDiagram`` 텍스트. participant 자동 alias + 충돌 회피,
+      DB/Mapper/SAP 는 공용 participant (이벤트에 등장 시 lazy 선언)
+- [x] Markdown 리포트에 endpoint 당 ```mermaid 코드블럭 (GitHub/VSCode
+      즉시 렌더) + Excel 에 `Sequence Diagrams` 시트 (6 컬럼)
+- [x] CLI `--sequence-diagram` 플래그 (기본 off, Phase II 독립)
+- [x] `analyze_legacy` / `analyze_legacy_batch` 에 `emit_sequence_diagram`
+      파라미터 + `_build_row` 까지 forwarding. row 에 `sequence_diagram`
+      필드 추가
+- [x] mock 검증: `/tmp/mock_crud` 에서 User→Controller→Service→Mapper→DB
+      체인이 6개 SQL 순서 보존해서 올바로 렌더. 옵트아웃 시 시트 미생성
+      (회귀 없음)
+- [x] conventional commit + PR + squash-merge
+
 ### 진행 중: self-call 체인에서 callee 의 body_sql_calls 유실 — 다른 agent 인수인계
 
 **증상**: ServiceImpl 내부 `this.saveDpPubNotiInfo(param)` 같은 자기호출

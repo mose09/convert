@@ -1462,21 +1462,27 @@ def _extract_method_bodies(content: str, class_info: dict) -> list[dict]:
 
 
 def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
-    """RFC calls inside a single method body (uses file-level constants)."""
+    """RFC calls inside a single method body (uses file-level constants).
+
+    각 결과 dict 에 ``offset`` (body 내 byte offset) 포함 — 시퀀스
+    다이어그램 Phase A 에서 호출 순서 정렬에 사용.
+    """
     calls = []
     seen = set()
     for m in _RFC_GETFUNCTION_STR_RE.finditer(body):
         name = m.group(1)
         if name and name not in seen:
             seen.add(name)
-            calls.append({"name": name, "resolved_from": "literal"})
+            calls.append({"name": name, "resolved_from": "literal",
+                          "offset": m.start()})
     for m in _RFC_GETFUNCTION_VAR_RE.finditer(body):
         ident = m.group(1)
         if ident in constants:
             name = constants[ident]
             if name not in seen:
                 seen.add(name)
-                calls.append({"name": name, "resolved_from": f"const:{ident}"})
+                calls.append({"name": name, "resolved_from": f"const:{ident}",
+                              "offset": m.start()})
     if _rfc_custom_re:
         for m in _rfc_custom_re.finditer(body):
             iface_id = m.group("id")
@@ -1484,7 +1490,8 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
             rfc_name = f"{iface_id} ({cls_name})" if cls_name else iface_id
             if rfc_name not in seen:
                 seen.add(rfc_name)
-                calls.append({"name": rfc_name, "resolved_from": "custom-rfc"})
+                calls.append({"name": rfc_name, "resolved_from": "custom-rfc",
+                              "offset": m.start()})
     if _rfc_custom_var_re:
         for m in _rfc_custom_var_re.finditer(body):
             var = m.group("var")
@@ -1497,7 +1504,9 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
             rfc_name = f"{resolved} ({cls_name})" if cls_name else resolved
             if rfc_name not in seen:
                 seen.add(rfc_name)
-                calls.append({"name": rfc_name, "resolved_from": f"custom-rfc-var:{var}"})
+                calls.append({"name": rfc_name,
+                              "resolved_from": f"custom-rfc-var:{var}",
+                              "offset": m.start()})
     return calls
 
 
@@ -1525,6 +1534,7 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
             "sqlid": sqlid,
             "namespace": namespace,
             "sql_id": sql_id,
+            "offset": m.start(),
         })
 
     for m in _SQL_CALL_VAR_RE.finditer(body):
@@ -1556,6 +1566,7 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
             "namespace": namespace,
             "sql_id": sql_id,
             "resolved_from": f"var:{var}",
+            "offset": m.start(),
         })
     return results
 
@@ -1573,6 +1584,11 @@ def _collect_body_field_calls(body: str) -> list[dict]:
     False-positive 억제:
       * 여기서 Java 키워드 / ``new X(`` 생성자 호출 skip
       * resolve 시 ``_find_method_in_class`` 가 실제 메서드가 아니면 drop
+
+    각 결과 dict 는 ``offset`` (첫 등장 지점의 body 내 byte offset)
+    을 포함. 같은 ``(receiver, method)`` 쌍이 여러 번 나오면 첫 등장
+    의 offset 만 유지 (다른 소비자 호환 유지). 시퀀스 다이어그램은
+    이 offset 을 기준으로 call 순서를 정렬.
     """
     results = []
     seen = set()
@@ -1585,7 +1601,7 @@ def _collect_body_field_calls(body: str) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        results.append({"receiver": recv, "method": meth})
+        results.append({"receiver": recv, "method": meth, "offset": m.start()})
 
     for m in _BARE_CALL_RE.finditer(body):
         name = m.group("method")
@@ -1602,7 +1618,7 @@ def _collect_body_field_calls(body: str) -> list[dict]:
         if key in seen:
             continue
         seen.add(key)
-        results.append({"receiver": "this", "method": name})
+        results.append({"receiver": "this", "method": name, "offset": start})
     return results
 
 
