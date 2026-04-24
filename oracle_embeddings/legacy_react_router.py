@@ -292,6 +292,111 @@ def _extract_routes_from_content(content: str) -> list[dict]:
     return routes
 
 
+# ---------------------------------------------------------------------------
+# Import graph — menu URL ↔ Route 선언 파일 기반 "실제 참조" 추적
+# ---------------------------------------------------------------------------
+
+# Import / require / dynamic-import. 상대경로 (./, ../) 만 관심 —
+# node_modules 패키지는 frontend 소스 트리 밖이라 graph 에서 제외.
+_IMPORT_FROM_RE = re.compile(
+    r"""(?:^|\s|;)
+        import\s+
+        (?:.+?\s+from\s+)?
+        ["'](?P<path>\.{1,2}/[^"']+)["']
+    """,
+    re.VERBOSE | re.MULTILINE | re.DOTALL,
+)
+_DYNAMIC_IMPORT_RE = re.compile(
+    r"""(?:^|[^.\w])import\s*\(\s*["'](?P<path>\.{1,2}/[^"']+)["']\s*\)"""
+)
+_REQUIRE_RE = re.compile(
+    r"""\brequire\s*\(\s*["'](?P<path>\.{1,2}/[^"']+)["']\s*\)"""
+)
+
+
+def _extract_imports_in_content(content: str) -> list[str]:
+    """Relative import paths referenced in content.
+
+    Covers ``import ... from "./x"`` / ``import "./x"`` / dynamic
+    ``import("./x")`` / CommonJS ``require("./x")``. Bare package imports
+    (``import x from "react"``) are skipped.
+    """
+    found: list[str] = []
+    seen: set[str] = set()
+    for pat in (_IMPORT_FROM_RE, _DYNAMIC_IMPORT_RE, _REQUIRE_RE):
+        for m in pat.finditer(content):
+            p = m.group("path")
+            if p and p not in seen:
+                seen.add(p)
+                found.append(p)
+    return found
+
+
+def build_import_graph(react_dir: str) -> dict[str, set[str]]:
+    """Return ``{abs_file_path: set(abs_imported_paths)}``.
+
+    Used by :func:`collect_menu_scope_files`. Starting from the Route
+    declaration file of a menu URL, BFS this graph to find every screen
+    / helper actually referenced — **import chain** replaces folder-name
+    proximity as the unit of menu→code attribution. 사용자 환경에선
+    folder 이름 (``hypm_materialMaster``) 과 public 메뉴 URL slug
+    (``gipms-materialmasternew``) 가 달라 folder 기준 휴리스틱은 부정확.
+    """
+    graph: dict[str, set[str]] = {}
+    if not react_dir or not os.path.isdir(react_dir):
+        return graph
+    files = scan_react_dir(react_dir)
+    for fp in files:
+        try:
+            content = _read_file_safe(fp)
+        except Exception:
+            continue
+        from_dir = os.path.dirname(fp)
+        resolved: set[str] = set()
+        for rel in _extract_imports_in_content(content):
+            abs_path = _resolve_import_path(rel, from_dir)
+            if abs_path:
+                resolved.add(abs_path)
+        graph[fp] = resolved
+    return graph
+
+
+def collect_menu_scope_files(menu_url_norm: str, url_map: dict,
+                              import_graph: dict[str, set[str]],
+                              max_depth: int = 8) -> set[str]:
+    """Return absolute files reachable from ``menu_url_norm`` via imports.
+
+    Seeds = ``url_map[menu_url_norm].declared_in`` + ``file_path``.
+    BFS forward up to ``max_depth`` hops, cycle-safe. Empty set if the
+    URL is not in ``url_map`` (caller can treat as "no Route match").
+    """
+    if not menu_url_norm:
+        return set()
+    entry = url_map.get(menu_url_norm)
+    if not entry:
+        return set()
+    seeds: list[str] = []
+    for key in ("declared_in", "file_path"):
+        p = entry.get(key) or ""
+        if p and p not in seeds:
+            seeds.append(p)
+    if not seeds:
+        return set()
+    visited: set[str] = set(seeds)
+    frontier = list(seeds)
+    for _ in range(max_depth):
+        next_frontier: list[str] = []
+        for f in frontier:
+            for dep in import_graph.get(f, ()):
+                if dep not in visited:
+                    visited.add(dep)
+                    next_frontier.append(dep)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+    return visited
+
+
 def build_url_to_component_map(react_dir: str, strip_patterns=None,
                                 route_prefix: str | None = None) -> dict:
     """Scan ``react_dir`` and return ``{normalized_url: {component, file_path}}``.
