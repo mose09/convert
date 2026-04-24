@@ -92,6 +92,36 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: Mermaid 시퀀스 다이어그램 — Phase B (alt/else/loop 블록)
+
+Phase A 위에서 제어 블록 (if/else/switch/for/while/do-while/try-catch-finally)
+을 brace walker 로 추출해 Mermaid ``alt/else/loop/opt/end`` 래핑 자동
+생성. LLM 없이 파서만으로.
+
+작업 항목:
+
+- [x] `legacy_java_parser._extract_control_blocks(body)` — 재귀적 블록
+      추출. chain_id (if-else 체인 / try-catch 체인) + chain_index +
+      depth 포함. 5/5 단위 테스트 PASS (if-elseif-else / nested / try-
+      catch-finally / do-while / switch)
+- [x] `_extract_method_bodies` 에서 method dict 에 `body_control_blocks`
+      필드 부착. 파싱 실패 시 빈 리스트로 fallback (Phase A 회귀 없음)
+- [x] `trace_chain_events._context_for(off)` — offset 을 감싸는 블록
+      리스트 반환 + method_key prefix 로 block_id unique 화 (method
+      경계 넘어도 sibling 오판 방지)
+- [x] 각 event 에 `context_stack` 필드 부착 (call / sql / rfc 모두)
+- [x] `legacy_mermaid._emit_transition(prev, curr, lines)` — context
+      전환 감지 + close-sibling-open 3단 처리. sibling 체인 유지 시
+      `end` 대신 `else <label>` emit
+- [x] 블록 kind → Mermaid 매핑: if→alt, else_if/else→else, for/while
+      →loop, do_while→loop do-while, switch→alt switch(..), try→opt
+      try, catch→else catch, finally→else finally
+- [x] Phase A 회귀: 제어 블록 없는 mock_crud 에서 기존 출력 동일
+- [x] Phase B end-to-end: if/else + for 있는 새 mock 에서
+      ``alt cond / MyService->>Mapper / else / ... / end / loop cond / ...``
+      정상 emit 확인
+- [x] conventional commit + PR + squash-merge
+
 ### 진행 중: Mermaid 시퀀스 다이어그램 — Phase A (call offset + 순서)
 
 사용자 요구: analyze-legacy 결과에 endpoint 별 Mermaid sequenceDiagram

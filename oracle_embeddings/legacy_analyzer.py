@@ -1275,6 +1275,28 @@ def trace_chain_events(endpoint: dict, controller: dict,
         sql_rfc_offsets = {o for o, k, _ in calls_by_offset if k != "field"}
         calls_by_offset.sort(key=lambda t: t[0])
 
+        # Mermaid Phase B — 제어 블록 context. 각 event 에 context_stack 부착.
+        # control_blocks 는 body_start 기준 오름차순. 특정 offset 이 어느
+        # 블록 안인지 결정하려면 그 offset 을 감싸는 모든 블록을 필터해
+        # depth 순으로 정렬.
+        #
+        # 렌더러가 method 경계를 넘어간 context 를 구분할 수 있도록
+        # method_key 를 포함한 block 복사본을 반환.
+        control_blocks = method.get("body_control_blocks") or []
+        method_key = f"{owner.get('fqcn', '')}#{method.get('name', '')}"
+
+        def _context_for(off: int) -> list[dict]:
+            enclosing = [b for b in control_blocks
+                         if b["body_start"] <= off < b["body_end"]]
+            enclosing.sort(key=lambda b: b["depth"])
+            # 복사본 + method_key prefix 가 포함된 block_id 로 렌더러가
+            # 같은 체인 sibling 을 식별 가능하게.
+            return [{
+                **b,
+                "method_key": method_key,
+                "block_id": f"{method_key}#{b.get('chain_id')}#{b.get('chain_index')}",
+            } for b in enclosing]
+
         for off, kind, call in calls_by_offset:
             if kind == "field":
                 if off in sql_rfc_offsets:
@@ -1292,6 +1314,7 @@ def trace_chain_events(endpoint: dict, controller: dict,
                         "kind": "call", "from_class": owner.get("fqcn"),
                         "to_class": owner.get("fqcn"), "method": meth,
                         "depth": depth, "self_call": True,
+                        "context_stack": _context_for(off),
                     })
                     _emit_method_events(self_method, owner, depth)
                     continue
@@ -1309,6 +1332,7 @@ def trace_chain_events(endpoint: dict, controller: dict,
                     "kind": "call", "from_class": owner.get("fqcn"),
                     "to_class": impl_fqcn, "method": meth,
                     "depth": depth, "self_call": False,
+                    "context_stack": _context_for(off),
                 })
                 if depth + 1 > rfc_depth:
                     continue  # 체인은 명시하되 그 안쪽 body 는 탐색 중단
@@ -1333,6 +1357,7 @@ def trace_chain_events(endpoint: dict, controller: dict,
                     "op": call.get("op", "").lower(),
                     "tables": tables,
                     "depth": depth,
+                    "context_stack": _context_for(off),
                 })
             elif kind == "rfc":
                 events.append({
@@ -1340,6 +1365,7 @@ def trace_chain_events(endpoint: dict, controller: dict,
                     "from_class": owner.get("fqcn"),
                     "rfc_name": call.get("name", ""),
                     "depth": depth,
+                    "context_stack": _context_for(off),
                 })
 
     methods_list = controller.get("methods") or []
