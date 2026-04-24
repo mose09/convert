@@ -47,20 +47,26 @@ def _escape_label(text: str) -> str:
     """Mermaid label 에 들어가도 안전하도록 기호 치환.
 
     Mermaid sequenceDiagram 에서 ``<`` / ``>`` 는 화살표 문법 (``->>`` /
-    ``<<-``) 의 일부로 해석돼 파싱 오류 유발. Java for-loop 조건
-    (``int i = 0; i < list.size(); i++``) 이나 제네릭 (``List<String>``)
-    같은 게 블록 라벨에 들어가면 렌더가 깨짐. HTML 엔티티로 escape.
+    ``<<-``) 의 일부로 해석돼 파싱 오류 유발. HTML 엔티티 (``&lt;``) 도
+    block label 에서는 여전히 파서가 걸리는 경우가 있어서 **유니코드
+    전각 문자** (``＜`` U+FF1C / ``＞`` U+FF1E) 로 치환. 시각적으로는
+    일반 부등호와 동일하지만 코드 포인트가 달라 Mermaid 가 문법으로
+    해석하지 않음.
 
-    ``:`` 는 Mermaid 의 메시지 구분자, ``"`` 는 label 경계라서 제거/치환.
+    ``;`` 은 Mermaid statement separator 로 오해될 수 있어 comma 로,
+    ``:`` 는 메시지 구분자라 space 로, ``"`` 는 label 경계라서 ``'`` 로
+    치환. 마지막으로 80자 초과하는 긴 조건은 ``…`` 로 절단.
     """
     if not text:
         return ""
-    # 먼저 HTML 엔티티로 escape — order matters (< 먼저 치환되면 &lt; 속
-    # ``<`` 도 잡혀서 이중 escape 되지 않도록 단일 pass).
-    out = text.replace("<", "&lt;").replace(">", "&gt;")
+    out = text.replace("<", "＜").replace(">", "＞")
+    out = out.replace(";", ",")
     out = out.replace(":", " ").replace('"', "'")
     out = out.replace("\n", " ").replace("\r", " ")
-    return out.strip()
+    out = out.strip()
+    if len(out) > 80:
+        out = out[:77].rstrip() + "…"
+    return out
 
 
 def _participant_id(fqcn_or_role: str, used_aliases: Dict[str, str]) -> str:
@@ -194,46 +200,78 @@ def render_sequence_diagram(events: List[dict], endpoint: dict,
 
     Phase B 지원: 각 event 의 ``context_stack`` 으로 alt/else/loop/end
     자동 래핑. ``context_stack`` 이 없으면 Phase A 식 linear emit.
+
+    Participant 순서는 고정: **User → Controller → Service 들 (체인 순서)
+    → Mapper → DB → SAP**. 등장 여부는 events 사전 스캔으로 결정해서
+    필요한 것만 선언.
     """
-    lines = ["sequenceDiagram"]
     used: Dict[str, str] = {}
 
+    # Pre-scan: 등장 카테고리 + 서비스 순서 수집
+    services_order: List[str] = []
+    uses_sql = False
+    uses_rfc = False
+    has_any_tables = False
+    for ev in events:
+        k = ev["kind"]
+        if k == "call":
+            to_cls = ev["to_class"]
+            if to_cls and to_cls != controller_fqcn and to_cls not in services_order:
+                services_order.append(to_cls)
+        elif k == "sql":
+            uses_sql = True
+            if ev.get("tables"):
+                has_any_tables = True
+            src = ev.get("from_class")
+            if src and src != controller_fqcn and src not in services_order:
+                services_order.append(src)
+        elif k == "rfc":
+            uses_rfc = True
+            src = ev.get("from_class")
+            if src and src != controller_fqcn and src not in services_order:
+                services_order.append(src)
+
+    # Participant 선언 — 고정 순서
+    header_lines = ["sequenceDiagram"]
     user_id = _participant_id("User", used)
     ctrl_id = _participant_id(controller_fqcn or "Controller", used)
-
-    lines.append(f"    actor {user_id}")
-    lines.append(f"    participant {ctrl_id} as {_escape_label(_short_alias(controller_fqcn))}")
-
-    # service participants 미리 선언
-    to_declare_services: List[str] = []
-    for ev in events:
-        if ev["kind"] == "call":
-            to_cls = ev["to_class"]
-            if to_cls and to_cls != controller_fqcn and to_cls not in used:
-                if to_cls not in to_declare_services:
-                    to_declare_services.append(to_cls)
-    for fqcn in to_declare_services:
+    header_lines.append(f"    actor {user_id}")
+    header_lines.append(
+        f"    participant {ctrl_id} as {_escape_label(_short_alias(controller_fqcn))}"
+    )
+    for fqcn in services_order:
         pid = _participant_id(fqcn, used)
-        lines.append(f"    participant {pid} as {_escape_label(_short_alias(fqcn))}")
+        header_lines.append(
+            f"    participant {pid} as {_escape_label(_short_alias(fqcn))}"
+        )
+    if uses_sql:
+        mapper_alias = _participant_id("Mapper", used)
+        header_lines.append(f"    participant {mapper_alias} as Mapper")
+    if has_any_tables:
+        db_alias = _participant_id("DB", used)
+        header_lines.append(f"    participant {db_alias} as DB")
+    if uses_rfc:
+        sap_alias = _participant_id("SAP", used)
+        header_lines.append(f"    participant {sap_alias} as SAP")
+
+    # Body 라인
+    body_lines: List[str] = []
 
     # Root 화살표
     http = endpoint.get("http_method") or "GET"
     url = endpoint.get("url") or "/"
     method_name = endpoint.get("method_name") or ""
-    lines.append(f"    {user_id}->>{ctrl_id}: {_escape_label(http)} {_escape_label(url)}")
+    body_lines.append(
+        f"    {user_id}->>{ctrl_id}: {_escape_label(http)} {_escape_label(url)}"
+    )
     if method_name:
-        lines.append(f"    Note over {ctrl_id}: {_escape_label(method_name)}()")
-
-    mapper_declared = False
-    sap_declared = False
-    db_declared = False
+        body_lines.append(f"    Note over {ctrl_id}: {_escape_label(method_name)}()")
 
     prev_ctx: List[dict] = []
-    # Events 순회 — context 전환 먼저, 그 다음 실제 화살표
     for ev in events:
         curr_ctx = ev.get("context_stack") or []
         if curr_ctx != prev_ctx:
-            _emit_transition(prev_ctx, curr_ctx, lines)
+            _emit_transition(prev_ctx, curr_ctx, body_lines)
             prev_ctx = curr_ctx
 
         if ev["kind"] == "call":
@@ -241,48 +279,39 @@ def render_sequence_diagram(events: List[dict], endpoint: dict,
             tgt = _participant_id(ev["to_class"], used)
             label = _escape_label(ev.get("method", "") + "()")
             if ev.get("self_call"):
-                lines.append(f"    {src}->>{src}: {label}")
+                body_lines.append(f"    {src}->>{src}: {label}")
             else:
-                lines.append(f"    {src}->>{tgt}: {label}")
+                body_lines.append(f"    {src}->>{tgt}: {label}")
         elif ev["kind"] == "sql":
             src = _participant_id(ev["from_class"], used)
-            if not mapper_declared:
-                mapper_alias = _participant_id("Mapper", used)
-                lines.insert(2, f"    participant {mapper_alias} as Mapper")
-                mapper_declared = True
-            else:
-                mapper_alias = used["Mapper"]
+            mapper_alias = used["Mapper"]
             ns = ev.get("namespace", "")
             sid = ev.get("sql_id", "")
             op = ev.get("op", "").upper()
             sql_label = f"{op} {ns}.{sid}" if op else f"{ns}.{sid}"
-            lines.append(f"    {src}->>{mapper_alias}: {_escape_label(sql_label)}")
+            body_lines.append(
+                f"    {src}->>{mapper_alias}: {_escape_label(sql_label)}"
+            )
             tables = ev.get("tables") or []
             if tables:
-                if not db_declared:
-                    db_alias = _participant_id("DB", used)
-                    lines.insert(2, f"    participant {db_alias} as DB")
-                    db_declared = True
-                else:
-                    db_alias = used["DB"]
+                db_alias = used["DB"]
                 tbl_label = ", ".join(tables[:4])
                 if len(tables) > 4:
                     tbl_label += f" …(+{len(tables) - 4})"
-                lines.append(f"    {mapper_alias}->>{db_alias}: {_escape_label(tbl_label)}")
+                body_lines.append(
+                    f"    {mapper_alias}->>{db_alias}: {_escape_label(tbl_label)}"
+                )
         elif ev["kind"] == "rfc":
             src = _participant_id(ev["from_class"], used)
-            if not sap_declared:
-                sap_alias = _participant_id("SAP", used)
-                lines.insert(2, f"    participant {sap_alias} as SAP")
-                sap_declared = True
-            else:
-                sap_alias = used["SAP"]
+            sap_alias = used["SAP"]
             rfc_name = ev.get("rfc_name", "")
-            lines.append(f"    {src}->>{sap_alias}: {_escape_label(rfc_name)}")
+            body_lines.append(f"    {src}->>{sap_alias}: {_escape_label(rfc_name)}")
 
-    # 마지막 events 이후 열려있는 블록들 close
+    # 열려있는 블록 close
     if prev_ctx:
         for _ in range(len(prev_ctx)):
-            lines.append("    end")
+            body_lines.append("    end")
+
+    return "\n".join(header_lines + body_lines)
 
     return "\n".join(lines)
