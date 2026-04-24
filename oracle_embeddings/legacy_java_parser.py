@@ -601,6 +601,28 @@ _SQL_CALL_VAR_RE = re.compile(
     re.VERBOSE,
 )
 
+# SQL call with variable prefix + ternary suffix:
+#   sqlSession.update(NAMESPACE + (cond ? ".updateA" : ".updateB"), row)
+# Emit BOTH branches as separate SQL calls — 런타임 조건에 따라 둘 다
+# 실제 호출 가능하므로 영향분석 / XML 체인에는 두 개 다 포함돼야 한다.
+# cond 내부에는 임의의 Java 표현식 (메서드 호출 / 중첩 괄호 / `"..."`
+# 리터럴) 이 올 수 있어 `.+?` + `\?\s*"` anchor 로 lazy 매칭.
+_SQL_CALL_TERNARY_RE = re.compile(
+    rf"""\b(?:{_DEFAULT_SQL_RECEIVERS})
+        (?:\.\w+)?
+        \.\s*(?P<op>{_DEFAULT_SQL_OPS})
+        \s*\(\s*(?P<var>\w+)\s*\+\s*
+        \(
+        (?P<cond>.+?)
+        \?\s*
+        "(?P<true_suffix>[^"]+)"
+        \s*:\s*
+        "(?P<false_suffix>[^"]+)"
+        \s*\)
+    """,
+    re.VERBOSE | re.DOTALL,
+)
+
 # String field/constant that holds a namespace prefix:
 #   private String namespace = "com.example.mapper.";
 #   private static final String NAMESPACE = "com.example.";
@@ -696,6 +718,34 @@ def _extract_sql_calls(content: str) -> list[dict]:
             "line": content.count("\n", 0, m.start()) + 1,
             "resolved_from": f"var:{var}",
         })
+
+    # 3) Variable + ternary suffix:
+    #    sqlSession.update(NS + (cond ? ".a" : ".b"), row)
+    # 두 branch 모두 별도 call 로 등록한다.
+    for m in _SQL_CALL_TERNARY_RE.finditer(content):
+        var = m.group("var")
+        prefix = ns_constants.get(var, "")
+        if not prefix:
+            continue
+        for suffix in (m.group("true_suffix"), m.group("false_suffix")):
+            if not prefix.endswith(".") and not suffix.startswith("."):
+                continue
+            sqlid = prefix + suffix
+            namespace, _, sql_id = sqlid.rpartition(".")
+            if not namespace:
+                continue
+            key = (m.group("op"), sqlid)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "op": m.group("op"),
+                "sqlid": sqlid,
+                "namespace": namespace,
+                "sql_id": sql_id,
+                "line": content.count("\n", 0, m.start()) + 1,
+                "resolved_from": f"var:{var}:ternary",
+            })
 
     return results
 
@@ -1574,6 +1624,33 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
             "sql_id": sql_id,
             "resolved_from": f"var:{var}",
         })
+
+    # Variable + ternary suffix: NS + (cond ? ".a" : ".b"). 두 branch 모두
+    # 등록 — 런타임 조건에 따라 둘 다 호출될 수 있어 영향분석 / XML
+    # 체인에 두 sqlid 모두 포함돼야 정확하다.
+    for m in _SQL_CALL_TERNARY_RE.finditer(body):
+        var = m.group("var")
+        prefix = ns_constants.get(var, "")
+        if not prefix:
+            continue
+        for suffix in (m.group("true_suffix"), m.group("false_suffix")):
+            if not prefix.endswith(".") and not suffix.startswith("."):
+                continue
+            sqlid = prefix + suffix
+            namespace, _, sql_id = sqlid.rpartition(".")
+            if not namespace:
+                continue
+            key = (m.group("op"), sqlid)
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append({
+                "op": m.group("op"),
+                "sqlid": sqlid,
+                "namespace": namespace,
+                "sql_id": sql_id,
+                "resolved_from": f"var:{var}:ternary",
+            })
     return results
 
 
