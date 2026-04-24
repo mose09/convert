@@ -44,12 +44,23 @@ def _short_alias(fqcn: str) -> str:
 
 
 def _escape_label(text: str) -> str:
-    """Mermaid label 에 들어가도 안전하도록 기호 치환."""
+    """Mermaid label 에 들어가도 안전하도록 기호 치환.
+
+    Mermaid sequenceDiagram 에서 ``<`` / ``>`` 는 화살표 문법 (``->>`` /
+    ``<<-``) 의 일부로 해석돼 파싱 오류 유발. Java for-loop 조건
+    (``int i = 0; i < list.size(); i++``) 이나 제네릭 (``List<String>``)
+    같은 게 블록 라벨에 들어가면 렌더가 깨짐. HTML 엔티티로 escape.
+
+    ``:`` 는 Mermaid 의 메시지 구분자, ``"`` 는 label 경계라서 제거/치환.
+    """
     if not text:
         return ""
-    # Mermaid 는 ``:`` 는 구분자, ``"`` 는 label 경계. 제거.
-    return (text.replace(":", " ").replace('"', "'")
-                .replace("\n", " ").replace("\r", " ").strip())
+    # 먼저 HTML 엔티티로 escape — order matters (< 먼저 치환되면 &lt; 속
+    # ``<`` 도 잡혀서 이중 escape 되지 않도록 단일 pass).
+    out = text.replace("<", "&lt;").replace(">", "&gt;")
+    out = out.replace(":", " ").replace('"', "'")
+    out = out.replace("\n", " ").replace("\r", " ")
+    return out.strip()
 
 
 def _participant_id(fqcn_or_role: str, used_aliases: Dict[str, str]) -> str:
