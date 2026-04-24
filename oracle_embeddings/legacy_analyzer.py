@@ -1422,10 +1422,24 @@ def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[st
 def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     """Placeholder row for a menu entry that didn't match any endpoint.
 
-    Only the **menu-side** columns carry data. Frontend / backend /
-    chain fields are empty so the Program Detail sheet shows every
-    menu.md entry while flagging un-implemented ones as a gap.
+    Backend / chain 컬럼은 여전히 빈 값이지만, **메뉴 URL 이 Route
+    선언에 직접 존재** (e.g. index.js 의
+    ``<Route path="/apps/gipms-materialmasternew"/>``) 하면 frontend 쪽
+    컬럼 (presentation_layer / frontend_project) 은 채운다. backend
+    endpoint 가 그 메뉴 URL 과 일치하지 않는 프로젝트 (frontend-URL 전용
+    메뉴) 에서도 "어느 파일이 이 메뉴를 구현하는지" 정보는 유의미.
     """
+    react_url_map = base_dirs.get("react_url_map") or {}
+    url_strip = base_dirs.get("url_strip") or None
+    raw_menu_url = menu_entry.get("url", "")
+    menu_url_norm = normalize_url(raw_menu_url, url_strip) if raw_menu_url else ""
+    re_entry = react_url_map.get(menu_url_norm) if menu_url_norm else None
+    presentation_layer = ""
+    frontend_project = ""
+    if re_entry:
+        presentation_layer = (re_entry.get("file_path")
+                              or re_entry.get("declared_in") or "")
+        frontend_project = re_entry.get("frontend_name", "")
     return {
         "backend_project": "",
         "backend_framework": "",
@@ -1433,15 +1447,15 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "sub_menu": menu_entry.get("sub_menu", ""),
         "tab": menu_entry.get("tab", ""),
         "menu_path": menu_entry.get("menu_path", ""),
-        "menu_url": menu_entry.get("url", ""),
+        "menu_url": raw_menu_url,
         "program_id": menu_entry.get("program_id", ""),
         "program_name": menu_entry.get("program_name", ""),
         "method_name": "",
         "http_method": "",
         "url": "",
         "file_name": "",
-        "frontend_project": "",
-        "presentation_layer": "",
+        "frontend_project": frontend_project,
+        "presentation_layer": presentation_layer,
         "frontend_trigger": "",
         "frontend_validation_summary": "",
         "controller_class": "",
@@ -1900,6 +1914,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         # is valid — formatter just skips ``[한글]`` annotation when
         # terms dictionary isn't provided.
         "terms_dict": _load_terms_dict(terms_md) if terms_md else None,
+        # _menu_only_row 가 orphan 메뉴의 frontend 필드를 채우기 위해
+        # menu URL 을 react_url_map 에서 직접 조회한다. url_strip 도
+        # 같이 넘겨야 normalize 결과가 일관.
+        "react_url_map": react_url_map,
+        "url_strip": url_strip,
     }
 
     rows = []
@@ -2000,7 +2019,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             # react_entry (for frontend_project metadata + direct-match
             # presentation_layer) — prefer the resolved app's bucket.
             react_entry = None
-            if app_slug_lower and by_frontend:
+            # Menu-URL 기반 직접 조회 (가장 신뢰성 높음): 메뉴 URL 이 곧
+            # Route path (`<Route path="/apps/gipms-materialmasternew"/>`) 로
+            # 선언돼 있으면 react_url_map 에서 직접 파일을 잡을 수 있다.
+            # 이 경로는 backend endpoint URL 과 menu URL 이 달라도 성립 —
+            # 사용자 사례 (folder 이름 ≠ URL slug) 의 핵심 해결책.
+            if menu_entry:
+                menu_url_norm = normalize_url(menu_entry.get("url", ""), url_strip)
+                if menu_url_norm and menu_url_norm != key:
+                    react_entry = react_url_map.get(menu_url_norm)
+            if react_entry is None and app_slug_lower and by_frontend:
                 react_entry = (by_frontend.get(app_slug_lower) or {}).get(key)
             if react_entry is None:
                 react_entry = react_url_map.get(key)
@@ -2410,7 +2438,14 @@ def analyze_legacy_batch(backends_root: str,
 
     # Global menu-order reorder across backends. Placeholders are
     # emitted once per un-matched menu entry (not once per backend).
-    display_rows = _reorder_rows_by_menu(all_rows, menu_rows, {})
+    # Frontend-side base_dirs 를 batch 에도 전달해 orphan 메뉴의 React
+    # 컬럼이 _menu_only_row 에서 채워지게 한다 (사용자 사례: frontend-URL
+    # 전용 메뉴 가 backend endpoint 와 일치하지 않는 경우).
+    batch_base_dirs = {
+        "react_url_map": (precomputed_frontend or {}).get("react_url_map") or {},
+        "url_strip": (patterns or {}).get("url", {}).get("url_prefix_strip") or [],
+    }
+    display_rows = _reorder_rows_by_menu(all_rows, menu_rows, batch_base_dirs)
 
     return {
         "rows": display_rows,
