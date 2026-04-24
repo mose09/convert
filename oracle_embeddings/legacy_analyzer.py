@@ -935,12 +935,14 @@ def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set,
                 if xml_file:
                     xml_files.add(xml_file)
                 continue
-            # Statement id not recognized — fall back to all tables
-            # registered under the namespace. Record the raw call id so
-            # operators know which SQL key the resolver could not find.
+            # Statement id not recognized — 해당 statement 의 실제
+            # tables/xml 은 알 수 없으므로 tables 컬럼에는 절대 주입하지
+            # 않는다. 과거 로직은 ``ns_to_tbl[matched_ns]`` 의 전 테이블을
+            # row 에 쏟아 Tables 리스트를 오염시키고 CRUD 괄호가 누락된
+            # 이름이 섞여나왔다 (사용자 제보). 진단용으로 sql_ids 에만
+            # raw key 를 남겨 XML method 컬럼에서 "미해결 statement" 로
+            # 드러나게 한다.
             sql_ids.add(f"{matched_ns}.{sql_id}" if sql_id else matched_ns)
-            tables.update(ns_to_tbl.get(matched_ns, []))
-            xml_files.update(ns_to_xml.get(matched_ns, []))
 
     for rfc in method.get("body_rfc_calls") or []:
         name = rfc.get("name")
@@ -1091,13 +1093,9 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                             tables.update(stbl[stmt_key])
                             if stmt_key in sxml:
                                 xml_files.add(sxml[stmt_key])
-                        else:
-                            tables.update(
-                                mybatis_idx["namespace_to_tables"].get(matched_ns, [])
-                            )
-                            xml_files.update(
-                                mybatis_idx["namespace_to_xml_files"].get(matched_ns, [])
-                            )
+                        # statement id 가 namespace 에 없으면 sql_ids
+                        # diagnostic 만 남기고 tables/xml_files 는 추가하지
+                        # 않는다 (_collect_body_calls 와 동일 정책).
                     for rfc in impl_cls.get("rfc_calls", []) or []:
                         if rfc.get("name"):
                             rfcs.add(rfc["name"])
