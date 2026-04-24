@@ -1314,6 +1314,211 @@ def _extract_rfc_calls(content: str) -> list[dict]:
     return calls
 
 
+# ── Control-flow block extraction (Mermaid Phase B) ──────────────────
+#
+# Mermaid sequence diagram 의 ``alt/else/end``, ``loop/end`` wrapper 를
+# 자동 생성하려면 method body 내 각 호출이 **어느 제어 블록 안에** 있는지
+# 알아야 한다. Java AST 를 풀 파싱하지 않고 regex + brace walker 조합
+# 으로 실용적 근사치를 뽑는다.
+#
+# 대상 블록: ``if / else if / else / switch / for / while / do-while /
+#           try / catch / finally``
+# 미지원: lambda 안의 inline 블록, ternary (`? :`). 복잡한 stream chain
+#        은 Phase C (LLM) 에서 보조.
+
+_CTL_KW_RE = re.compile(
+    r"\b(if|else|switch|for|while|do|try|catch|finally)\b"
+)
+
+
+def _match_paren(text: str, start: int) -> int:
+    """``(`` 위치에서 시작해 매칭되는 ``)`` 직후 인덱스 반환.
+
+    문자열 / char literal 안의 괄호는 skip. 매칭 실패 시 len(text) 반환.
+    """
+    n = len(text)
+    if start >= n or text[start] != "(":
+        return start
+    depth = 0
+    i = start
+    in_str = None
+    while i < n:
+        c = text[i]
+        if in_str is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_str = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _skip_ws(text: str, i: int) -> int:
+    n = len(text)
+    while i < n and text[i].isspace():
+        i += 1
+    return i
+
+
+def _extract_control_blocks(body: str) -> list[dict]:
+    """Method body 내 제어 블록을 재귀적으로 추출.
+
+    Returns list of dicts, 각 block:
+
+    * ``kind`` — ``if`` / ``else_if`` / ``else`` / ``switch`` / ``for`` /
+                 ``while`` / ``do_while`` / ``try`` / ``catch`` /
+                 ``finally``
+    * ``condition`` — ``(...)`` 안의 raw 텍스트. ``else/try/finally`` 는 ``""``.
+    * ``body_start`` — 블록의 ``{`` 직후 offset
+    * ``body_end``   — 블록의 ``}`` 직전 offset
+    * ``chain_id``   — if-else 체인 또는 try-catch-finally 체인 식별자.
+                       같은 체인의 sibling 들끼리 공유
+    * ``chain_index`` — 체인 안에서의 순서 (0=첫 if/try, 1=else_if/catch, ...)
+    * ``depth``       — 중첩 깊이 (0 = top-level, 1 = 한 블록 안, ...)
+
+    반환 리스트는 ``body_start`` 기준 오름차순 정렬. 중첩된 블록은
+    부모 블록 뒤에 이어서 (부모의 body 안에 있지만 별도 원소).
+    """
+    out: list[dict] = []
+    chain_counter = [0]
+
+    def _walk(text: str, abs_offset: int, depth: int) -> None:
+        i = 0
+        processed_chain_starts: set[int] = set()
+        n = len(text)
+        while i < n:
+            m = _CTL_KW_RE.search(text, i)
+            if not m:
+                break
+            kw = m.group(1)
+            kw_start = m.start()
+            # Orphan else/catch/finally — consumed as chain member only
+            if kw in ("else", "catch", "finally"):
+                i = m.end()
+                continue
+            if kw_start in processed_chain_starts:
+                i = m.end()
+                continue
+
+            chain_counter[0] += 1
+            chain_id = chain_counter[0]
+            chain_idx = 0
+            cursor = kw_start
+            last_block_end = kw_start
+            while cursor < n:
+                seg_m = _CTL_KW_RE.match(text, cursor)
+                if not seg_m:
+                    nxt = _skip_ws(text, cursor)
+                    seg_m = _CTL_KW_RE.match(text, nxt)
+                    if not seg_m:
+                        break
+                    cursor = nxt
+                seg_kw = seg_m.group(1)
+                after_kw = seg_m.end()
+                actual_kw = seg_kw
+                cond = ""
+
+                if seg_kw == "else":
+                    pos = _skip_ws(text, after_kw)
+                    # `else if (...)` ?
+                    if (text[pos:pos + 2] == "if"
+                            and (pos + 2 >= n
+                                 or not (text[pos + 2].isalnum()
+                                         or text[pos + 2] == "_"))):
+                        actual_kw = "else_if"
+                        paren_pos = _skip_ws(text, pos + 2)
+                        if paren_pos < n and text[paren_pos] == "(":
+                            cond_end = _match_paren(text, paren_pos)
+                            cond = text[paren_pos + 1:cond_end - 1].strip()
+                            brace_pos = _skip_ws(text, cond_end)
+                        else:
+                            break
+                    else:
+                        brace_pos = pos
+                elif seg_kw in ("if", "while", "for", "switch", "catch"):
+                    paren_pos = _skip_ws(text, after_kw)
+                    if paren_pos < n and text[paren_pos] == "(":
+                        cond_end = _match_paren(text, paren_pos)
+                        cond = text[paren_pos + 1:cond_end - 1].strip()
+                        brace_pos = _skip_ws(text, cond_end)
+                    else:
+                        # Single-statement if (no braces) — skip (보수적)
+                        break
+                elif seg_kw in ("try", "finally"):
+                    brace_pos = _skip_ws(text, after_kw)
+                elif seg_kw == "do":
+                    actual_kw = "do_while"
+                    brace_pos = _skip_ws(text, after_kw)
+                else:
+                    break
+
+                if brace_pos >= n or text[brace_pos] != "{":
+                    break
+                body_end = _scan_balanced_braces(text, brace_pos)
+                inner_start = brace_pos + 1
+                inner_end = body_end - 1
+
+                if actual_kw == "do_while":
+                    # `} while (cond);` — condition 뒤에 옴
+                    tail = _skip_ws(text, body_end)
+                    wm = re.match(r"while\s*\(", text[tail:])
+                    if wm:
+                        paren_abs = tail + wm.end() - 1
+                        c_end = _match_paren(text, paren_abs)
+                        cond = text[paren_abs + 1:c_end - 1].strip()
+                        body_end = c_end
+
+                out.append({
+                    "kind": actual_kw,
+                    "condition": cond,
+                    "body_start": inner_start + abs_offset,
+                    "body_end": inner_end + abs_offset,
+                    "chain_id": chain_id,
+                    "chain_index": chain_idx,
+                    "depth": depth,
+                })
+                processed_chain_starts.add(seg_m.start())
+                chain_idx += 1
+                last_block_end = body_end
+
+                # Recurse into block body
+                inner_text = text[inner_start:inner_end]
+                _walk(inner_text, abs_offset + inner_start, depth + 1)
+
+                # Chain continuation
+                next_cursor = _skip_ws(text, body_end)
+                next_m = _CTL_KW_RE.match(text, next_cursor)
+                if next_m:
+                    nk = next_m.group(1)
+                    if nk == "else" and actual_kw in ("if", "else_if"):
+                        cursor = next_cursor
+                        continue
+                    if nk in ("catch", "finally") and actual_kw in (
+                        "try", "catch"
+                    ):
+                        cursor = next_cursor
+                        continue
+                break
+            i = max(i + 1, last_block_end)
+
+    _walk(body, 0, 0)
+    out.sort(key=lambda b: b["body_start"])
+    return out
+
+
 # Method body extraction — we walk the class body with balanced-brace
 # awareness, collecting each top-level method's ``(start, end)`` offsets.
 # String/char literals and line/block comments are skipped so braces
@@ -1839,6 +2044,16 @@ def parse_java_file(filepath: str) -> dict:
         meth["body_sql_calls"] = _collect_body_sql_calls(body, ns_constants)
         meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
         meth["body_field_calls"] = _collect_body_field_calls(body)
+        # Mermaid Phase B — 제어 블록 (if/else/switch/for/while/do/try) 를
+        # 미리 뽑아 저장. trace_chain_events 가 각 call 의 offset 을 여기에
+        # 매칭해서 context_stack 을 계산하고 Mermaid 렌더가 alt/else/loop/end
+        # 래핑에 사용. 실패해도 Phase A (linear) 는 영향 없음 — 빈 리스트로 fallback.
+        try:
+            meth["body_control_blocks"] = _extract_control_blocks(body)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("control block extraction failed on %s: %s",
+                           meth.get("name"), e)
+            meth["body_control_blocks"] = []
         meth["is_endpoint"] = False
 
     # Link endpoint entries to the matching method (if any) so the
