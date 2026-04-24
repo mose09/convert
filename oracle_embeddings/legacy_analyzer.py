@@ -1431,14 +1431,23 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     """
     react_url_map = base_dirs.get("react_url_map") or {}
     url_strip = base_dirs.get("url_strip") or None
+    frontend_dir = base_dirs.get("frontend_dir") or ""
     raw_menu_url = menu_entry.get("url", "")
     menu_url_norm = normalize_url(raw_menu_url, url_strip) if raw_menu_url else ""
     re_entry = react_url_map.get(menu_url_norm) if menu_url_norm else None
     presentation_layer = ""
     frontend_project = ""
     if re_entry:
-        presentation_layer = (re_entry.get("file_path")
-                              or re_entry.get("declared_in") or "")
+        abs_path = re_entry.get("file_path") or re_entry.get("declared_in") or ""
+        # _build_row 와 동일한 정책: 절대경로면 frontend_dir 기준
+        # 상대경로로 변환해 다른 row 와 같은 포맷으로 맞춤.
+        if abs_path and frontend_dir and os.path.isabs(abs_path):
+            try:
+                presentation_layer = os.path.relpath(abs_path, frontend_dir)
+            except Exception:
+                presentation_layer = abs_path
+        else:
+            presentation_layer = abs_path
         frontend_project = re_entry.get("frontend_name", "")
     return {
         "backend_project": "",
