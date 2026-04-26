@@ -1915,14 +1915,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     menu_to_scope_files: dict[str, list[str]] = {}
     if frontend_dir and react_url_map and menu_rows:
         try:
+            import os as _os
+            import time as _time
+            _t0 = _time.time()
             from .legacy_react_router import (
-                build_import_graph, collect_menu_scope_files,
+                build_import_graph, collect_menu_scope_files, scan_react_dir,
             )
             from .legacy_react_api_scanner import (
                 _build_api_url_index_from_files,
             )
-            # frontend_dir 이 multi-repo root 면 각 서브 레포별로 graph 를
-            # 만들고 합집합. 단순 단일 모드면 바로.
+            # 1) import graph (서브 레포별 빌드 후 합집합).
             import_graphs: list[tuple[str, dict]] = []
             if frontends_root is not None:
                 from .legacy_frontend import _enumerate_buckets
@@ -1935,7 +1937,24 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             merged_graph: dict[str, set[str]] = {}
             for _root, g in import_graphs:
                 merged_graph.update(g)
-            # 각 menu 별 scope → scope 파일들의 API URL 추출 → reverse index.
+            # 2) **ALL files 1회만 API URL 스캔** → reverse index.
+            #    이전 구현은 menu 마다 _build_api_url_index_from_files 를
+            #    재호출해 같은 파일을 N 번 읽음 (N = menu 수). 이걸 1번
+            #    스캔 + dict lookup 으로 평탄화. 사용자 제보: 수행이
+            #    매우 느렸던 주 원인.
+            all_react_files: set[str] = set()
+            for _root, _ in import_graphs:
+                all_react_files.update(scan_react_dir(_root))
+            full_api_idx = _build_api_url_index_from_files(
+                sorted(all_react_files), frontend_dir,
+                patterns=patterns, strip_patterns=url_strip,
+            )
+            # rel_file → set(api_url) reverse map.
+            file_to_apis: dict[str, set[str]] = {}
+            for url, files in full_api_idx.items():
+                for rel in files:
+                    file_to_apis.setdefault(rel, set()).add(url)
+            # 3) 각 menu 별 scope (BFS) → scope 파일의 API URL 합집합.
             scope_linked_count = 0
             for r in (menu_rows or []):
                 m_url = normalize_url(r.get("url", ""), url_strip)
@@ -1944,26 +1963,28 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 scope = collect_menu_scope_files(m_url, react_url_map, merged_graph)
                 if not scope:
                     continue
-                # scope 안 파일 들에서 API URL 스캔. frontend_dir 을 base 로
-                # relpath 가 사람 읽기 쉬운 형태 유지.
-                api_idx = _build_api_url_index_from_files(
-                    sorted(scope), frontend_dir,
-                    patterns=patterns, strip_patterns=url_strip,
-                )
-                if not api_idx:
+                scope_rel: list[str] = []
+                menu_apis: set[str] = set()
+                for fabs in scope:
+                    try:
+                        rel = _os.path.relpath(fabs, frontend_dir)
+                    except Exception:
+                        continue
+                    scope_rel.append(rel)
+                    menu_apis.update(file_to_apis.get(rel, ()))
+                if not menu_apis:
+                    # scope 는 잡혔지만 API 호출 없는 메뉴도 정보로 남김.
+                    menu_to_scope_files[m_url] = sorted(scope_rel)
                     continue
-                # 파일 목록 저장 (screen_files fallback 용).
-                import os as _os
-                menu_to_scope_files[m_url] = sorted(
-                    _os.path.relpath(f, frontend_dir) for f in scope
-                )
-                for endpoint_url, _files in api_idx.items():
+                menu_to_scope_files[m_url] = sorted(scope_rel)
+                for endpoint_url in menu_apis:
                     endpoint_to_menus.setdefault(endpoint_url, []).append(m_url)
                 scope_linked_count += 1
             if scope_linked_count:
+                _elapsed = _time.time() - _t0
                 print(f"  Menu import-chain scope: {scope_linked_count} menus "
                       f"linked to {len(endpoint_to_menus)} backend endpoints "
-                      f"via {len(merged_graph)} files' imports")
+                      f"via {len(merged_graph)} files' imports ({_elapsed:.1f}s)")
         except Exception as e:
             logger.warning("Menu scope resolver skipped: %s", e)
 
