@@ -573,7 +573,99 @@ def _build_sql_call_re(extra_receivers: list[str] = None,
     )
 
 
+def _build_sql_call_var_re(extra_receivers: list[str] = None,
+                            extra_ops: list[str] = None) -> re.Pattern:
+    """Build the variable-prefix SQL call regex (``ns + ".id"``).
+
+    Same receivers/ops as ``_build_sql_call_re`` so per-file dynamic
+    receivers (autowired ``SqlSession`` field names) apply here too.
+    """
+    receivers = _DEFAULT_SQL_RECEIVERS
+    if extra_receivers:
+        extras = "|".join(re.escape(r) for r in extra_receivers)
+        receivers = f"{extras}|{receivers}"
+    ops = _DEFAULT_SQL_OPS
+    if extra_ops:
+        extras = "|".join(re.escape(o) for o in extra_ops)
+        ops = f"{extras}|{ops}"
+    return re.compile(
+        rf"""\b(?:{receivers})
+            (?:\.\w+)?
+            \.\s*(?P<op>{ops})
+            \s*\(\s*(?P<var>\w+)\s*\+\s*"(?P<suffix>[^"]+)"
+        """,
+        re.VERBOSE,
+    )
+
+
+def _build_sql_call_ternary_re(extra_receivers: list[str] = None,
+                                 extra_ops: list[str] = None) -> re.Pattern:
+    """Build the ternary-suffix SQL call regex (``ns + (c ? ".a" : ".b")``)."""
+    receivers = _DEFAULT_SQL_RECEIVERS
+    if extra_receivers:
+        extras = "|".join(re.escape(r) for r in extra_receivers)
+        receivers = f"{extras}|{receivers}"
+    ops = _DEFAULT_SQL_OPS
+    if extra_ops:
+        extras = "|".join(re.escape(o) for o in extra_ops)
+        ops = f"{extras}|{ops}"
+    return re.compile(
+        rf"""\b(?:{receivers})
+            (?:\.\w+)?
+            \.\s*(?P<op>{ops})
+            \s*\(\s*(?P<var>\w+)\s*\+\s*
+            \(
+            (?P<cond>.+?)
+            \?\s*
+            "(?P<true_suffix>[^"]+)"
+            \s*:\s*
+            "(?P<false_suffix>[^"]+)"
+            \s*\)
+        """,
+        re.VERBOSE | re.DOTALL,
+    )
+
+
 _SQL_CALL_RE = _build_sql_call_re()
+_SQL_CALL_VAR_RE = _build_sql_call_var_re()
+_SQL_CALL_TERNARY_RE = _build_sql_call_ternary_re()
+
+
+# Field types that indicate the field is a SQL session — used by parser
+# to auto-detect per-file receiver names like ``simpleSqlSession`` (when
+# field declared as ``@Inject SqlSession simpleSqlSession;``). Type is
+# matched on the **last segment** so FQCN (``org.apache.ibatis.session.
+# SqlSession``) and bare (``SqlSession``) are equivalent. Generic
+# parameters (``SqlSession<X>``) are stripped before matching.
+_SQL_SESSION_TYPES = frozenset({
+    "SqlSession", "SqlSessionTemplate",
+    "SqlMapClient", "SqlMapClientTemplate",
+    "JdbcTemplate", "NamedParameterJdbcTemplate",
+    "CommonSQL", "CommonSql", "CommonDao",
+})
+
+
+def _collect_sql_receiver_names_from_fields(autowired_fields: list[dict]
+                                             ) -> list[str]:
+    """Return field NAMES whose declared TYPE is a SQL session family.
+
+    autowired field dict 는 ``name`` / ``type_simple`` / ``type_fqcn``
+    키를 가짐. ``type_simple`` 우선 사용 + 없으면 ``type_fqcn`` 의 last
+    segment 로 fallback.
+    """
+    seen: dict[str, None] = {}
+    for f in autowired_fields or []:
+        ts = (f.get("type_simple") or "").strip()
+        if not ts:
+            tf = (f.get("type_fqcn") or "").strip()
+            ts = tf.rsplit(".", 1)[-1] if tf else ""
+        # Strip generics: ``Foo<X, Y>`` → ``Foo``
+        ts = ts.split("<", 1)[0].strip()
+        if ts in _SQL_SESSION_TYPES:
+            name = (f.get("name") or "").strip()
+            if name and name not in seen:
+                seen[name] = None
+    return list(seen.keys())
 
 
 def get_url_suffix() -> str:
@@ -590,38 +682,11 @@ def get_http_method_default() -> str:
     return "POST"
 
 
-# SQL call with variable prefix: sqlSession.selectList(namespace + "findList", param)
-# Captures the variable name and the string suffix separately.
-_SQL_CALL_VAR_RE = re.compile(
-    rf"""\b(?:{_DEFAULT_SQL_RECEIVERS})
-        (?:\.\w+)?
-        \.\s*(?P<op>{_DEFAULT_SQL_OPS})
-        \s*\(\s*(?P<var>\w+)\s*\+\s*"(?P<suffix>[^"]+)"
-    """,
-    re.VERBOSE,
-)
-
-# SQL call with variable prefix + ternary suffix:
-#   sqlSession.update(NAMESPACE + (cond ? ".updateA" : ".updateB"), row)
-# Emit BOTH branches as separate SQL calls — 런타임 조건에 따라 둘 다
-# 실제 호출 가능하므로 영향분석 / XML 체인에는 두 개 다 포함돼야 한다.
-# cond 내부에는 임의의 Java 표현식 (메서드 호출 / 중첩 괄호 / `"..."`
-# 리터럴) 이 올 수 있어 `.+?` + `\?\s*"` anchor 로 lazy 매칭.
-_SQL_CALL_TERNARY_RE = re.compile(
-    rf"""\b(?:{_DEFAULT_SQL_RECEIVERS})
-        (?:\.\w+)?
-        \.\s*(?P<op>{_DEFAULT_SQL_OPS})
-        \s*\(\s*(?P<var>\w+)\s*\+\s*
-        \(
-        (?P<cond>.+?)
-        \?\s*
-        "(?P<true_suffix>[^"]+)"
-        \s*:\s*
-        "(?P<false_suffix>[^"]+)"
-        \s*\)
-    """,
-    re.VERBOSE | re.DOTALL,
-)
+# NOTE: ``_SQL_CALL_VAR_RE`` 와 ``_SQL_CALL_TERNARY_RE`` 는 위쪽
+# ``_build_sql_call_var_re()`` / ``_build_sql_call_ternary_re()`` 팩토리로
+# 이미 빌드돼 있음. parse_java_file 에서 autowired 분석으로 발견한
+# per-file SqlSession 변수명 (``simpleSqlSession`` 등) 을 inject 해
+# 같은 팩토리로 per-file 변형을 만들어 사용.
 
 # String field/constant that holds a namespace prefix:
 #   private String namespace = "com.example.mapper.";
@@ -1782,17 +1847,30 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
     return calls
 
 
-def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list[dict]:
+def _collect_body_sql_calls(body: str, ns_constants: dict | None = None,
+                              sql_call_re: re.Pattern | None = None,
+                              sql_var_re: re.Pattern | None = None,
+                              sql_ternary_re: re.Pattern | None = None) -> list[dict]:
     """SQL helper calls in a method body.
 
     Handles both literal ``"ns.id"`` and variable prefix ``var + "id"``
     forms. ``ns_constants`` is the class-level namespace string map.
+
+    Optional ``sql_call_re`` / ``sql_var_re`` / ``sql_ternary_re`` allow
+    callers to inject **per-file** regex variants — primarily so
+    ``parse_java_file`` can dynamically include ``simpleSqlSession`` /
+    ``mySqlSession`` 같이 그 파일 자체의 ``@Inject SqlSession <field>``
+    선언에서 발견된 receiver 변수명을 매치 대상에 추가할 수 있다.
+    None 이면 module-level default regex 사용 (기존 동작).
     """
     ns_constants = ns_constants or {}
+    sql_call_re = sql_call_re or _SQL_CALL_RE
+    sql_var_re = sql_var_re or _SQL_CALL_VAR_RE
+    sql_ternary_re = sql_ternary_re or _SQL_CALL_TERNARY_RE
     results = []
     seen = set()
 
-    for m in _SQL_CALL_RE.finditer(body):
+    for m in sql_call_re.finditer(body):
         sqlid = m.group("sqlid")
         namespace, _, sql_id = sqlid.rpartition(".")
         if not namespace:
@@ -1809,7 +1887,7 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
             "offset": m.start(),
         })
 
-    for m in _SQL_CALL_VAR_RE.finditer(body):
+    for m in sql_var_re.finditer(body):
         var = m.group("var")
         suffix = m.group("suffix")
         prefix = ns_constants.get(var, "")
@@ -1844,7 +1922,7 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None) -> list
     # Variable + ternary suffix: NS + (cond ? ".a" : ".b"). 두 branch 모두
     # 등록 — 런타임 조건에 따라 둘 다 호출될 수 있어 영향분석 / XML
     # 체인에 두 sqlid 모두 포함돼야 정확하다.
-    for m in _SQL_CALL_TERNARY_RE.finditer(body):
+    for m in sql_ternary_re.finditer(body):
         var = m.group("var")
         prefix = ns_constants.get(var, "")
         if not prefix:
@@ -2038,10 +2116,27 @@ def parse_java_file(filepath: str) -> dict:
     # balancing.
     rfc_constants = {n: v for n, v in _RFC_CONST_RE.findall(raw)}
     ns_constants = _extract_ns_constants(raw)
+    # Per-file SQL receiver auto-detection — autowired 필드 중 타입이
+    # ``SqlSession`` / ``SqlSessionTemplate`` 등인 것의 변수명을 SQL
+    # receiver 로 자동 등록. ``simpleSqlSession`` / ``mySqlSession`` 같이
+    # 사내 wrapper 변수명 변형을 patterns.yaml 수동 관리 없이 잡음.
+    extra_sql_receivers = _collect_sql_receiver_names_from_fields(autowired)
+    if extra_sql_receivers:
+        sql_call_re = _build_sql_call_re(extra_receivers=extra_sql_receivers)
+        sql_var_re = _build_sql_call_var_re(extra_receivers=extra_sql_receivers)
+        sql_ternary_re = _build_sql_call_ternary_re(extra_receivers=extra_sql_receivers)
+    else:
+        sql_call_re = sql_var_re = sql_ternary_re = None  # 기본값 사용
+
     methods = _extract_method_bodies(content_nc, class_info)
     for meth in methods:
         body = meth["body"]
-        meth["body_sql_calls"] = _collect_body_sql_calls(body, ns_constants)
+        meth["body_sql_calls"] = _collect_body_sql_calls(
+            body, ns_constants,
+            sql_call_re=sql_call_re,
+            sql_var_re=sql_var_re,
+            sql_ternary_re=sql_ternary_re,
+        )
         meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
         meth["body_field_calls"] = _collect_body_field_calls(body)
         # Mermaid Phase B — 제어 블록 (if/else/switch/for/while/do/try) 를
