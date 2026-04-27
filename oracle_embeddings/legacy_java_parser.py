@@ -676,6 +676,225 @@ _SQL_CALL_TERNARY_RE = _build_sql_call_ternary_re()
 _SQL_CALL_LOCALVAR_RE = _build_sql_call_localvar_re()
 
 
+# ── Generic SQL call head matcher (Phase: unified evaluator) ──────────
+#
+# 위 4개 매처 (literal / var+suffix / ternary / localvar) 는 1st arg 의
+# 특정 shape 만 커버해 새 패턴이 등장할 때마다 매처를 추가하는 whack-a-mole
+# 발생. ``_eval_string_expr`` evaluator 로 임의 string expression 을 일반
+# 처리하기 위해, 호출 head (``receiver.op\s*\(``) 만 매치하는 단순 regex
+# 도 함께 빌드. 호출 후 caller 가 balanced-paren 으로 1st arg 를 추출해
+# evaluator 에 넘김.
+
+
+def _build_sql_call_head_re(extra_receivers: list[str] = None,
+                              extra_ops: list[str] = None) -> re.Pattern:
+    """SQL call HEAD only: ``receiver.op(`` 위치만 매치.
+
+    1st arg 의 shape 은 따지지 않음 — caller 가 balanced-paren 으로
+    추출해 evaluator 로 넘기는 구조라 모든 expression 형태를 커버.
+    """
+    receivers = _DEFAULT_SQL_RECEIVERS
+    if extra_receivers:
+        extras = "|".join(re.escape(r) for r in extra_receivers)
+        receivers = f"{extras}|{receivers}"
+    ops = _DEFAULT_SQL_OPS
+    if extra_ops:
+        extras = "|".join(re.escape(o) for o in extra_ops)
+        ops = f"{extras}|{ops}"
+    return re.compile(
+        rf"""\b(?:{receivers})
+            (?:\.\w+)?
+            \.\s*(?P<op>{ops})
+            \s*\(
+        """,
+        re.VERBOSE,
+    )
+
+
+_SQL_CALL_HEAD_RE = _build_sql_call_head_re()
+
+
+def _extract_first_arg(text: str, paren_open_idx: int) -> str:
+    """``(`` 위치에서 시작해 1st arg 의 raw 표현 반환.
+
+    `,` (top-level) 또는 닫는 `)` 까지. 문자열 / char literal / 중첩 괄호
+    내부의 `,` 는 무시. 추출 실패 시 빈 문자열.
+    """
+    n = len(text)
+    if paren_open_idx >= n or text[paren_open_idx] != "(":
+        return ""
+    depth = 1
+    i = paren_open_idx + 1
+    in_str = None
+    start = i
+    while i < n:
+        c = text[i]
+        if in_str is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_str = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:i].strip()
+            i += 1
+            continue
+        if c == "," and depth == 1:
+            return text[start:i].strip()
+        i += 1
+    return ""
+
+
+def _split_top_level(expr: str, op: str) -> list[str]:
+    """``expr`` 을 top-level (괄호/문자열 밖) 에서 ``op`` 로 split."""
+    parts = []
+    n = len(expr)
+    op_len = len(op)
+    depth = 0
+    in_str = None
+    last = 0
+    i = 0
+    while i < n:
+        c = expr[i]
+        if in_str is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_str = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            i += 1
+            continue
+        if depth == 0 and expr[i:i + op_len] == op:
+            parts.append(expr[last:i])
+            last = i + op_len
+            i = last
+            continue
+        i += 1
+    parts.append(expr[last:])
+    return [p.strip() for p in parts]
+
+
+def _strip_outer_parens(expr: str) -> str:
+    """``(((x)))`` → ``x``. 매칭 안 되면 그대로."""
+    while expr.startswith("(") and expr.endswith(")"):
+        # Verify outer parens are actually matching (not `(a) + (b)`)
+        depth = 0
+        balanced = True
+        for j, c in enumerate(expr):
+            if c == "(":
+                depth += 1
+            elif c == ")":
+                depth -= 1
+                if depth == 0 and j != len(expr) - 1:
+                    balanced = False
+                    break
+        if not balanced:
+            break
+        expr = expr[1:-1].strip()
+    return expr
+
+
+def _eval_string_expr(expr: str, body: str, ns_constants: dict,
+                      visited: set | None = None,
+                      depth: int = 0) -> list[str]:
+    """Java string expression 의 가능한 값들을 symbolic 으로 enumerate.
+
+    지원:
+    - 문자열 리터럴 ``"x"`` → ``["x"]``
+    - 식별자 ``var`` → ``ns_constants`` 우선, 없으면 body 내 모든
+      ``var = RHS;`` assignment 의 RHS 재귀 평가
+    - ``a + b`` (string concat) → cartesian product
+    - ``cond ? a : b`` → 양 분기 합집합
+    - 외부 괄호 → strip 후 재귀
+
+    Unknown 표현은 빈 리스트 반환 (over-report 방지).
+    재귀 무한루프 / 너무 깊은 평가는 cutoff 으로 차단.
+    """
+    if depth > 6 or expr is None:
+        return []
+    expr = _strip_outer_parens(expr.strip())
+    if not expr:
+        return []
+
+    visited = visited if visited is not None else set()
+
+    # 1. 문자열 리터럴
+    if expr.startswith('"') and expr.endswith('"') and expr.count('"') == 2:
+        return [expr[1:-1]]
+
+    # 2. Top-level concat (``a + b + c``)
+    plus_parts = _split_top_level(expr, "+")
+    if len(plus_parts) > 1:
+        result = [""]
+        for part in plus_parts:
+            sub = _eval_string_expr(part, body, ns_constants, visited, depth + 1)
+            if not sub:
+                return []  # any unknown poisons the whole expr
+            result = [r + s for r in result for s in sub]
+            if len(result) > 32:  # explosion guard
+                return []
+        return list(dict.fromkeys(result))
+
+    # 3. Top-level ternary (``cond ? a : b``)
+    qmark_parts = _split_top_level(expr, "?")
+    if len(qmark_parts) >= 2:
+        # Re-join everything after first `?` and split on `:` at top level
+        rest = "?".join(qmark_parts[1:])
+        colon_parts = _split_top_level(rest, ":")
+        if len(colon_parts) >= 2:
+            true_branch = colon_parts[0]
+            false_branch = ":".join(colon_parts[1:])
+            t_vals = _eval_string_expr(true_branch, body, ns_constants, visited, depth + 1)
+            f_vals = _eval_string_expr(false_branch, body, ns_constants, visited, depth + 1)
+            return list(dict.fromkeys(t_vals + f_vals))
+
+    # 4. Bare identifier
+    if re.fullmatch(r"[A-Za-z_]\w*", expr):
+        var = expr
+        # 무한 재귀 방어 (var = otherVar; otherVar = var; 같은 cycle)
+        if var in visited:
+            return []
+        visited = visited | {var}
+        # ns_constants 에 등록된 prefix 우선
+        if var in ns_constants:
+            return [ns_constants[var]]
+        # body 내 모든 ``var = RHS;`` (declaration 포함) 추적
+        assign_re = re.compile(rf"\b{re.escape(var)}\s*=\s*([^;]+);")
+        results: list[str] = []
+        for am in assign_re.finditer(body):
+            rhs = am.group(1)
+            sub = _eval_string_expr(rhs, body, ns_constants, visited, depth + 1)
+            results.extend(sub)
+        return list(dict.fromkeys(results))
+
+    # 5. 알 수 없는 형태 (메서드 호출, 산술 등) — 무시
+    return []
+
+
 # Field types that indicate the field is a SQL session — used by parser
 # to auto-detect per-file receiver names like ``simpleSqlSession`` (when
 # field declared as ``@Inject SqlSession simpleSqlSession;``). Type is
@@ -1895,208 +2114,64 @@ def _collect_body_rfc_calls(body: str, constants: dict) -> list[dict]:
 def _collect_body_sql_calls(body: str, ns_constants: dict | None = None,
                               sql_call_re: re.Pattern | None = None,
                               sql_var_re: re.Pattern | None = None,
-                              sql_ternary_re: re.Pattern | None = None) -> list[dict]:
-    """SQL helper calls in a method body.
+                              sql_ternary_re: re.Pattern | None = None,
+                              sql_call_head_re: re.Pattern | None = None,
+                              ) -> list[dict]:
+    """SQL helper calls in a method body — unified evaluator.
 
-    Handles both literal ``"ns.id"`` and variable prefix ``var + "id"``
-    forms. ``ns_constants`` is the class-level namespace string map.
+    이전에는 4 개 매처 (literal / var+suffix / ternary / localvar) 가 각
+    shape 별로 따로 매치했지만, 새 변형이 등장할 때마다 매처를 추가하는
+    whack-a-mole 이라 ``_eval_string_expr`` 기반으로 통합. ``receiver.op(``
+    head 만 매치 → balanced-paren 으로 1st arg 추출 → evaluator 가 가능
+    값들을 enumerate.
 
-    Optional ``sql_call_re`` / ``sql_var_re`` / ``sql_ternary_re`` allow
-    callers to inject **per-file** regex variants — primarily so
-    ``parse_java_file`` can dynamically include ``simpleSqlSession`` /
-    ``mySqlSession`` 같이 그 파일 자체의 ``@Inject SqlSession <field>``
-    선언에서 발견된 receiver 변수명을 매치 대상에 추가할 수 있다.
-    None 이면 module-level default regex 사용 (기존 동작).
+    지원 형태 (evaluator 가 모두 처리):
+      - ``"ns.id"`` 리터럴
+      - ``NS + "suffix"`` / ``NS + (cond?"a":"b")`` 직접 concat
+      - ``op(sqlId, p)`` + body 안에 ``sqlId = NS + "x"`` 분기 할당
+      - ``op(NS + name, p)`` + body 안에 ``name = "x"`` 분기 할당
+      - 임의 깊이 cartesian product / ternary / 식별자 추적
+
+    ``ns_constants`` 는 class-level 의 ``private final String NS = "ns";``
+    같은 prefix 상수 매핑.
+
+    ``sql_call_re`` / ``sql_var_re`` / ``sql_ternary_re`` 인자는 backward
+    compat 위해 시그니처 유지하지만 더 이상 사용 안 함. ``sql_call_head_re``
+    가 per-file SQL receiver (``simpleSqlSession`` 등) 확장된 head 매처.
     """
     ns_constants = ns_constants or {}
-    sql_call_re = sql_call_re or _SQL_CALL_RE
-    sql_var_re = sql_var_re or _SQL_CALL_VAR_RE
-    sql_ternary_re = sql_ternary_re or _SQL_CALL_TERNARY_RE
+    head_re = sql_call_head_re or _SQL_CALL_HEAD_RE
     results = []
     seen = set()
 
-    for m in sql_call_re.finditer(body):
-        sqlid = m.group("sqlid")
-        namespace, _, sql_id = sqlid.rpartition(".")
-        if not namespace:
+    for m in head_re.finditer(body):
+        # m.end() 직전이 ``(`` 위치 (head regex 가 ``\s*\(`` 로 끝남)
+        paren_idx = m.end() - 1
+        if paren_idx < 0 or paren_idx >= len(body) or body[paren_idx] != "(":
             continue
-        key = (m.group("op"), sqlid)
-        if key in seen:
+        first_arg = _extract_first_arg(body, paren_idx)
+        if not first_arg:
             continue
-        seen.add(key)
-        results.append({
-            "op": m.group("op"),
-            "sqlid": sqlid,
-            "namespace": namespace,
-            "sql_id": sql_id,
-            "offset": m.start(),
-        })
-
-    for m in sql_var_re.finditer(body):
-        var = m.group("var")
-        suffix = m.group("suffix")
-        prefix = ns_constants.get(var, "")
-        if not prefix:
-            continue
-        # Sanity: the var + "suffix" concatenation must produce a
-        # well-formed "namespace.id" string. If neither side carries the
-        # "." separator, the resolved prefix is probably already a full
-        # sqlid (e.g. `FIND_X = "scaStat.findX"` used as `FIND_X + "Y"`)
-        # — concatenating would yield garbage like
-        # "scaStat.findXY" which then misses every statement index and
-        # pollutes the row via namespace-level fallback.
-        if not prefix.endswith(".") and not suffix.startswith("."):
-            continue
-        sqlid = prefix + suffix
-        namespace, _, sql_id = sqlid.rpartition(".")
-        if not namespace:
-            continue
-        key = (m.group("op"), sqlid)
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append({
-            "op": m.group("op"),
-            "sqlid": sqlid,
-            "namespace": namespace,
-            "sql_id": sql_id,
-            "resolved_from": f"var:{var}",
-            "offset": m.start(),
-        })
-
-    # Variable + ternary suffix: NS + (cond ? ".a" : ".b"). 두 branch 모두
-    # 등록 — 런타임 조건에 따라 둘 다 호출될 수 있어 영향분석 / XML
-    # 체인에 두 sqlid 모두 포함돼야 정확하다.
-    for m in sql_ternary_re.finditer(body):
-        var = m.group("var")
-        prefix = ns_constants.get(var, "")
-        if not prefix:
-            continue
-        for suffix in (m.group("true_suffix"), m.group("false_suffix")):
-            if not prefix.endswith(".") and not suffix.startswith("."):
+        sqlids = _eval_string_expr(first_arg, body, ns_constants)
+        op = m.group("op")
+        for sqlid in sqlids:
+            if not sqlid or "." not in sqlid:
                 continue
-            sqlid = prefix + suffix
             namespace, _, sql_id = sqlid.rpartition(".")
-            if not namespace:
+            if not namespace or not sql_id:
                 continue
-            key = (m.group("op"), sqlid)
+            key = (op, sqlid)
             if key in seen:
                 continue
             seen.add(key)
             results.append({
-                "op": m.group("op"),
+                "op": op,
                 "sqlid": sqlid,
                 "namespace": namespace,
                 "sql_id": sql_id,
-                "resolved_from": f"var:{var}:ternary",
+                "offset": m.start(),
             })
-
-    # Local variable form: ``sqlSession.update(sqlId, param)`` where
-    # ``sqlId`` 가 같은 method body 안에서 ``sqlId = NAMESPACE + "x"``
-    # 또는 ``sqlId = "lit.id"`` 같이 사전 할당된 경우. 모든 가능 값
-    # (분기 분의 값들) 을 enumerate.
-    sql_localvar_re = sql_call_re_localvar(sql_call_re)
-    for m in sql_localvar_re.finditer(body):
-        op = m.group("op")
-        varname = m.group("varname")
-        # 같은 명에 대해 이미 다른 매처가 잡았으면 (예: "literal" 도 매치)
-        # skip — 여기는 PURE 식별자 케이스만
-        if not varname or varname[0] not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_":
-            continue
-        # method body 의 모든 ``varname = RHS;`` 또는
-        # ``[type] varname = RHS;`` assignment 검색.
-        assign_re = re.compile(
-            rf"\b{re.escape(varname)}\s*=\s*(?P<rhs>[^;]+);"
-        )
-        for am in assign_re.finditer(body):
-            # 자기자신 (SQL call line) 은 우변이 ``sqlSession.x(...)`` 형태라
-            # ``+`` / ``"`` / 변수 모두 없으므로 자연스럽게 skip 됨.
-            rhs = am.group("rhs").strip()
-            for cand in _enumerate_sqlids_from_rhs(rhs, ns_constants):
-                sqlid = cand
-                namespace, _, sql_id = sqlid.rpartition(".")
-                if not namespace:
-                    continue
-                key = (op, sqlid)
-                if key in seen:
-                    continue
-                seen.add(key)
-                results.append({
-                    "op": op,
-                    "sqlid": sqlid,
-                    "namespace": namespace,
-                    "sql_id": sql_id,
-                    "resolved_from": f"localvar:{varname}",
-                    "offset": m.start(),
-                })
     return results
-
-
-def sql_call_re_localvar(default_call_re: re.Pattern) -> re.Pattern:
-    """현재 module-level ``_SQL_CALL_LOCALVAR_RE`` 가 default 면 그대로,
-    parse_java_file 의 per-file 변형 호출에서는 동일 receiver 확장이
-    적용된 localvar regex 가 필요 — 호출자가 inject 하는 sql_call_re
-    의 receiver / op 부분을 추출해 같은 set 으로 빌드한다.
-
-    간단 구현: default 인 경우 module-level 사용. per-file 인 경우는
-    factory 한 번 더 호출. ``_collect_body_sql_calls`` 가 sql_call_re
-    파라미터를 통해 재컴파일된 패턴을 받았다면, 동일 extras 로
-    localvar regex 도 재컴파일해야 함 — 그런데 extras 정보가 regex
-    객체 자체엔 안 남아 있어 default localvar 를 fallback. per-file
-    receiver 확장은 SQL_CALL_RE 의 literal/var/ternary 에는 적용되고,
-    localvar 에는 default receiver 만 적용 — 일반적으로 sqlSession
-    같은 표준 receiver 가 localvar 호출 측에 쓰임.
-    """
-    return _SQL_CALL_LOCALVAR_RE
-
-
-def _enumerate_sqlids_from_rhs(rhs: str, ns_constants: dict) -> list[str]:
-    """``sqlId = RHS;`` 의 RHS 를 보고 후보 sqlid 들을 반환.
-
-    지원하는 RHS 패턴:
-      - ``"ns.id"``                        — 리터럴
-      - ``NAMESPACE + "suffix"``           — 변수 prefix + 리터럴
-      - ``NAMESPACE + (cond ? "a" : "b")``  — ternary 양 분기
-      - ``"prefix" + variable``            — 미지원 (nameless suffix)
-
-    ``ns_constants`` 가 ``NAMESPACE`` 를 모르면 ``var + "..."`` 형태는 skip.
-    """
-    out: list[str] = []
-    rhs = rhs.strip()
-
-    # Pattern 1: pure literal "ns.id"
-    m = re.match(r'^"([^"]+)"\s*$', rhs)
-    if m:
-        sqlid = m.group(1)
-        if "." in sqlid:
-            out.append(sqlid)
-        return out
-
-    # Pattern 2: NAMESPACE + (cond ? "a" : "b")
-    m = re.match(
-        r'^(?P<var>\w+)\s*\+\s*\((?P<cond>.+?)\?\s*'
-        r'"(?P<a>[^"]+)"\s*:\s*"(?P<b>[^"]+)"\s*\)\s*$',
-        rhs, re.DOTALL,
-    )
-    if m:
-        prefix = ns_constants.get(m.group("var"), "")
-        if prefix:
-            for suffix in (m.group("a"), m.group("b")):
-                if not prefix.endswith(".") and not suffix.startswith("."):
-                    continue
-                out.append(prefix + suffix)
-        return out
-
-    # Pattern 3: NAMESPACE + "suffix"
-    m = re.match(r'^(?P<var>\w+)\s*\+\s*"(?P<suffix>[^"]+)"\s*$', rhs)
-    if m:
-        prefix = ns_constants.get(m.group("var"), "")
-        suffix = m.group("suffix")
-        if prefix and (prefix.endswith(".") or suffix.startswith(".")):
-            out.append(prefix + suffix)
-        return out
-
-    return out
 
 
 def _collect_body_field_calls(body: str) -> list[dict]:
@@ -2273,20 +2348,16 @@ def parse_java_file(filepath: str) -> dict:
     # 사내 wrapper 변수명 변형을 patterns.yaml 수동 관리 없이 잡음.
     extra_sql_receivers = _collect_sql_receiver_names_from_fields(autowired)
     if extra_sql_receivers:
-        sql_call_re = _build_sql_call_re(extra_receivers=extra_sql_receivers)
-        sql_var_re = _build_sql_call_var_re(extra_receivers=extra_sql_receivers)
-        sql_ternary_re = _build_sql_call_ternary_re(extra_receivers=extra_sql_receivers)
+        sql_call_head_re = _build_sql_call_head_re(extra_receivers=extra_sql_receivers)
     else:
-        sql_call_re = sql_var_re = sql_ternary_re = None  # 기본값 사용
+        sql_call_head_re = None  # 기본값 사용
 
     methods = _extract_method_bodies(content_nc, class_info)
     for meth in methods:
         body = meth["body"]
         meth["body_sql_calls"] = _collect_body_sql_calls(
             body, ns_constants,
-            sql_call_re=sql_call_re,
-            sql_var_re=sql_var_re,
-            sql_ternary_re=sql_ternary_re,
+            sql_call_head_re=sql_call_head_re,
         )
         meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
         meth["body_field_calls"] = _collect_body_field_calls(body)
