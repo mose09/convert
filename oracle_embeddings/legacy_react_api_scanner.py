@@ -91,13 +91,43 @@ _SAGA_INDIRECT_SKIP_NAMES = frozenset({
 })
 
 
+# Minified / 빌드 산출 파일 — regex 폭발 주범. legacy_react_router 와
+# 동일 정책 (.min. / .bundle. / .chunk. / .compiled. + 500KB 초과 skip).
+_SKIP_FILE_INFIX = (".min.", ".bundle.", ".chunk.", ".compiled.")
+_MAX_FILE_BYTES = 500_000
+
+
+def _should_include_file(name: str, full_path: str) -> bool:
+    lname = name.lower()
+    if any(s in lname for s in _SKIP_FILE_INFIX):
+        return False
+    try:
+        if os.path.getsize(full_path) > _MAX_FILE_BYTES:
+            return False
+    except OSError:
+        return False
+    return True
+
+
 def _scan_dir(base: str) -> list[str]:
+    """Cached + filtered file scan for the API URL scanner."""
+    from .mybatis_parser import _CACHE_ENABLED, _DIR_SCAN_CACHE
+    cache_key = ("api", os.path.normpath(base or ""))
+    if _CACHE_ENABLED:
+        cached = _DIR_SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     out = []
     for root, dirs, names in os.walk(base):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for n in names:
-            if os.path.splitext(n)[1].lower() in EXTENSIONS:
-                out.append(os.path.join(root, n))
+            if os.path.splitext(n)[1].lower() not in EXTENSIONS:
+                continue
+            full = os.path.join(root, n)
+            if _should_include_file(n, full):
+                out.append(full)
+    if _CACHE_ENABLED:
+        _DIR_SCAN_CACHE[cache_key] = out
     return out
 
 

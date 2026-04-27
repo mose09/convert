@@ -22,18 +22,54 @@ from .mybatis_parser import _read_file_safe
 logger = logging.getLogger(__name__)
 
 
-SKIP_DIRS = {"node_modules", "build", "dist", ".next", ".git", "coverage"}
+SKIP_DIRS = {"node_modules", "build", "dist", ".next", ".git", "coverage",
+             "bower_components", "__pycache__", ".cache"}
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
+
+# Minified / 빌드 산출 파일 패턴 — 수 MB 짜리 한 파일이 regex 폭발의
+# 주범. source code 가 아니므로 분석에서 안전하게 제외.
+_SKIP_FILE_INFIX = (".min.", ".bundle.", ".chunk.", ".compiled.")
+# 정상 source 코드는 거의 100KB 미만. 500KB 초과는 minified / 자동생성.
+_MAX_FILE_BYTES = 500_000
+
+
+def _should_include_file(name: str, full_path: str) -> bool:
+    """Filter out minified bundles + huge auto-generated files."""
+    lname = name.lower()
+    if any(s in lname for s in _SKIP_FILE_INFIX):
+        return False
+    try:
+        if os.path.getsize(full_path) > _MAX_FILE_BYTES:
+            return False
+    except OSError:
+        return False
+    return True
 
 
 def scan_react_dir(base_dir: str) -> list[str]:
-    """Return absolute paths of all React source files under ``base_dir``."""
+    """Return absolute paths of React source files under ``base_dir``.
+
+    Caches result when the file-content cache is enabled (analyze-legacy
+    의 frontend phase) so multiple scanners (Route / import / api /
+    trigger) 가 같은 디렉토리를 여러 번 walk 하지 않는다.
+    """
+    from .mybatis_parser import _CACHE_ENABLED, _DIR_SCAN_CACHE
+    cache_key = ("react", os.path.normpath(base_dir or ""))
+    if _CACHE_ENABLED:
+        cached = _DIR_SCAN_CACHE.get(cache_key)
+        if cached is not None:
+            return cached
     files = []
     for root, dirs, names in os.walk(base_dir):
         dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
         for n in names:
-            if os.path.splitext(n)[1].lower() in EXTENSIONS:
-                files.append(os.path.join(root, n))
+            if os.path.splitext(n)[1].lower() not in EXTENSIONS:
+                continue
+            full = os.path.join(root, n)
+            if _should_include_file(n, full):
+                files.append(full)
+    if _CACHE_ENABLED:
+        _DIR_SCAN_CACHE[cache_key] = files
     return files
 
 
