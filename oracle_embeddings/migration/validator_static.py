@@ -19,7 +19,7 @@ import sqlglot
 from sqlglot import exp
 from sqlglot.errors import ParseError
 
-from .sql_rewriter import mask_mybatis_placeholders
+from .sql_rewriter import _MBP_TOKEN_RE, mask_mybatis_placeholders
 
 # ---------------------------------------------------------------------------
 # Types
@@ -162,8 +162,8 @@ def validate_static(
             continue
         if cname in _ORACLE_PSEUDOCOLS:
             continue
-        if cname.startswith("MBP_"):
-            # Masked MyBatis placeholder — ignore.
+        if _MBP_TOKEN_RE.fullmatch(cname):
+            # Masked MyBatis placeholder (__MBP_{n}__) — ignore.
             continue
 
         qualifier = (col.table or "").upper()
