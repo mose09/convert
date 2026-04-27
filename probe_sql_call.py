@@ -88,9 +88,16 @@ def main() -> int:
         for m in suspicious[:10]:
             print(f"  - {m['name']}")
 
-    # 4) Focus 메서드 상세 (지정 시)
+    # 4) Focus 메서드 상세 — 인자로 명시 or 의심 메서드 첫 건 자동
+    auto_focused = False
+    if not focus and suspicious:
+        focus = suspicious[0]["name"]
+        auto_focused = True
+        print(f"\n(2번째 인자 없음 → 의심 메서드 {focus!r} 로 자동 focus)")
+
     if focus:
-        _section(f"[4] focus 메서드 상세: {focus!r}")
+        _section(f"[4] focus 메서드 상세: {focus!r}"
+                 + (" (자동 선택)" if auto_focused else ""))
         target_m = next((m for m in methods if m["name"] == focus), None)
         if not target_m:
             print(f"⚠ {focus!r} 메서드 없음. 가능한 이름:")
@@ -104,20 +111,24 @@ def main() -> int:
             # head matches in body
             heads = list(_SQL_CALL_HEAD_RE.finditer(body))
             print(f"\nSQL_CALL_HEAD_RE body matches: {len(heads)}")
+            from oracle_embeddings.legacy_java_parser import _extract_first_arg
             for hm in heads:
-                # 해당 위치의 1st arg expression 출력
-                from oracle_embeddings.legacy_java_parser import _extract_first_arg
                 paren_idx = hm.end() - 1
                 first_arg = _extract_first_arg(body, paren_idx)
                 print(f"  pos={hm.start()} op={hm.group('op')!r} first_arg={first_arg!r}")
-                # evaluator 실행
                 vals = _eval_string_expr(first_arg, body, ns)
                 print(f"    eval → {vals}")
 
-            # NAMESPACE 가 본문에 있는지 grep
+            # NAMESPACE / sqlSession 등장 라인 (이름에 포함된 모든 변형)
             print(f"\nNAMESPACE 등장 라인:")
             for line in body.splitlines():
                 if "NAMESPACE" in line:
+                    print(f"  | {line.strip()}")
+            print(f"\nSqlSession 호출 후보 라인 (literal 'sqlSession'/'simpleSqlSession' 등):")
+            import re as _re
+            sql_re = _re.compile(r"\b\w*[Ss]ql[Ss]ession\b\.\s*\w+\s*\(")
+            for line in body.splitlines():
+                if sql_re.search(line):
                     print(f"  | {line.strip()}")
 
     _section("[5] 최종 진단")
