@@ -13,6 +13,7 @@
 """
 from __future__ import annotations
 
+import re
 import sys
 
 from oracle_embeddings.legacy_java_parser import (
@@ -64,6 +65,43 @@ def main() -> int:
     print(f"FQCN: {cls.get('fqcn')}")
     methods = cls.get("methods", [])
     print(f"method 수: {len(methods)}")
+
+    # method body 범위 overlap 체크 — brace walker 가 경계 잘못 잡으면
+    # 한 메서드의 body 가 다른 메서드 영역을 침범. 사용자 가설:
+    # '같은 변수가 여러 service 메서드에 각자 선언돼있는데 위 메서드
+    # 영역이 아래로 흘러내려서 sqlId assignment 가 헷갈림' — overlap
+    # 발견되면 즉시 의심.
+    overlaps = []
+    sorted_methods = sorted(methods, key=lambda m: m.get("body_start", 0))
+    for i in range(len(sorted_methods) - 1):
+        a = sorted_methods[i]
+        b = sorted_methods[i + 1]
+        a_end = a.get("body_end", 0)
+        b_start = b.get("body_start", 0)
+        if a_end > b_start:
+            overlaps.append((a, b))
+    if overlaps:
+        print(f"\n🔴 method body 경계 overlap {len(overlaps)} 건 — brace walker 의심:")
+        for a, b in overlaps:
+            print(f"  - {a.get('name')!r} body_end={a.get('body_end')} > "
+                  f"{b.get('name')!r} body_start={b.get('body_start')} "
+                  f"(겹침 {a.get('body_end') - b.get('body_start')} chars)")
+        print(f"  → A 메서드 body 가 B 메서드 영역까지 침범. A 의 body_sql_calls "
+              f"가 B 의 ``sqlId = ...`` 까지 잘못 포함하는 것이 원인.")
+    else:
+        print(f"\n✓ method body 경계 overlap 없음")
+
+    # 추가로 같은 변수명 (sqlId 등) 가 여러 메서드에 등장하는지 통계
+    multi_var = {}
+    for m in methods:
+        body_x = m.get("body", "")
+        for v in re.findall(r'\bString\s+(\w+)\s*=', body_x):
+            multi_var.setdefault(v, []).append(m.get("name"))
+    shared = {v: ms for v, ms in multi_var.items() if len(ms) > 1}
+    if shared:
+        print(f"\n동일 변수명 여러 메서드에 선언:")
+        for v, ms in list(shared.items())[:8]:
+            print(f"  - {v!r}: {ms[:5]}{'…' if len(ms) > 5 else ''}")
 
     # 메서드 별 sql_calls 요약
     methods_with_sql = [m for m in methods if m.get("body_sql_calls")]
@@ -135,6 +173,31 @@ def main() -> int:
                     line_no = body[:am.start()].count("\n") + 1
                     print(f"  - line +{line_no}: rhs={rhs!r}")
                     print(f"      sub_eval → {sub_eval}")
+                    # sub_eval 빈 결과면 원인 진단 — RHS 의 첫 16 글자
+                    # codepoint 덤프 (smart quotes / BOM / 한글 등 히든 문자
+                    # 감지) + 식별자 reference 인 경우 ns_constants 룩업 결과
+                    if not sub_eval:
+                        print(f"      ⚠ 빈 결과. RHS 분석:")
+                        cps = " ".join(f"U+{ord(c):04X}" for c in rhs[:16])
+                        print(f"        - 첫 16자 codepoint: {cps}")
+                        # ASCII " 는 U+0022. smart " 는 U+201C / U+201D.
+                        if any(ord(c) in (0x201C, 0x201D, 0x2018, 0x2019)
+                               for c in rhs):
+                            print(f"        - 🔴 smart quote 감지 (U+201C/D 또는 U+2018/9)")
+                            print(f"          → 소스 파일에서 ASCII \" / ' 로 교체 필요")
+                        if rhs.startswith('﻿') or '﻿' in rhs[:5]:
+                            print(f"        - 🔴 BOM (U+FEFF) 감지")
+                        # bare 식별자라면 ns_constants 에 있는지 명시적 출력
+                        import re as _re2
+                        if _re2.fullmatch(r"[A-Za-z_]\w*", rhs):
+                            print(f"        - 형태: bare 식별자")
+                            print(f"        - ns_constants[{rhs!r}]: "
+                                  f"{ns.get(rhs, '<없음>')!r}")
+                            # body 안에 이 이름의 assignment 가 있나
+                            sub_assign = _re2.compile(rf"\b{_re2.escape(rhs)}\s*=\s*[^;]+;")
+                            sub_hits = list(sub_assign.finditer(body))
+                            print(f"        - body 내 ``{rhs} = ...;`` 매치: "
+                                  f"{len(sub_hits)} 건")
 
             # NAMESPACE / sqlSession 등장 라인 (이름에 포함된 모든 변형)
             print(f"\nNAMESPACE 등장 라인:")
