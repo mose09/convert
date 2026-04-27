@@ -38,4 +38,9 @@ legacy:
       url: "URL"
       parent_id: "PARENT_ID"
       level: "LEVEL"
-  rfc_depth: 2
+  # Service-of-service walk depth — Controller → A → B → C → D 같은
+  # 다중 hop chain 의 SQL/RFC/테이블까지 추적. self-call (this.X) 은
+  # depth 증가 안 함. 실측 결과 (PR #73) 사내 프로젝트 패턴은 5 가
+  # 안전 마진. 더 깊으면 walker 가 무관 service 까지 잡을 위험 있어
+  # 5 권장.
+  rfc_depth: 5
