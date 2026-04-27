@@ -11,15 +11,19 @@ logger = logging.getLogger(__name__)
 # 읽어서 디스크 I/O 가 dominant 비용. ``file_cache_scope`` 컨텍스트 안에서
 # 만 켜고 끝나면 즉시 비워서 메모리 폭증 방지.
 _FILE_CONTENT_CACHE: dict[tuple[str, "int | None"], str] = {}
+# scan_react_dir / _scan_dir 결과 캐시 — 같은 root 를 여러 번 walk 하는
+# 비용을 한 번으로 줄임. file content cache 와 같은 토글로 lifecycle 관리.
+_DIR_SCAN_CACHE: dict[tuple[str, str], list[str]] = {}
 _CACHE_ENABLED = False
 
 
 def use_file_cache(enable: bool) -> None:
-    """Toggle the in-memory file cache. Disabling clears it."""
+    """Toggle in-memory file content + dir scan caches. Disabling clears them."""
     global _CACHE_ENABLED
     _CACHE_ENABLED = enable
     if not enable:
         _FILE_CONTENT_CACHE.clear()
+        _DIR_SCAN_CACHE.clear()
 
 
 class file_cache_scope:
