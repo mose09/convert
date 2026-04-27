@@ -279,38 +279,16 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: Q5 + Q6 — 리포트/XML 산출물 정확도
+### 보류: 다른 안전망이 있는 엣지 케이스
 
-운영 차단급 안전성 패치 (E1/E2/E3) 머지 완료 (PR #78). 이제 사용자
-가시성에 직접 영향 주는 코드 품질 2건 묶음.
-
-- [ ] **Q5**. `migration_report._status_fill` 에 Stage A 실패 빨강 하이라이트
-      추가. 현재 status=AUTO 인데 stage_a_pass=False 인 행은 무색 → Validation
-      Errors 시트엔 빨강으로 뜨는데 Conversions 메인 시트엔 안 보여 사용자가
-      놓침
-- [ ] **Q6**. `xml_rewriter.annotate_statements` 가 메타데이터 코멘트를
-      element body text "뒤" 에 insert → spec §12.2 예제는 "앞" (모든 코멘트
-      → SQL 본문 → 동적 태그 순). body_text 보존하면서 코멘트 앞으로 이동
-- [ ] 검증: end-to-end migrate-sql 산출물 visual diff + status_fill 단위 4종
-- [ ] PR squash-merge
-
-### 대기: 코드 리뷰 미해결 항목
-
-🟡 **엣지 케이스** (보류 — 다른 안전망 있음):
+🟡 (실환경 드물 + 다른 검증 단계가 받쳐줌 → 운영 차단급 아님):
 
 - [ ] **E4**. `validator_static` CTE 본문 컬럼 일괄 warning 정밀도 향상
-      (Stage B 가 실 판정이라 현재는 OK)
+      (Stage B `cursor.parse()` 가 실 판정이라 진짜 오타도 ORA-00904 로 잡힘
+      → Stage A 리포트의 색깔 정확도 이슈만 남음)
 - [ ] **E5**. `dynamic_sql_expander` Level 2 중첩 `<choose>` 대안 미탐색
-      (경로 폭발 우려로 의도적 제한 — 필요 시 제한 해제)
-
-🟢 **코드 품질**:
-
-- [ ] **Q2**. `migration_report._coverage_lookup` O(n×m) → pre-grouping
-      으로 O(n+m)
-- [ ] **Q3**. `mapping_loader._SENTINEL` → Optional 타입 + explicit None
-      비교로 대체
-- [ ] **Q4**. `impact_analyzer._scan_statements` 반복 regex → sqlglot AST
-      한 번 파싱 후 재사용
+      (경로 폭발 우려로 의도적 제한 — 외부 + 내부 분기 모두 컬럼 분할 매핑이
+      걸리는 드문 케이스만 영향)
 
 ---
 
