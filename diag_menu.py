@@ -25,6 +25,8 @@ import time
 # ---- 사용자가 수정할 부분 ---------------------------------------------------
 FRONTEND_DIR = r"D:\workspace\frontend"            # 단일 frontend 또는 frontends_root
 MENU_URL     = "http://workplace.skhynix.com/apps/gipms-tbmcbmnoplanmodeling"
+BACKEND_DIR  = r""                                  # (선택) 단일 backend 또는 backends_root.
+                                                    # 비워두면 Layer 4 (endpoint 매칭) 스킵.
 # ---------------------------------------------------------------------------
 
 
@@ -128,10 +130,71 @@ def main() -> int:
         print(f"    {url}   ← {files[0] if files else ''}"
               + (f"  (+{len(files)-1})" if len(files) > 1 else ""))
 
+    # ── Layer 4: backend controller endpoint 매칭 (BACKEND_DIR 설정 시) ──
+    if BACKEND_DIR and os.path.isdir(BACKEND_DIR):
+        from oracle_embeddings.legacy_java_parser import parse_all_java
+        # backends_root 모드 자동 처리: 하위에 pom.xml/build.gradle 보이는
+        # 디렉토리들을 sub-project 로 취급. 단일 project 면 그대로.
+        backend_roots: list[str] = []
+        marker_files = ("pom.xml", "build.gradle", "build.gradle.kts")
+        if any(os.path.isfile(os.path.join(BACKEND_DIR, mf)) for mf in marker_files):
+            backend_roots = [BACKEND_DIR]
+        else:
+            for entry in sorted(os.listdir(BACKEND_DIR)):
+                child = os.path.join(BACKEND_DIR, entry)
+                if not os.path.isdir(child):
+                    continue
+                if any(os.path.isfile(os.path.join(child, mf)) for mf in marker_files):
+                    backend_roots.append(child)
+            if not backend_roots:
+                backend_roots = [BACKEND_DIR]
+        endpoint_url_set: set = set()
+        endpoint_sample: list = []
+        for root in backend_roots:
+            classes = parse_all_java(root)
+            for cls in classes:
+                for ep in cls.get("endpoints") or []:
+                    raw = ep.get("full_url") or ""
+                    if not raw:
+                        continue
+                    nu = normalize_url(raw)
+                    if nu:
+                        endpoint_url_set.add(nu)
+                        if len(endpoint_sample) < 5:
+                            endpoint_sample.append(nu)
+        scope_api_norm = {normalize_url(u) for u in api_idx.keys() if u}
+        matched = scope_api_norm & endpoint_url_set
+        unmatched = scope_api_norm - endpoint_url_set
+        print(f"\n# backend endpoint URLs indexed: {len(endpoint_url_set)} "
+              f"(sample: {endpoint_sample[:3]})")
+        if matched:
+            print(f"\n✓ PASS Layer 4 — scope API URL 중 {len(matched)} 건이 "
+                  f"backend endpoint 와 매칭")
+            for u in sorted(matched):
+                print(f"    matched: {u}")
+        if unmatched:
+            print(f"\n⚠ Layer 4 — scope API URL 중 {len(unmatched)} 건이 매칭 안 됨")
+            for u in sorted(unmatched):
+                # 비슷한 endpoint URL 후보 (substr) 표시
+                tail = u.rsplit("/", 1)[-1]
+                cand = [e for e in endpoint_url_set if tail and tail in e]
+                hint = f" (similar: {cand[:3]})" if cand else " (no close match)"
+                print(f"    unmatched: {u}{hint}")
+            print(f"  → unmatched 의 most likely cause:")
+            print(f"     a) 백엔드 class-level @RequestMapping prefix 가 추가돼")
+            print(f"        backend URL 이 frontend 호출 URL 보다 길거나 짧음")
+            print(f"     b) deployment context-path 가 frontend 에만 들어있음")
+            print(f"        (e.g., /api/v1/x  vs  /v1/x)")
+            print(f"     c) URL path-segment 변형 (/{p}/ 정규화 차이, trailing slash)")
+        if not unmatched and matched:
+            print(f"\n✓ ALL OK Layer 1+2+3+4 — chain 완전 연결돼야 정상.")
+            print(f"  만약 리포트 row 가 여전히 비어있다면 코드 회귀 있음.")
+    else:
+        print(f"\n# Layer 4 skipped — BACKEND_DIR 비어있음.")
+        print(f"  endpoint matching 끊김 의심하면 BACKEND_DIR 설정 후 재실행.")
+
     elapsed = time.time() - t0
     print(f"\n# elapsed {elapsed:.1f}s")
-    print(f"\n✓ ALL OK — Layer 1+2+3 통과. 만약 리포트 row 가 여전히 비어있다면")
-    print(f"  endpoint matching 단계 (controller URL ↔ scope API URL) 가 의심.")
     return 0
 
 
