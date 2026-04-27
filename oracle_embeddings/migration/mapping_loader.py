@@ -458,8 +458,8 @@ def _parse_columns(node: Any, errors: _Errors) -> List[ColumnMapping]:
             continue
 
         as_is = _parse_column_as_is(entry.get("as_is"), errors, f"{loc}.as_is")
-        to_be = _parse_column_to_be(entry.get("to_be", ...), errors, f"{loc}.to_be")
-        if as_is is None or to_be is _SENTINEL:
+        to_be, to_be_ok = _parse_column_to_be(entry, errors, f"{loc}.to_be")
+        if as_is is None or not to_be_ok:
             # Bail on this entry but keep going for other errors
             continue
 
@@ -499,9 +499,6 @@ def _parse_columns(node: Any, errors: _Errors) -> List[ColumnMapping]:
     return out
 
 
-_SENTINEL = object()
-
-
 def _parse_column_as_is(
     node: Any, errors: _Errors, loc: str
 ) -> Union[ColumnRef, List[ColumnRef], None]:
@@ -531,19 +528,34 @@ def _parse_column_as_is(
 
 
 def _parse_column_to_be(
-    node: Any, errors: _Errors, loc: str
-) -> Union[ColumnRef, List[SplitTarget], None, object]:
-    if node is _SENTINEL:
-        # missing key → distinct from explicit null (drop). Flag as error.
+    entry: Dict[str, Any], errors: _Errors, loc: str
+) -> Tuple[Union[ColumnRef, List[SplitTarget], None], bool]:
+    """Parse the ``to_be`` field of a column mapping.
+
+    Returns ``(value, ok)`` where ``value`` is one of:
+
+    * ``ColumnRef`` — 1:1 / type-convert / value-map / rename target
+    * ``List[SplitTarget]`` — 1:N split targets
+    * ``None`` — *explicit* null in YAML, meaning "drop"
+
+    and ``ok`` is False when the entry should be skipped — either because
+    the key is missing (must say ``to_be: null`` to drop), or because the
+    shape was malformed. This avoids the prior sentinel-object pattern that
+    couldn't distinguish "key absent" from "explicit null" with a single
+    return value.
+    """
+    if "to_be" not in entry:
         errors.add(
             "missing required field 'to_be' (use null for drops)",
             loc,
         )
-        return _SENTINEL
+        return None, False
+    node = entry["to_be"]
     if node is None:
-        return None
+        return None, True  # explicit null = drop
     if isinstance(node, dict):
-        return _parse_column_ref(node, errors, loc)
+        ref = _parse_column_ref(node, errors, loc)
+        return ref, ref is not None
     if isinstance(node, list):
         targets: List[SplitTarget] = []
         for i, item in enumerate(node):
@@ -568,13 +580,13 @@ def _parse_column_to_be(
             targets.append(SplitTarget(table=t, column=c, transform_select=xsel))
         if len(targets) < 2:
             errors.add("to_be list requires >= 2 targets (split case)", loc)
-            return _SENTINEL
-        return targets
+            return None, False
+        return targets, True
     errors.add(
         "to_be must be a mapping (1:1), list (split), or null (drop)",
         loc,
     )
-    return _SENTINEL
+    return None, False
 
 
 def _parse_column_ref(
