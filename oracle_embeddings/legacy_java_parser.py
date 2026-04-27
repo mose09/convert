@@ -626,9 +626,54 @@ def _build_sql_call_ternary_re(extra_receivers: list[str] = None,
     )
 
 
+def _build_sql_call_localvar_re(extra_receivers: list[str] = None,
+                                  extra_ops: list[str] = None) -> re.Pattern:
+    """SQL call where 1st arg is a bare local variable, not a string literal.
+
+    Example::
+
+        if (cond) {
+            sqlId = NAMESPACE + ".findX";
+        } else {
+            sqlId = NAMESPACE + ".findY";
+        }
+        return sqlSession.selectList(sqlId, param);
+
+    여기서 ``sqlSession.selectList(sqlId, param)`` 의 첫 인자가 변수
+    참조라 ``_SQL_CALL_VAR_RE`` (var + "suffix" 직접 concat) 도 못 잡고
+    ``_SQL_CALL_RE`` (literal "ns.id") 도 못 잡음. 이 regex 가 그
+    "변수 참조" 형태를 별도로 감지 → caller (``_collect_body_sql_calls``)
+    가 method body 를 거슬러 올라가 ``sqlId = NAMESPACE + "..."`` 같은
+    assignment 들을 모두 찾아 모든 후보 sqlid 를 enumerate.
+
+    제약:
+    - 변수명은 ``[A-Za-z_]\\w*`` (literal 숫자나 string 시작 회피)
+    - 변수 직후 ``,`` 또는 ``)`` (method call ``getId()`` 같은 건 제외)
+    - 단, 메서드 파라미터로 들어온 변수도 똑같이 매칭됨 → assignment
+      못 찾으면 caller 에서 skip
+    """
+    receivers = _DEFAULT_SQL_RECEIVERS
+    if extra_receivers:
+        extras = "|".join(re.escape(r) for r in extra_receivers)
+        receivers = f"{extras}|{receivers}"
+    ops = _DEFAULT_SQL_OPS
+    if extra_ops:
+        extras = "|".join(re.escape(o) for o in extra_ops)
+        ops = f"{extras}|{ops}"
+    return re.compile(
+        rf"""\b(?:{receivers})
+            (?:\.\w+)?
+            \.\s*(?P<op>{ops})
+            \s*\(\s*(?P<varname>[A-Za-z_]\w*)\s*[,)]
+        """,
+        re.VERBOSE,
+    )
+
+
 _SQL_CALL_RE = _build_sql_call_re()
 _SQL_CALL_VAR_RE = _build_sql_call_var_re()
 _SQL_CALL_TERNARY_RE = _build_sql_call_ternary_re()
+_SQL_CALL_LOCALVAR_RE = _build_sql_call_localvar_re()
 
 
 # Field types that indicate the field is a SQL session — used by parser
@@ -1945,7 +1990,113 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None,
                 "sql_id": sql_id,
                 "resolved_from": f"var:{var}:ternary",
             })
+
+    # Local variable form: ``sqlSession.update(sqlId, param)`` where
+    # ``sqlId`` 가 같은 method body 안에서 ``sqlId = NAMESPACE + "x"``
+    # 또는 ``sqlId = "lit.id"`` 같이 사전 할당된 경우. 모든 가능 값
+    # (분기 분의 값들) 을 enumerate.
+    sql_localvar_re = sql_call_re_localvar(sql_call_re)
+    for m in sql_localvar_re.finditer(body):
+        op = m.group("op")
+        varname = m.group("varname")
+        # 같은 명에 대해 이미 다른 매처가 잡았으면 (예: "literal" 도 매치)
+        # skip — 여기는 PURE 식별자 케이스만
+        if not varname or varname[0] not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ_":
+            continue
+        # method body 의 모든 ``varname = RHS;`` 또는
+        # ``[type] varname = RHS;`` assignment 검색.
+        assign_re = re.compile(
+            rf"\b{re.escape(varname)}\s*=\s*(?P<rhs>[^;]+);"
+        )
+        for am in assign_re.finditer(body):
+            # 자기자신 (SQL call line) 은 우변이 ``sqlSession.x(...)`` 형태라
+            # ``+`` / ``"`` / 변수 모두 없으므로 자연스럽게 skip 됨.
+            rhs = am.group("rhs").strip()
+            for cand in _enumerate_sqlids_from_rhs(rhs, ns_constants):
+                sqlid = cand
+                namespace, _, sql_id = sqlid.rpartition(".")
+                if not namespace:
+                    continue
+                key = (op, sqlid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({
+                    "op": op,
+                    "sqlid": sqlid,
+                    "namespace": namespace,
+                    "sql_id": sql_id,
+                    "resolved_from": f"localvar:{varname}",
+                    "offset": m.start(),
+                })
     return results
+
+
+def sql_call_re_localvar(default_call_re: re.Pattern) -> re.Pattern:
+    """현재 module-level ``_SQL_CALL_LOCALVAR_RE`` 가 default 면 그대로,
+    parse_java_file 의 per-file 변형 호출에서는 동일 receiver 확장이
+    적용된 localvar regex 가 필요 — 호출자가 inject 하는 sql_call_re
+    의 receiver / op 부분을 추출해 같은 set 으로 빌드한다.
+
+    간단 구현: default 인 경우 module-level 사용. per-file 인 경우는
+    factory 한 번 더 호출. ``_collect_body_sql_calls`` 가 sql_call_re
+    파라미터를 통해 재컴파일된 패턴을 받았다면, 동일 extras 로
+    localvar regex 도 재컴파일해야 함 — 그런데 extras 정보가 regex
+    객체 자체엔 안 남아 있어 default localvar 를 fallback. per-file
+    receiver 확장은 SQL_CALL_RE 의 literal/var/ternary 에는 적용되고,
+    localvar 에는 default receiver 만 적용 — 일반적으로 sqlSession
+    같은 표준 receiver 가 localvar 호출 측에 쓰임.
+    """
+    return _SQL_CALL_LOCALVAR_RE
+
+
+def _enumerate_sqlids_from_rhs(rhs: str, ns_constants: dict) -> list[str]:
+    """``sqlId = RHS;`` 의 RHS 를 보고 후보 sqlid 들을 반환.
+
+    지원하는 RHS 패턴:
+      - ``"ns.id"``                        — 리터럴
+      - ``NAMESPACE + "suffix"``           — 변수 prefix + 리터럴
+      - ``NAMESPACE + (cond ? "a" : "b")``  — ternary 양 분기
+      - ``"prefix" + variable``            — 미지원 (nameless suffix)
+
+    ``ns_constants`` 가 ``NAMESPACE`` 를 모르면 ``var + "..."`` 형태는 skip.
+    """
+    out: list[str] = []
+    rhs = rhs.strip()
+
+    # Pattern 1: pure literal "ns.id"
+    m = re.match(r'^"([^"]+)"\s*$', rhs)
+    if m:
+        sqlid = m.group(1)
+        if "." in sqlid:
+            out.append(sqlid)
+        return out
+
+    # Pattern 2: NAMESPACE + (cond ? "a" : "b")
+    m = re.match(
+        r'^(?P<var>\w+)\s*\+\s*\((?P<cond>.+?)\?\s*'
+        r'"(?P<a>[^"]+)"\s*:\s*"(?P<b>[^"]+)"\s*\)\s*$',
+        rhs, re.DOTALL,
+    )
+    if m:
+        prefix = ns_constants.get(m.group("var"), "")
+        if prefix:
+            for suffix in (m.group("a"), m.group("b")):
+                if not prefix.endswith(".") and not suffix.startswith("."):
+                    continue
+                out.append(prefix + suffix)
+        return out
+
+    # Pattern 3: NAMESPACE + "suffix"
+    m = re.match(r'^(?P<var>\w+)\s*\+\s*"(?P<suffix>[^"]+)"\s*$', rhs)
+    if m:
+        prefix = ns_constants.get(m.group("var"), "")
+        suffix = m.group("suffix")
+        if prefix and (prefix.endswith(".") or suffix.startswith(".")):
+            out.append(prefix + suffix)
+        return out
+
+    return out
 
 
 def _collect_body_field_calls(body: str) -> list[dict]:
