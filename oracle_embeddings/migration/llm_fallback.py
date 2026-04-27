@@ -292,17 +292,103 @@ def _format_column_target(cm: ColumnMapping) -> str:
 
 
 def _extract_json_block(text: str) -> str:
-    """Pull the JSON payload out of the LLM response, tolerating ```json
-    fences and surrounding prose."""
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if fence:
-        return fence.group(1).strip()
-    # Fallback: first { to last }
-    l = text.find("{")
-    r = text.rfind("}")
-    if l >= 0 and r > l:
-        return text[l:r + 1]
-    return text
+    """Pull the JSON payload out of an LLM response.
+
+    Tries in order, preferring the most specific match:
+
+    1. ` ```json ... ``` ` fenced block.
+    2. Generic ` ``` ... ``` ` fenced block (body must look like JSON).
+    3. String-aware brace counter — walks the text searching for the first
+       balanced ``{...}`` block that *also* parses as JSON. Skips braces
+       inside string literals (with ``\"`` / ``\\`` escape handling), so
+       ``{"sql": "x IN ({1,2})"}`` stays intact. If a balanced block fails
+       to parse (e.g. the LLM wrote ``{x}`` in prose before the real JSON),
+       it advances to the next ``{`` and retries.
+
+    The previous ``find("{")`` / ``rfind("}")`` heuristic broke whenever the
+    LLM emitted prose containing ``{x}``-style placeholders, or any extra
+    ``}`` after the JSON — the substring would span both and ``json.loads``
+    blew up. Returns the original ``text`` as a last resort so
+    :func:`json.loads` reports a faithful error rather than silently
+    swallowing the response.
+    """
+    # ``` json ``` / ``` ``` fenced block — prefer explicit JSON marker
+    for pattern in (
+        r"```json\s*([\s\S]*?)```",
+        r"```\s*([\s\S]*?)```",
+    ):
+        m = re.search(pattern, text)
+        if not m:
+            continue
+        candidate = m.group(1).strip()
+        if not candidate or candidate[0] not in "{[":
+            continue
+        extracted = _walk_for_json(candidate)
+        if extracted:
+            return extracted
+
+    extracted = _walk_for_json(text)
+    return extracted or text
+
+
+def _walk_for_json(text: str) -> str:
+    """Return the first balanced ``{...}`` block in ``text`` that parses as
+    JSON. If a balanced span fails to parse, advance to the next ``{`` and
+    retry — handles prose like ``... {x} ... {real json}``.
+    """
+    search = 0
+    n = len(text)
+    while search < n:
+        block, end = _balance_braces(text, search)
+        if not block:
+            return ""
+        try:
+            json.loads(block)
+            return block
+        except json.JSONDecodeError:
+            next_open = text.find("{", search + 1)
+            if next_open < 0:
+                return ""
+            search = next_open
+    return ""
+
+
+def _balance_braces(text: str, search_from: int = 0) -> tuple:
+    """Return ``(block, end_index)`` for the first balanced ``{...}`` starting
+    at the first ``{`` at or after ``search_from``. ``end_index`` is the
+    position one past the closing brace.
+
+    String-literal aware — braces inside ``"..."`` (with ``\\`` escape) do
+    not affect depth. Returns ``("", -1)`` if no balanced block is found.
+    """
+    start = text.find("{", search_from)
+    if start < 0:
+        return "", -1
+
+    depth = 0
+    in_string = False
+    i = start
+    n = len(text)
+    while i < n:
+        c = text[i]
+        if in_string:
+            if c == "\\" and i + 1 < n:
+                i += 2  # skip the escaped char (handles \" and \\)
+                continue
+            if c == '"':
+                in_string = False
+            i += 1
+            continue
+        if c == '"':
+            in_string = True
+        elif c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1], i + 1
+        i += 1
+    return "", -1
 
 
 def _coerce_llm_result(
