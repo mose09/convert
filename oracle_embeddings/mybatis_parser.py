@@ -6,17 +6,62 @@ import xml.etree.ElementTree as ET
 logger = logging.getLogger(__name__)
 
 
+# Optional file-content cache. analyze-legacy 의 frontend 스캔 단계는 같은
+# 파일을 router/import-graph/api-scanner/trigger 등 4~5 단계가 각각 다시
+# 읽어서 디스크 I/O 가 dominant 비용. ``file_cache_scope`` 컨텍스트 안에서
+# 만 켜고 끝나면 즉시 비워서 메모리 폭증 방지.
+_FILE_CONTENT_CACHE: dict[tuple[str, "int | None"], str] = {}
+_CACHE_ENABLED = False
+
+
+def use_file_cache(enable: bool) -> None:
+    """Toggle the in-memory file cache. Disabling clears it."""
+    global _CACHE_ENABLED
+    _CACHE_ENABLED = enable
+    if not enable:
+        _FILE_CONTENT_CACHE.clear()
+
+
+class file_cache_scope:
+    """Context manager to enable cache during a phase.
+
+    Usage::
+
+        with file_cache_scope():
+            build_frontend_url_map_multi(...)
+            # downstream calls share file reads
+    """
+
+    def __enter__(self):
+        use_file_cache(True)
+        return self
+
+    def __exit__(self, *exc):
+        use_file_cache(False)
+        return False
+
+
 def _read_file_safe(filepath: str, limit: int = None) -> str:
-    """Read a file trying multiple encodings."""
+    """Read a file trying multiple encodings, optionally cached."""
+    if _CACHE_ENABLED:
+        key = (filepath, limit)
+        cached = _FILE_CONTENT_CACHE.get(key)
+        if cached is not None:
+            return cached
     for encoding in ("utf-8", "euc-kr", "cp949", "latin-1"):
         try:
             with open(filepath, "r", encoding=encoding) as f:
-                return f.read(limit) if limit else f.read()
+                content = f.read(limit) if limit else f.read()
+            break
         except (UnicodeDecodeError, UnicodeError):
             continue
-    # Final fallback
-    with open(filepath, "r", encoding="utf-8", errors="replace") as f:
-        return f.read(limit) if limit else f.read()
+    else:
+        # Final fallback
+        with open(filepath, "r", encoding="utf-8", errors="replace") as f:
+            content = f.read(limit) if limit else f.read()
+    if _CACHE_ENABLED:
+        _FILE_CONTENT_CACHE[(filepath, limit)] = content
+    return content
 
 
 # Directories we always skip while scanning for mapper XML. We only prune

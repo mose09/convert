@@ -1847,6 +1847,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     single_api_index: dict[str, list[str]] = {}
     single_triggers: dict[str, list[str]] = {}
     detected_frontend = "unknown"
+    # frontend 스캔 단계는 같은 파일을 router/import-graph/api-scanner/
+    # trigger 등 4~5개 path 가 각각 다시 읽어서 디스크 I/O 가 dominant.
+    # scoped cache 를 켜고 단계 종료 시 즉시 비워 메모리 폭증 방지.
+    from .mybatis_parser import use_file_cache as _use_fc
+    _use_fc(True)
     if precomputed_frontend:
         # Batch mode hoists this work above the per-backend loop.
         react_url_map = precomputed_frontend.get("react_url_map") or {}
@@ -1987,6 +1992,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                       f"via {len(merged_graph)} files' imports ({_elapsed:.1f}s)")
         except Exception as e:
             logger.warning("Menu scope resolver skipped: %s", e)
+
+    # frontend scan 끝났으니 cache 즉시 해제 (메모리 회수).
+    _use_fc(False)
 
     # Menu URL index — preserve raw_url alongside the normalized key so
     # the app_key extractor can inspect the pre-normalization form later.
@@ -2396,6 +2404,11 @@ def analyze_legacy_batch(backends_root: str,
     # also lets menu-driven narrowing apply to the whole batch.
     precomputed_frontend: dict | None = None
     if frontend_dir:
+        # Batch 모드 frontend precompute 도 scoped cache 활용 — 같은
+        # frontend tree 가 multi-bucket 스캐너 / api scanner / trigger
+        # extractor 등 여러 단계가 다 같은 파일을 읽는다. 끝에서 즉시 해제.
+        from .mybatis_parser import use_file_cache as _use_fc
+        _use_fc(True)
         from .legacy_frontend import (
             build_frontend_url_map, build_frontend_url_map_multi,
             build_frontend_api_index,
@@ -2444,6 +2457,9 @@ def analyze_legacy_batch(backends_root: str,
         print(f"  Frontend routes:         {len(react_map)}")
         print(f"  Frontend API calls:      {total_api} across {len(api_fe) or (1 if single_api else 0)} buckets")
         print(f"  Button triggers:         {total_trig}")
+        # frontend precompute 끝났으니 cache 즉시 해제. 백엔드 루프는
+        # frontend 파일을 다시 읽지 않으므로 메모리 회수 안전.
+        _use_fc(False)
 
     all_rows = []
     all_unmatched = []
