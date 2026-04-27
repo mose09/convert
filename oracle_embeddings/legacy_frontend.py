@@ -25,6 +25,8 @@ import logging
 import os
 import re
 
+from .mybatis_parser import _read_file_safe
+
 logger = logging.getLogger(__name__)
 
 
@@ -295,6 +297,41 @@ def _enumerate_buckets(frontends_root: str) -> list[tuple[str, str]]:
     return out
 
 
+# Cheap pre-pass regex: ``<Route path="/apps/<slug>"`` first segment.
+# folder 이름과 menu URL slug 가 다른 케이스에서 bucket 을 살리기 위한
+# alias 추출 용. 정확도보다 속도 우선 — index.* 파일만 스캔.
+_QUICK_ROUTE_PATH_RE = re.compile(
+    r"""path\s*=\s*["'](/apps/([^/"']+))""",
+    re.IGNORECASE,
+)
+
+
+def _quick_bucket_route_slugs(bucket_path: str) -> set[str]:
+    """Return ``/apps/<slug>`` slugs declared in ``index.{js,ts,jsx,tsx}``
+    files anywhere under ``bucket_path``. Used as alias source so a
+    folder whose internal name differs from the public menu URL slug
+    still survives ``allowed_apps`` filtering.
+    """
+    aliases: set[str] = set()
+    if not bucket_path or not os.path.isdir(bucket_path):
+        return aliases
+    for root, dirs, files in os.walk(bucket_path):
+        dirs[:] = [d for d in dirs
+                   if not d.startswith(".") and d != "node_modules"]
+        for fn in files:
+            if fn not in ("index.js", "index.jsx", "index.ts", "index.tsx"):
+                continue
+            try:
+                content = _read_file_safe(os.path.join(root, fn))
+            except Exception:
+                continue
+            for m in _QUICK_ROUTE_PATH_RE.finditer(content):
+                slug = (m.group(2) or "").lower()
+                if slug:
+                    aliases.add(slug)
+    return aliases
+
+
 def build_frontend_url_map_multi(frontends_root: str, framework: str | None = None,
                                   strip_patterns=None,
                                   route_prefix: str | None = None,
@@ -333,6 +370,29 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
 
     allowed_lower = {a.lower() for a in allowed_apps} if allowed_apps else None
+
+    # Pre-pass: allowed_apps 가 설정된 (보통 ``--menu-only``) 경우 folder
+    # 이름이 menu URL slug 과 달라도 그 bucket 의 ``index.{js,ts,jsx,tsx}``
+    # 안 ``<Route path="/apps/<slug>">`` 선언이 menu URL 과 매칭되면
+    # bucket 을 살린다. 사용자 사례 (folder ``hypm_workOrderMng`` + menu
+    # URL ``/apps/gipms-utl-workorder``) 핵심 해결.
+    if allowed_lower is not None:
+        expanded = set(allowed_lower)
+        for entry, child in buckets:
+            entry_lower = entry.lower()
+            if entry_lower in expanded:
+                continue  # folder 이름으로 이미 통과
+            aliases = _quick_bucket_route_slugs(child)
+            if aliases & allowed_lower:
+                expanded.add(entry_lower)
+        added = expanded - allowed_lower
+        if added:
+            logger.info("Frontend multi-repo: allowed_apps expanded by %d bucket(s) "
+                        "via Route-path slug alias: %s",
+                        len(added),
+                        ", ".join(sorted(added)[:5])
+                        + (" ..." if len(added) > 5 else ""))
+        allowed_lower = expanded
 
     for entry, child in buckets:
         entry_lower = entry.lower()
