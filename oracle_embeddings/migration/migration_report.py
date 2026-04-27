@@ -317,23 +317,25 @@ def _write_coverage(
     for cell in ws[1]:
         cell.font = _HEADER_FONT
 
-    # Tally hits per (kind, as_is, to_be)
-    hit_count: Counter = Counter()
-    hit_files: Dict[Tuple[str, str, str], set] = {}
+    # Tally hits per (kind, as_is) — pre-grouped over to_be so coverage
+    # lookups below are O(1). Earlier impl carried the to_be in the key and
+    # the lookup scanned every entry → O(n×m) for a mapping with n hits and
+    # m mapping rows; pre-grouping here is O(n+m) total.
+    grouped_count: Counter = Counter()
+    grouped_files: Dict[Tuple[str, str], set] = {}
     for r in results:
         for c in r.changed_items:
-            key = (c.kind, c.as_is, c.to_be)
-            hit_count[key] += c.count
-            hit_files.setdefault(key, set()).add(str(r.xml_file))
+            key = (c.kind, c.as_is)
+            grouped_count[key] += c.count
+            grouped_files.setdefault(key, set()).add(str(r.xml_file))
 
     # Emit tables first, then columns — grouped by mapping entry
     for tm in mapping.tables:
         to_be_str = ",".join(tm.to_be_tables()) or "<dropped>"
         for as_is_name in tm.as_is_tables():
-            key = ("table", as_is_name.upper(), to_be_str.upper())
-            # to_be comparison is loose (uppercase concat) — check any matching
-            matched = _coverage_lookup(hit_count, hit_files, "table", as_is_name.upper())
-            count, files = matched
+            count, files = _coverage_lookup(
+                grouped_count, grouped_files, "table", as_is_name.upper()
+            )
             _append_coverage_row(ws, tm.type, as_is_name.upper(), to_be_str, count, len(files))
 
     for cm in mapping.columns:
@@ -347,7 +349,7 @@ def _write_coverage(
         for ref in cm.as_is_refs():
             as_is_disp = f"{ref.table}.{ref.column}"
             count, files = _coverage_lookup(
-                hit_count, hit_files, "column", as_is_disp.upper()
+                grouped_count, grouped_files, "column", as_is_disp.upper()
             )
             _append_coverage_row(ws, cm.kind, as_is_disp.upper(), to_be_disp, count, len(files))
 
@@ -357,18 +359,15 @@ def _write_coverage(
 
 
 def _coverage_lookup(
-    hit_count: Counter,
-    hit_files: Dict[Tuple[str, str, str], set],
+    grouped_count: Counter,
+    grouped_files: Dict[Tuple[str, str], set],
     kind: str,
     as_is_upper: str,
 ) -> Tuple[int, set]:
-    total = 0
-    files: set = set()
-    for (k, a, _t), c in hit_count.items():
-        if k == kind and a == as_is_upper:
-            total += c
-            files |= hit_files.get((k, a, _t), set())
-    return total, files
+    """O(1) lookup against pre-grouped hit tallies — see caller for the
+    grouping pass."""
+    key = (kind, as_is_upper)
+    return grouped_count.get(key, 0), grouped_files.get(key, set())
 
 
 def _append_coverage_row(
