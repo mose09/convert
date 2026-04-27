@@ -259,6 +259,7 @@ python main.py analyze-legacy \
 | Javadoc `{@link}`가 class brace로 오인 | `_strip_comments`가 offset 파괴 | offset-preserving strip |
 | XML 2560개 → 142개로 급감 | scan_mybatis_dir가 target/build/bin/out/dist 스킵 | skip 리스트 축소 |
 | 같은 mapper XML 이 namespace 인덱스에 두 번 등록 + statement 카운트 2배 부풀림 | `target/classes/`, `build/resources/main/` 등 Maven/Gradle 가 src/main/resources 를 그대로 복사해둔 빌드 산출물도 함께 스캔 | `_BUILD_OUTPUT_PATH_FRAGMENTS` + `_is_build_output` path-fragment 필터 — 디렉토리명 `target` 자체는 안 잘라서 monorepo 호환 유지 |
+| `SCHEMA1.TB_ORDER` 같은 owner-qualified 테이블명에서 `SCHEMA1` 만 테이블로 잘못 등록 + 실제 `TB_ORDER` 누락 | 테이블 추출 regex 가 `(\w+)` 라 `.` 앞쪽만 캡처 + `.TB_ORDER` 부분 무시 | 모든 FROM/JOIN/INSERT/UPDATE/DELETE/comma-FROM/JOIN-tail/main_table 추출 패턴을 `(?:\w+\.)*(\w+)` 로 통일 — 0~N개 owner prefix 허용 + 마지막 segment 만 캡처. `A.B.C` 3-part 도 `C` 만 추출. 테이블명만 인덱스에 등록되므로 schema/cross-ref 매칭 일관 유지 |
 | Nexcore endpoint 0개 | `@RequestMapping` 없이 `Abstract*BizController` 상속 | 상속 기반 Nexcore 감지 |
 | 메서드 필드만 있고 값이 비어있음 | `_METHOD_SIG_RE`가 `public @ResponseBody List` 매칭 실패 | inline annotation 허용 |
 | `--menu-only`가 시간 절약 안 됨 | 전체 분석 후 필터링 방식 | 체인 해석 자체 skip |

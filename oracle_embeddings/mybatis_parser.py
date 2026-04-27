@@ -641,8 +641,11 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
         if alias not in SQL_KEYWORDS:
             known_aliases.add(alias)
 
-    # Step 1b: FROM/JOIN table_name alias (optional AS)
-    table_alias_pattern = r'(?:FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?(\w+)'
+    # Step 1b: FROM/JOIN [owner.]table_name alias (optional AS)
+    # Owner-qualified 형태 (``SCHEMA1.TB_ORDER alias``) 도 잡도록
+    # ``(?:\w+\.)*`` 로 0~N 개 owner prefix 허용. 마지막 ``\w+`` 만
+    # 테이블명으로 캡처해서 인덱스/매칭이 owner 무관하게 작동.
+    table_alias_pattern = r'(?:FROM|JOIN)\s+(?:\w+\.)*(\w+)\s+(?:AS\s+)?(\w+)'
     for match in re.finditer(table_alias_pattern, sql):
         table, alias = match.groups()
         if alias.upper() not in SQL_KEYWORDS:
@@ -651,8 +654,8 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
             if table.upper() not in SQL_KEYWORDS and table.upper() not in known_aliases:
                 alias_map[alias.upper()] = table.upper()
 
-    # Step 1c: FROM/JOIN table_name (no alias)
-    no_alias_pattern = r'(?:FROM|JOIN)\s+(\w+)(?:\s*(?:WHERE|ON|,|\)|$))'
+    # Step 1c: FROM/JOIN [owner.]table_name (no alias)
+    no_alias_pattern = r'(?:FROM|JOIN)\s+(?:\w+\.)*(\w+)(?:\s*(?:WHERE|ON|,|\)|$))'
     for match in re.finditer(no_alias_pattern, sql):
         table = match.group(1).upper()
         if table not in SQL_KEYWORDS and table not in known_aliases:
@@ -805,8 +808,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
             if alias not in SQL_KEYWORDS:
                 aliases_in_stmt.add(alias)
 
-        # Table aliases: FROM TABLE t1
-        for match in re.finditer(r'(?:FROM|JOIN)\s+(\w+)\s+(?:AS\s+)?(\w+)', sql):
+        # Table aliases: FROM [owner.]TABLE t1
+        for match in re.finditer(r'(?:FROM|JOIN)\s+(?:\w+\.)*(\w+)\s+(?:AS\s+)?(\w+)', sql):
             table, alias = match.groups()
             if alias not in SQL_KEYWORDS:
                 aliases_in_stmt.add(alias)
@@ -827,7 +830,7 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         )
         _follow_alt = "|".join(_TABLE_END_KEYWORDS)
         for match in re.finditer(
-            rf'(?:FROM|JOIN)\s+(\w+)(?=\s*[,\)]|\s+(?:{_follow_alt})\b|\s*$)',
+            rf'(?:FROM|JOIN)\s+(?:\w+\.)*(\w+)(?=\s*[,\)]|\s+(?:{_follow_alt})\b|\s*$)',
             sql,
         ):
             table = match.group(1)
@@ -850,18 +853,18 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 return
             tables.add(name)
 
-        # INSERT INTO table
-        for m in re.finditer(r'INSERT\s+INTO\s+(\w+)', sql):
+        # INSERT INTO [owner.]table
+        for m in re.finditer(r'INSERT\s+INTO\s+(?:\w+\.)*(\w+)', sql):
             _add_table(m.group(1))
 
-        # UPDATE table — use finditer so both the merge-UPDATE-SET false
-        # positive is filtered AND real multi-UPDATE dynamic SQL still
-        # picks up every target.
-        for m in re.finditer(r'UPDATE\s+(\w+)', sql):
+        # UPDATE [owner.]table — use finditer so both the merge-UPDATE-SET
+        # false positive is filtered AND real multi-UPDATE dynamic SQL
+        # still picks up every target.
+        for m in re.finditer(r'UPDATE\s+(?:\w+\.)*(\w+)', sql):
             _add_table(m.group(1))
 
-        # DELETE [FROM] table — Oracle 은 FROM 을 생략 가능하므로 둘 다 허용
-        for m in re.finditer(r'DELETE\s+(?:FROM\s+)?(\w+)', sql):
+        # DELETE [FROM] [owner.]table — Oracle 은 FROM 을 생략 가능하므로 둘 다 허용
+        for m in re.finditer(r'DELETE\s+(?:FROM\s+)?(?:\w+\.)*(\w+)', sql):
             _add_table(m.group(1))
 
         # Oracle MERGE: target is ``MERGE INTO <tbl> [alias]``,
@@ -886,7 +889,10 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         # dropped C / D at the inner level.
         comma_tables = []  # preserve order; idx 0 is main, rest are joins
         for strict_from in re.finditer(
-            r'\bFROM\s+(\w+)(?:\s+(?:AS\s+)?(\w+))?((?:\s*,\s*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
+            # ``[owner.]?TABLE alias?, [owner.]?T2 alias?, ...`` 까지 통째로 매치.
+            # comma-tail 의 각 entry 도 ``(?:\w+\.)*\w+`` 로 owner prefix 허용.
+            r'\bFROM\s+(?:\w+\.)*(\w+)(?:\s+(?:AS\s+)?(\w+))?'
+            r'((?:\s*,\s*(?:\w+\.)*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
             sql, re.IGNORECASE,
         ):
             first_table = strict_from.group(1)
@@ -898,8 +904,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 tables.add(first_table)
                 if first_alias and first_alias.upper() not in SQL_KEYWORDS:
                     aliases_in_stmt.add(first_alias)
-            # remaining tables in comma list
-            for match in re.finditer(r',\s*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest_clause):
+            # remaining tables in comma list ([owner.]?TABLE alias?)
+            for match in re.finditer(r',\s*(?:\w+\.)*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest_clause):
                 tbl = match.group(1)
                 alias = match.group(2)
                 if tbl.upper() in SQL_KEYWORDS:
@@ -934,7 +940,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
                 continue  # malformed — skip
             tail = sql[i:]
             tm = re.match(
-                r'\s*(?:AS\s+)?(?P<sq_alias>\w+)(?P<rest>(?:\s*,\s*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
+                r'\s*(?:AS\s+)?(?P<sq_alias>\w+)'
+                r'(?P<rest>(?:\s*,\s*(?:\w+\.)*\w+(?:\s+(?:AS\s+)?\w+)?)+)',
                 tail, re.IGNORECASE,
             )
             if not tm:
@@ -942,7 +949,7 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
             # subquery alias is already collected by the subquery-alias
             # pass above — only need to process the comma-tail.
             rest = tm.group("rest") or ""
-            for inner in re.finditer(r',\s*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest):
+            for inner in re.finditer(r',\s*(?:\w+\.)*(\w+)(?:\s+(?:AS\s+)?(\w+))?', rest):
                 tbl = inner.group(1)
                 alias = inner.group(2)
                 if tbl.upper() in SQL_KEYWORDS:
@@ -959,8 +966,8 @@ def extract_table_usage(statements: list[dict]) -> dict[str, dict]:
         main_table = _extract_main_table(sql, aliases_in_stmt)
         join_tables = set()
 
-        # ANSI JOIN: JOIN TABLE
-        for match in re.finditer(r'JOIN\s+(\w+)', sql):
+        # ANSI JOIN: JOIN [owner.]TABLE
+        for match in re.finditer(r'JOIN\s+(?:\w+\.)*(\w+)', sql):
             jt = match.group(1)
             if jt not in SQL_KEYWORDS and jt not in aliases_in_stmt:
                 join_tables.add(jt)
@@ -1002,27 +1009,27 @@ def _extract_main_table(sql: str, aliases: set) -> str:
     # UPDATE main_table ...
     # DELETE FROM main_table ...
 
-    # INSERT INTO
-    m = re.search(r'INSERT\s+INTO\s+(\w+)', sql)
+    # INSERT INTO [owner.]
+    m = re.search(r'INSERT\s+INTO\s+(?:\w+\.)*(\w+)', sql)
     if m and m.group(1) not in SQL_KEYWORDS:
         return m.group(1)
 
-    # UPDATE
-    m = re.search(r'UPDATE\s+(\w+)', sql)
+    # UPDATE [owner.]
+    m = re.search(r'UPDATE\s+(?:\w+\.)*(\w+)', sql)
     if m and m.group(1) not in SQL_KEYWORDS:
         return m.group(1)
 
-    # DELETE FROM
-    m = re.search(r'DELETE\s+FROM\s+(\w+)', sql)
+    # DELETE FROM [owner.]
+    m = re.search(r'DELETE\s+FROM\s+(?:\w+\.)*(\w+)', sql)
     if m and m.group(1) not in SQL_KEYWORDS:
         return m.group(1)
 
-    # SELECT ... FROM table (first FROM, not inside subquery)
+    # SELECT ... FROM [owner.]table (first FROM, not inside subquery)
     # Remove paren content to skip FROMs inside subqueries
     cleaned = sql
     while re.search(r'\([^()]*\)', cleaned):
         cleaned = re.sub(r'\([^()]*\)', ' ', cleaned)
-    m = re.search(r'\bFROM\s+(\w+)', cleaned)
+    m = re.search(r'\bFROM\s+(?:\w+\.)*(\w+)', cleaned)
     if m:
         table = m.group(1)
         if table not in SQL_KEYWORDS and table not in aliases:
