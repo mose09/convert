@@ -14,13 +14,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
+import sqlglot
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
+from sqlglot import exp
 
 from ..md_parser import parse_schema_md
 from ..mybatis_parser import extract_table_usage, parse_all_mappers
 from .mapping_loader import load_mapping_collect
 from .mapping_model import ColumnMapping, LoaderError, Mapping
+from .sql_rewriter import mask_mybatis_placeholders
 
 logger = logging.getLogger(__name__)
 
@@ -249,6 +252,35 @@ def _collect_schema_mismatches(
     return out
 
 
+def _ast_column_set(sql: str) -> Optional[Set[str]]:
+    """Parse ``sql`` once and return the upper-cased set of every column name
+    referenced anywhere in the AST. Returns ``None`` on parse failure so the
+    caller can fall back to regex-on-raw-SQL.
+
+    Why this exists: the prior implementation ran one ``\\bCOL\\b`` regex
+    per mapped column on the raw uppercased SQL — accurate enough but
+    repeated regex searches add up on large mappings, and regex matches
+    column names inside string literals (e.g. ``WHERE NAME = 'CUST_NM'``
+    falsely counted as a hit). One AST walk is faster on most stmts and
+    silently skips literal/comment regions.
+    """
+    if not sql or not sql.strip():
+        return set()
+    masked, _ = mask_mybatis_placeholders(sql)
+    try:
+        tree = sqlglot.parse_one(masked, dialect="oracle")
+    except Exception:
+        return None
+    if tree is None:
+        return None
+    cols: Set[str] = set()
+    for node in tree.find_all(exp.Column):
+        name = (node.name or "").upper()
+        if name:
+            cols.add(name)
+    return cols
+
+
 def _scan_statements(
     statements: List[dict],
     mapping: Mapping,
@@ -273,7 +305,8 @@ def _scan_statements(
     for (t, c), cm in mapping.column_by_as_is.items():
         cols_by_table.setdefault(t, []).append((c, cm))
 
-    # Cache compiled column-name regexes (word boundary, upper)
+    # Per-column regex used as fallback when sqlglot can't parse the stmt
+    # (legacy Oracle syntax / dynamic-tag remnants). Cached to avoid recompile.
     col_regex: Dict[str, re.Pattern] = {}
 
     def _get_col_re(col: str) -> re.Pattern:
@@ -282,12 +315,21 @@ def _scan_statements(
         return col_regex[col]
 
     for stmt in statements:
-        sql_upper = stmt["sql"].upper()
+        sql = stmt["sql"]
         stype = stmt.get("type", "?")
         per_type[stype] = per_type.get(stype, 0) + 1
 
         per_usage = extract_table_usage([stmt])
         used_tables_upper = {k.upper() for k in per_usage.keys()}
+
+        # Single sqlglot parse per stmt → O(1) hash lookup for every mapped
+        # column instead of one ``re.search`` over the whole SQL per column.
+        # Side effect: column references inside string literals / comments
+        # are correctly excluded (regex on raw SQL would false-positive on
+        # ``WHERE NAME = 'CUST_NM'``). Returns ``None`` on parse failure so
+        # callers fall back to the regex path below.
+        ast_cols = _ast_column_set(sql)
+        sql_upper: Optional[str] = None  # lazy — only built on regex fallback
 
         tables_hit: List[str] = []
         cols_hit: List[str] = []
@@ -300,7 +342,13 @@ def _scan_statements(
                 kinds_hit.add(tm.type)
 
             for col, cm in cols_by_table.get(tu, []):
-                if _get_col_re(col).search(sql_upper):
+                if ast_cols is not None:
+                    seen = col in ast_cols
+                else:
+                    if sql_upper is None:
+                        sql_upper = sql.upper()
+                    seen = _get_col_re(col).search(sql_upper) is not None
+                if seen:
                     cols_hit.append(f"{tu}.{col}")
                     kinds_hit.add(cm.kind)
 
