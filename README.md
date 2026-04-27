@@ -527,7 +527,7 @@ python main.py analyze-legacy `
 | `--menu-md` / `--menu-xlsx` / `--menu-table` | 메뉴 소스 (우선순위: skip > md > xlsx > DB) |
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
 | `--frontend-framework` | `auto` / `react` / `polymer` 강제 지정 |
-| `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 2) |
+| `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 3) |
 | **`--extract-biz-logic`** | **비즈니스 로직 LLM 추출 on/off (기본 off, 회귀 없음)** |
 | `--biz-scope {backend,frontend,both}` | 추출 범위 (기본 `both`) |
 | `--biz-max-methods N` | 백엔드 메서드 LLM 호출 cap (기본 500) |
@@ -722,7 +722,7 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
   - **커스텀 RFC**: `siteService.execute("IF-GERP-180", param, ZMM_FUNC.class)`
     같은 서비스 래퍼 패턴. `patterns.yaml` 의 `rfc_call_methods: [execute, send]`
     로 활성화. 인터페이스 ID + SAP 함수명(.class) 모두 캡처
-  - 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 2)
+  - 서비스 → 서비스 체인의 **트랜지티브 수집** (`--rfc-depth`, 기본 3 — 3-hop service-of-service-of-service 까지 SQL/RFC/테이블 추적)
 - **SQL namespace 변수**: `sqlSession.selectList(namespace + "findList", param)`
   에서 `String namespace = "com.example."` 상수를 2-pass 로 해석하여
   `com.example.findList` 로 결합

@@ -1559,7 +1559,7 @@ def cmd_analyze_legacy(args):
     print("\n=== Step 2: Parsing sources ===")
     rfc_depth = args.rfc_depth
     if rfc_depth is None:
-        rfc_depth = config.get("legacy", {}).get("rfc_depth", 2)
+        rfc_depth = config.get("legacy", {}).get("rfc_depth", 3)
 
     frontend_framework = args.frontend_framework
     if frontend_framework == "auto":
@@ -1834,7 +1834,11 @@ def main():
                                 "discover-patterns 로 생성하거나 수동 작성. 지정하면 "
                                 "파서/분석기가 해당 패턴으로 커스텀 분석 수행.")
     al_parser.add_argument("--rfc-depth", type=int, default=None,
-                           help="Service-of-service walk depth for RFC collection (default 2)")
+                           help="Service-of-service walk depth (default 3). "
+                                "Controller → Service A → Service B → Service C 같은 "
+                                "다중 hop chain 의 SQL/RFC/테이블까지 추적. "
+                                "self-call (this.X) 은 depth 증가 안 함. 너무 작게 "
+                                "잡으면 깊은 helper 체인의 SQL 누락 위험.")
     al_parser.add_argument("--terms-md",
                            help="용어사전 .md 경로 (옵션). Programs 시트의 "
                                 "Columns 컬럼에 컬럼명 뒤에 [한글] 한글 뜻을 병기할 때 "

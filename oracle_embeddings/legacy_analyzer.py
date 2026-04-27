@@ -971,7 +971,7 @@ def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set,
 
 def _resolve_endpoint_chain(endpoint: dict, controller: dict,
                             indexes: dict, mybatis_idx: dict,
-                            rfc_depth: int = 2) -> dict:
+                            rfc_depth: int = 3) -> dict:
     """Walk the controller method body and resolve the call graph.
 
     Returns a dict with:
@@ -1242,7 +1242,7 @@ def _derive_column_crud(sql_ids, mybatis_idx: dict) -> dict[str, dict[str, set]]
 
 def trace_chain_events(endpoint: dict, controller: dict,
                          indexes: dict, mybatis_idx: dict,
-                         rfc_depth: int = 2) -> list[dict]:
+                         rfc_depth: int = 3) -> list[dict]:
     """Walk the endpoint chain and return per-call events in source order.
 
     Mermaid sequence diagram (Phase A) 용. ``_resolve_endpoint_chain`` 과
@@ -1524,7 +1524,7 @@ def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
 def _build_row(endpoint: dict, controller: dict, indexes: dict,
                mybatis_idx: dict, menu_entry: dict | None,
                react_file: str | None, base_dirs: dict,
-               rfc_depth: int = 2,
+               rfc_depth: int = 3,
                menu_raw_url: str = "",
                react_entry: dict | None = None,
                frontend_trigger: str = "",
@@ -1637,7 +1637,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
 
 def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
-                   rfc_depth: int = 2,
+                   rfc_depth: int = 3,
                    frontend_framework: str | None = None,
                    patterns: dict | None = None,
                    frontends_root: bool = False,
@@ -2360,7 +2360,7 @@ def discover_backend_projects(backends_root: str,
 def analyze_legacy_batch(backends_root: str,
                         frontend_dir: str | None = None,
                         menu_rows: list[dict] | None = None,
-                        rfc_depth: int = 2,
+                        rfc_depth: int = 3,
                         include_all: bool = False,
                         frontend_framework: str | None = None,
                         patterns: dict | None = None,
