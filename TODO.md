@@ -279,12 +279,25 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
+### 진행 중: E1 — xml_rewriter literal/comment/OGNL 보호
+
+`xml_rewriter._apply_subs` 가 word-boundary regex 를 element text/tail 전체에
+무차별 적용 → SQL 문자열 리터럴 (`WHERE NAME = 'CUST_NM'`) / 코멘트 / MyBatis
+OGNL placeholder 안의 토큰까지 rename 됨 → 운영 데이터 손상 가능. 운영 도입
+전 차단급.
+
+- [x] `_apply_subs_outside_literals(text, subs)` state machine 추가 — single-quote
+      리터럴 (Oracle `''` escape) / `--` 라인 코멘트 / `/* */` 블록 코멘트 /
+      MyBatis `#{...}` `${...}` OGNL 영역은 skip, 코드 영역에만 substitution
+- [x] `_apply_subs_to_tree` 가 신규 헬퍼 사용
+- [x] 회귀 검증 — unit 12/12 + end-to-end rewrite_xml 11/11 (리터럴/코멘트/OGNL/
+      escaped quote/unterminated literal-comment 안전 fallback/word-boundary
+      substring 보호 모두 통과)
+- [ ] PR squash-merge
+
 ### 대기: 코드 리뷰 미해결 항목
 
 🟡 **엣지 케이스** (실환경 드물지만 잠재 버그):
-
-- [ ] **E1**. `xml_rewriter.py` 텍스트 치환이 SQL 문자열 리터럴 내부에도
-      적용 → sqlglot token 단위로 쪼갠 뒤 identifier 토큰만 치환
 - [ ] **E2**. `sql_rewriter.mask_mybatis_placeholders` 의 `MBP_N` prefix
       충돌 위험 → 더 희박한 `__MBP_{n}__` 로 교체
 - [ ] **E3**. `llm_fallback._extract_json_block` 의 brace-in-prose fragile
