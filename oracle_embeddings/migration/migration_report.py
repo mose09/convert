@@ -388,7 +388,10 @@ def _append_coverage_row(
 def _status_fill(r: RewriteResult) -> Optional[PatternFill]:
     if r.status in ("UNRESOLVED", "PARSE_FAIL"):
         return _ERROR_FILL
-    if r.stage_b_pass is False:
+    # Validation failures override AUTO/AUTO_WARN — without this, a row that
+    # passed DSL rewrite (status=AUTO) but failed Stage A schema lookup would
+    # show no fill, even though Validation Errors sheet flags it red.
+    if r.stage_a_pass is False or r.stage_b_pass is False:
         return _ERROR_FILL
     if r.status in ("AUTO_WARN", "NEEDS_LLM"):
         return _WARN_FILL

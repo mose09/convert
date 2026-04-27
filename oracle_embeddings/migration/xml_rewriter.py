@@ -188,18 +188,31 @@ def annotate_statements(
         if rr is None:
             continue
 
-        # Build comment text(s) and insert at the top of the element (after
-        # the text-node, before the first child).
+        # Build comment text(s) and place them BEFORE the SQL body text,
+        # matching docs/migration/spec.md §12.2: all metadata/AS-IS/SUGGESTED
+        # comments come first, then the body SQL, then any dynamic-tag
+        # children. lxml's ``elem.insert(0, comment)`` would put the comment
+        # AFTER ``elem.text`` (the SQL body) — so we explicitly relocate the
+        # body text onto the last comment's ``.tail``.
         blocks: List[str] = [_format_metadata_block(rr)]
         if preserve_as_is and rr.as_is_sql:
             blocks.append(_format_as_is_block(rr.as_is_sql))
         if rr.status in ("UNRESOLVED", "NEEDS_LLM") and rr.to_be_sql and rr.to_be_sql != rr.as_is_sql:
             blocks.append(_format_suggested_block(rr.to_be_sql))
 
-        # Insert comments as first children
-        for i, text in enumerate(blocks):
-            comment = etree.Comment(text)
+        if not blocks:
+            continue
+
+        body_text = stmt.text or ""
+        stmt.text = "\n  "  # leading indent before the first comment
+
+        comments = [etree.Comment(text) for text in blocks]
+        for i, comment in enumerate(comments):
             stmt.insert(i, comment)
+            # Spacer between comments (overwritten on the last comment below).
+            comment.tail = "\n  "
+        # Reattach the original SQL body so it appears AFTER all comments.
+        comments[-1].tail = "\n  " + body_text.lstrip(" \t\r\n") if body_text.strip() else "\n  "
 
 
 # ---------------------------------------------------------------------------
