@@ -144,7 +144,27 @@ def main() -> int:
         else:
             body = target_m.get("body", "")
             print(f"body 길이: {len(body)} chars")
-            print(f"body_sql_calls: {target_m.get('body_sql_calls', [])}")
+            print(f"body_sql_calls (parse_java_file 결과): "
+                  f"{target_m.get('body_sql_calls', [])}")
+
+            # [3] 과 [4] 결과 일치 여부 검증 — 같은 body + ns 로 직접
+            # _collect_body_sql_calls 호출. 만약 결과가 다르면 parse_java_file
+            # 의 body / ns_constants 가 우리가 보는 것과 다르다는 의미.
+            from oracle_embeddings.legacy_java_parser import (
+                _collect_body_sql_calls as _direct_collect,
+            )
+            direct = _direct_collect(body, ns)
+            print(f"\n_collect_body_sql_calls 직접 재호출 (같은 body/ns):")
+            for c in direct:
+                print(f"  → {c.get('sqlid')!r}")
+            if not direct:
+                print(f"  → (empty)")
+            if direct != target_m.get("body_sql_calls", []):
+                # [3] 결과와 다르면 매우 의심스러움
+                same_count = (len(direct) == len(target_m.get("body_sql_calls", [])))
+                print(f"  ⚠ [3] 결과와 다름! parse_java_file 이 다른 ns_constants 또는 "
+                      f"per-file head_re 를 사용하는 것이 원인 (per-file SqlSession "
+                      f"detection 영향 가능성).")
 
             # head matches in body
             heads = list(_SQL_CALL_HEAD_RE.finditer(body))
