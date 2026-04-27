@@ -112,12 +112,29 @@ def main() -> int:
             heads = list(_SQL_CALL_HEAD_RE.finditer(body))
             print(f"\nSQL_CALL_HEAD_RE body matches: {len(heads)}")
             from oracle_embeddings.legacy_java_parser import _extract_first_arg
+            first_arg_vars = []  # 1st arg 가 식별자인 케이스 모음
+            import re as _re
             for hm in heads:
                 paren_idx = hm.end() - 1
                 first_arg = _extract_first_arg(body, paren_idx)
                 print(f"  pos={hm.start()} op={hm.group('op')!r} first_arg={first_arg!r}")
                 vals = _eval_string_expr(first_arg, body, ns)
                 print(f"    eval → {vals}")
+                if _re.fullmatch(r"[A-Za-z_]\w*", first_arg or ""):
+                    first_arg_vars.append(first_arg)
+
+            # 식별자 first_arg 마다 body 내 모든 assignment 분해 출력
+            for var in first_arg_vars:
+                print(f"\n[4-{var}] body 내 ``{var} = ...;`` 전체 매칭:")
+                assign_re = _re.compile(rf"\b{_re.escape(var)}\s*=\s*([^;]+);")
+                hits = list(assign_re.finditer(body))
+                print(f"  매치 수: {len(hits)}")
+                for am in hits:
+                    rhs = am.group(1).strip()
+                    sub_eval = _eval_string_expr(rhs, body, ns)
+                    line_no = body[:am.start()].count("\n") + 1
+                    print(f"  - line +{line_no}: rhs={rhs!r}")
+                    print(f"      sub_eval → {sub_eval}")
 
             # NAMESPACE / sqlSession 등장 라인 (이름에 포함된 모든 변형)
             print(f"\nNAMESPACE 등장 라인:")
