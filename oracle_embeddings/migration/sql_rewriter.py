@@ -120,8 +120,8 @@ def rewrite_sql(
     # Escape MyBatis OGNL placeholders so sqlglot can parse. sqlglot rejects
     # ``#{foo}`` outright and turns ``${foo}`` into a struct literal — neither
     # is acceptable. We replace each occurrence with a unique bareword token
-    # (``MBP_0``, ``MBP_1`` …) that parses cleanly as an identifier, then
-    # restore the originals after re-emit.
+    # (``__MBP_0__``, ``__MBP_1__`` …) that parses cleanly as an identifier,
+    # then restore the originals after re-emit.
     safe_sql, mbp_tokens = mask_mybatis_placeholders(sql)
 
     try:
@@ -226,19 +226,31 @@ def _determine_status(
 _MYBATIS_PLACEHOLDER_RE = re.compile(r"[#$]\{[^{}]+\}")
 
 
+# Bareword token format: ``__MBP_{n}__``. Two leading + two trailing
+# underscores make collision with real Oracle identifiers extremely unlikely
+# (any user identifier ``MBP_X`` no longer matches), and the trailing ``__``
+# acts as a terminator so ``__MBP_1__`` is never a substring of ``__MBP_10__``
+# — keeping :func:`unmask_mybatis_placeholders` order-independent.
+_MBP_TOKEN_PREFIX = "__MBP_"
+_MBP_TOKEN_SUFFIX = "__"
+_MBP_TOKEN_RE = re.compile(r"__MBP_\d+__")
+
+
 def mask_mybatis_placeholders(sql: str) -> Tuple[str, Dict[str, str]]:
     """Swap each MyBatis OGNL placeholder for a unique bareword token.
 
-    Returns ``(safe_sql, {token: original})``. Tokens use ``MBP_`` (MyBatis
-    Placeholder) to avoid colliding with real identifiers.
-    Exposed as public API so :mod:`validator_static` and other consumers can
-    reuse the same masking convention (tokens prefixed with ``MBP_``).
+    Returns ``(safe_sql, {token: original})``. Tokens use the
+    ``__MBP_{n}__`` format (MyBatis Placeholder) so they parse cleanly as a
+    sqlglot identifier without colliding with real Oracle identifiers.
+    Exposed as public API so :mod:`validator_static`, :mod:`sql_formatter`,
+    and :mod:`comment_injector` reuse the same convention — see
+    :data:`_MBP_TOKEN_RE` for the canonical match pattern.
     """
     tokens: Dict[str, str] = {}
 
     def _sub(match: "re.Match[str]") -> str:
         i = len(tokens)
-        token = f"MBP_{i}"
+        token = f"{_MBP_TOKEN_PREFIX}{i}{_MBP_TOKEN_SUFFIX}"
         tokens[token] = match.group(0)
         return token
 

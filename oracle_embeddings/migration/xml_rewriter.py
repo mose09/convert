@@ -371,15 +371,110 @@ def _apply_subs_to_tree(
         # rewritten; we only touch SQL text). If a transform needs to rename
         # ``namespace`` attributes, that's a separate higher-level concern.
         if elem.text:
-            elem.text = _apply_subs(elem.text, subs)
+            elem.text = _apply_subs_outside_literals(elem.text, subs)
         if elem.tail:
-            elem.tail = _apply_subs(elem.tail, subs)
+            elem.tail = _apply_subs_outside_literals(elem.tail, subs)
 
 
 def _apply_subs(text: str, subs: List[Tuple[re.Pattern, str]]) -> str:
     for pattern, replacement in subs:
         text = pattern.sub(replacement, text)
     return text
+
+
+def _apply_subs_outside_literals(
+    text: str,
+    subs: List[Tuple[re.Pattern, str]],
+) -> str:
+    """Apply word-boundary substitutions only to "code" regions of SQL text.
+
+    Walks the text once and skips over regions where identifier-shaped
+    substrings must NOT be rewritten:
+
+    * single-quoted string literals — ``'CUST_NM'`` (Oracle ``''`` escape)
+    * SQL line comments — ``-- ...`` to end of line
+    * SQL block comments — ``/* ... */``
+    * MyBatis OGNL placeholders — ``#{name,jdbcType=VARCHAR}`` / ``${TBL}``
+
+    Anything outside those regions goes through :func:`_apply_subs` (the
+    plain word-boundary regex pass). Unterminated literals/comments fall
+    through as-is so we never corrupt malformed SQL fragments.
+    """
+    if not text or not subs:
+        return text
+
+    out: List[str] = []
+    code_buf: List[str] = []
+    n = len(text)
+    i = 0
+
+    def _flush_code() -> None:
+        if code_buf:
+            out.append(_apply_subs("".join(code_buf), subs))
+            code_buf.clear()
+
+    while i < n:
+        c = text[i]
+        c2 = text[i:i + 2]
+
+        # MyBatis OGNL: #{...} / ${...}
+        if c2 in ("#{", "${"):
+            _flush_code()
+            end = text.find("}", i + 2)
+            if end < 0:
+                out.append(text[i:])
+                return "".join(out)
+            out.append(text[i:end + 1])
+            i = end + 1
+            continue
+
+        # Block comment /* ... */
+        if c2 == "/*":
+            _flush_code()
+            end = text.find("*/", i + 2)
+            if end < 0:
+                out.append(text[i:])
+                return "".join(out)
+            out.append(text[i:end + 2])
+            i = end + 2
+            continue
+
+        # Line comment -- ... \n  (newline itself is code, not part of comment)
+        if c2 == "--":
+            _flush_code()
+            end = text.find("\n", i + 2)
+            if end < 0:
+                out.append(text[i:])
+                return "".join(out)
+            out.append(text[i:end])
+            i = end
+            continue
+
+        # Single-quoted string literal with Oracle '' escape
+        if c == "'":
+            _flush_code()
+            j = i + 1
+            while j < n:
+                if text[j] == "'":
+                    if j + 1 < n and text[j + 1] == "'":
+                        j += 2  # escaped quote, stay in literal
+                        continue
+                    j += 1
+                    break
+                j += 1
+            else:
+                # Unterminated literal — emit verbatim and bail.
+                out.append(text[i:])
+                return "".join(out)
+            out.append(text[i:j])
+            i = j
+            continue
+
+        code_buf.append(c)
+        i += 1
+
+    _flush_code()
+    return "".join(out)
 
 
 # ---------------------------------------------------------------------------
