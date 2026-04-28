@@ -289,42 +289,97 @@ class _Formatter:
 
     # ── INSERT ──────────────────────────────────────────────────────────
     def _emit_insert(self, ins: exp.Insert) -> str:
+        """Emit INSERT in Korean legacy style.
+
+        For ``INSERT INTO t (c1, c2) VALUES (v1, v2)`` (the dominant case)::
+
+            INSERT INTO t
+                   (
+                   c1
+                 , c2
+                   ) VALUES (
+                   v1
+                 , v2
+                   )
+
+        Each opening / closing paren sits on its own line at the
+        ``keyword_col_width + 1`` column (= 7-space indent), columns and
+        values share the same column, and ``, `` continuation prefixes line
+        up under the keyword end like the SELECT projection list.
+
+        ``INSERT ... SELECT ...`` keeps the ``SELECT`` source untouched —
+        it gets its own multi-line block from :meth:`_emit_select`.
+        Multi-tuple VALUES (rare; ``VALUES (1,2),(3,4)``) falls back to the
+        previous one-line-per-tuple emit.
+        """
         lines: List[_Line] = []
 
-        # target + 컬럼 리스트
         target = ins.this
         if isinstance(target, exp.Schema):
             tbl = target.this
             cols = target.expressions or []
-            lines.append(_Line(
-                prefix=self._kw("INSERT"),
-                text=f"INTO {self._sql(tbl)} (",
-                comment=self._table_comment(tbl),
-            ))
-            # 컬럼 이름들을 leading-comma 로 풀어 적음
-            for i, c in enumerate(cols):
-                col_sql = self._sql(c)
-                col_comment = self._col_comment(c, tbl)
-                lines.append(_Line(
-                    prefix=self.style.comma_prefix() if i else self._kw(""),
-                    text=col_sql,
-                    comment=col_comment,
-                ))
-            # 닫는 괄호
-            lines.append(_Line(prefix=self._kw(""), text=")"))
         elif isinstance(target, exp.Table):
+            tbl = target
+            cols = []
+        else:
+            tbl = None
+            cols = []
+
+        # Line 1: ``INSERT INTO <table>`` (table comment if available).
+        if tbl is not None:
             lines.append(_Line(
                 prefix=self._kw("INSERT"),
-                text=f"INTO {self._sql(target)}",
-                comment=self._table_comment(target),
+                text=f"INTO {self._sql(tbl)}",
+                comment=self._table_comment(tbl),
             ))
         else:
             lines.append(_Line(prefix=self._kw("INSERT"), text=self._sql(target)))
 
-        # VALUES / SELECT source
         source = ins.args.get("expression")
+
+        # Combined column + single-tuple VALUES emission — the common case.
+        single_tuple_values = (
+            isinstance(source, exp.Values)
+            and len(source.expressions) == 1
+            and isinstance(source.expressions[0], exp.Tuple)
+        )
+        if cols and single_tuple_values:
+            tup = source.expressions[0]
+            vals = list(tup.expressions)
+            empty_prefix = self._kw("")  # 7-space, opens at col 8
+
+            lines.append(_Line(prefix=empty_prefix, text="("))
+            for i, c in enumerate(cols):
+                col_comment = self._col_comment(c, tbl)
+                lines.append(_Line(
+                    prefix=empty_prefix if i == 0 else self.style.comma_prefix(),
+                    text=self._sql(c),
+                    comment=col_comment,
+                ))
+            lines.append(_Line(prefix=empty_prefix, text=") VALUES ("))
+            for i, v in enumerate(vals):
+                lines.append(_Line(
+                    prefix=empty_prefix if i == 0 else self.style.comma_prefix(),
+                    text=self._sql(v),
+                ))
+            lines.append(_Line(prefix=empty_prefix, text=")"))
+            return self._render(lines)
+
+        # Fallback path: column list (if any) emitted as its own block, then
+        # VALUES / SELECT / other source on subsequent lines.
+        if cols:
+            empty_prefix = self._kw("")
+            lines.append(_Line(prefix=empty_prefix, text="("))
+            for i, c in enumerate(cols):
+                col_comment = self._col_comment(c, tbl)
+                lines.append(_Line(
+                    prefix=empty_prefix if i == 0 else self.style.comma_prefix(),
+                    text=self._sql(c),
+                    comment=col_comment,
+                ))
+            lines.append(_Line(prefix=empty_prefix, text=")"))
+
         if isinstance(source, exp.Values):
-            # VALUES (v1, v2), (v3, v4), ...
             first = True
             for tup in source.expressions:
                 if not isinstance(tup, exp.Tuple):
@@ -336,9 +391,8 @@ class _Formatter:
                 ))
                 first = False
         elif isinstance(source, exp.Select):
-            # SELECT ... 는 재귀 적용 → sub-format 후 각 줄 그대로 이어붙임
             sub = self._emit_select(source)
-            lines.append(_Line(prefix="", text=sub, comment=""))  # 라인 그대로 삽입
+            lines.append(_Line(prefix="", text=sub, comment=""))
         elif source is not None:
             lines.append(_Line(prefix="", text=self._sql(source)))
 
