@@ -1002,7 +1002,9 @@ def _extract_ns_constants(content: str,
     return constants
 
 
-def _extract_sql_calls(content: str) -> list[dict]:
+def _extract_sql_calls(content: str,
+                       method_ranges: list[tuple[int, int]] | None = None,
+                       methods: list[dict] | None = None) -> list[dict]:
     """File-level SQL helper call extractor — unified evaluator.
 
     body-level 의 ``_collect_body_sql_calls`` evaluator 를 file 전체에 동일
@@ -1010,11 +1012,56 @@ def _extract_sql_calls(content: str) -> list[dict]:
     ``_SQL_CALL_VAR_RE`` / ``_SQL_CALL_TERNARY_RE``) 라 cartesian / nested
     ternary / identifier tracking 정확도가 body-level 에 비해 떨어졌다.
     통합 후 두 layer 동일 평가 — 새 변형 등장 시 한 곳만 수정.
+
+    ``method_ranges`` + ``methods`` 가 주어지면 cross-method 오염 방어:
+      1) method 별 ``_collect_body_sql_calls(m.body)`` — 각 method 안의
+         local var 선언이 그 method 안에서만 보이도록 격리. 같은 var
+         이름이 다른 method 에서 다른 값으로 재선언될 때 last-write-wins
+         leak 차단.
+      2) method body 영역을 공백으로 mask 한 content 에 한 번 더 호출 —
+         static initializer / field initializer 같은 non-method 영역의
+         SQL 호출도 합집합. mask 는 character substitution 이라 offset/
+         line 위치 원본과 동일.
+
+    ``method_ranges`` 만 있고 ``methods`` 가 없으면 (legacy caller) file
+    전체에 한 번 호출하는 옛 동작 유지.
     """
-    ns_constants = _extract_ns_constants(content)
-    raw = _collect_body_sql_calls(content, ns_constants)
+    ns_constants = _extract_ns_constants(content, method_ranges=method_ranges)
+    raw_results: list[dict] = []
+    seen: set = set()
+
+    def _absorb(rs, offset_base=0):
+        for r in rs:
+            key = (r["op"], r["sqlid"])
+            if key in seen:
+                continue
+            seen.add(key)
+            r2 = dict(r)
+            if offset_base:
+                r2["offset"] = r.get("offset", 0) + offset_base
+            raw_results.append(r2)
+
+    if methods is not None and method_ranges:
+        for m in methods:
+            body = m.get("body", "")
+            body_start = m.get("body_start", 0)
+            if not body:
+                continue
+            _absorb(_collect_body_sql_calls(body, ns_constants), offset_base=body_start)
+        # non-method 영역만 별도 — method body 영역 mask
+        buf = list(content)
+        n = len(buf)
+        for start, end in method_ranges:
+            for i in range(max(0, start), min(end, n)):
+                if buf[i] != "\n":
+                    buf[i] = " "
+        scan_content = "".join(buf)
+        _absorb(_collect_body_sql_calls(scan_content, ns_constants))
+    else:
+        _absorb(_collect_body_sql_calls(content, ns_constants))
+
     out = []
-    for r in raw:
+    for r in raw_results:
         offset = r.get("offset", 0)
         line = content.count("\n", 0, offset) + 1
         out.append({
@@ -2389,7 +2436,6 @@ def parse_java_file(filepath: str) -> dict:
 
     rfc_calls = _extract_rfc_calls(raw)
     rfc_hint_count = _count_rfc_hints(raw)
-    sql_calls = _extract_sql_calls(raw)
 
     # Per-method body extraction for precise call-graph resolution.
     # Both ``class_info`` and the body scan operate on ``content_nc``:
@@ -2410,12 +2456,14 @@ def parse_java_file(filepath: str) -> dict:
         sql_call_head_re = None  # 기본값 사용
 
     methods = _extract_method_bodies(content_nc, class_info)
-    # ns_constants 추출은 method body 범위 정보가 필요 — method 안의
-    # ``String sqlId = "x";`` 같은 local declaration 이 namespace 상수로
-    # leak 해서 evaluator 가 body assignment 추적 단계 skip 하는 버그 방어.
+    # method_ranges 는 두 곳에서 활용 —
+    #   (1) ``_extract_ns_constants`` 가 method body 안 local 선언 무시
+    #   (2) ``_extract_sql_calls`` (file-level) 가 동일 ns_constants 사용
+    # cross-method 오염 (같은 var 다른 method 에서 다른 값으로 재선언) 차단.
     method_ranges = [(m.get("body_start", 0), m.get("body_end", 0))
                      for m in methods]
     ns_constants = _extract_ns_constants(raw, method_ranges=method_ranges)
+    sql_calls = _extract_sql_calls(raw, method_ranges=method_ranges, methods=methods)
     for meth in methods:
         body = meth["body"]
         meth["body_sql_calls"] = _collect_body_sql_calls(
