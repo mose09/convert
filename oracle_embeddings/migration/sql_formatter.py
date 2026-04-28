@@ -453,8 +453,134 @@ class _Formatter:
 
     # ── MERGE ───────────────────────────────────────────────────────────
     def _emit_merge(self, m: exp.Merge) -> str:
-        # MERGE 는 레이아웃이 특수해서 기본 pretty 로 fallback (Phase 3b 확장)
-        return m.sql(dialect="oracle", pretty=True)
+        """``MERGE INTO ... USING ... ON (...) WHEN [NOT] MATCHED THEN ...``
+        in KoreanLegacy layout. Each clause sits on its own line with the
+        keyword right-aligned to ``keyword_col_width``; the USING source
+        and inner SELECT pick up our multi-line subquery treatment so the
+        whole statement reads consistently with surrounding SELECT/UPDATE
+        emission.
+        """
+        lines: List[_Line] = []
+
+        # MERGE INTO <target> [<alias>]. The ``MERGE INTO`` header is wider
+        # than ``keyword_col_width`` so we emit it left-justified at col 1
+        # (matches the user-supplied reference layout) instead of letting
+        # ``keyword_prefix`` indent the 5-char ``MERGE`` to col 2.
+        target = m.this
+        target_sql = self._sql(target) if target is not None else ""
+        lines.append(_Line(
+            prefix="MERGE INTO ",
+            text=target_sql,
+            comment=self._table_comment(target) if target is not None else "",
+        ))
+
+        # USING <source> [<alias>] — Subquery (multi-line) or Table
+        using = m.args.get("using")
+        if using is not None:
+            lines.append(_Line(prefix=self._kw("USING"), text=self._sql(using)))
+
+        # ON (<condition>) — sqlglot wraps the condition in exp.Paren so the
+        # parens come along for the ride; if a future dialect strips them
+        # we add them back so the output matches the user's reference shape.
+        on_node = m.args.get("on")
+        if on_node is not None:
+            on_sql = self._sql(on_node)
+            if not on_sql.startswith("("):
+                on_sql = "(" + on_sql + ")"
+            lines.append(_Line(prefix=self._kw("ON"), text=on_sql))
+
+        # WHEN [NOT] MATCHED [AND <cond>] THEN <action>
+        whens = m.args.get("whens")
+        when_list = whens.expressions if whens is not None else []
+        for w in when_list:
+            matched = bool(w.args.get("matched"))
+            cond = w.args.get("condition")
+            then = w.args.get("then")
+
+            head_text = "MATCHED" if matched else "NOT MATCHED"
+            if cond is not None:
+                head_text += f" AND {self._sql(cond)}"
+            head_text += " THEN"
+            lines.append(_Line(prefix=self._kw("WHEN"), text=head_text))
+
+            if isinstance(then, exp.Update):
+                lines.extend(self._emit_merge_update(then))
+            elif isinstance(then, exp.Insert):
+                lines.extend(self._emit_merge_insert(then))
+            elif isinstance(then, exp.Var) and (then.name or "").upper() == "DELETE":
+                lines.append(_Line(prefix=self._kw(""), text="DELETE"))
+            elif then is not None:
+                # Unknown action shape — fall back to generic emit on its
+                # own line so we never silently drop the action.
+                lines.append(_Line(prefix=self._kw(""), text=self._sql(then)))
+
+        return self._render(lines)
+
+    def _emit_merge_update(self, upd: exp.Update) -> List[_Line]:
+        """WHEN MATCHED THEN UPDATE — emits ``UPDATE`` then ``SET col = val``
+        with leading-comma continuations and ``=`` alignment.
+        """
+        lines: List[_Line] = [_Line(prefix=self._kw("UPDATE"), text="")]
+
+        set_items = upd.args.get("expressions") or []
+        eqs: List[Tuple[str, Optional[str]]] = []
+        for eq in set_items:
+            if isinstance(eq, exp.EQ):
+                eqs.append((self._sql(eq.this), self._sql(eq.expression)))
+            else:
+                eqs.append((self._sql(eq), None))
+        target_w = max((len(lhs) for lhs, _ in eqs), default=0)
+
+        for i, (lhs, rhs) in enumerate(eqs):
+            prefix = self._kw("SET") if i == 0 else self.style.comma_prefix()
+            if rhs is not None:
+                padded = lhs.ljust(target_w) if target_w else lhs
+                text = f"{padded} = {rhs}"
+            else:
+                text = lhs
+            lines.append(_Line(prefix=prefix, text=text))
+
+        # WHERE on UPDATE (Oracle MERGE allows it after the UPDATE clause)
+        where = upd.args.get("where")
+        if where is not None:
+            lines.extend(self._emit_where(where))
+        return lines
+
+    def _emit_merge_insert(self, ins: exp.Insert) -> List[_Line]:
+        """WHEN NOT MATCHED THEN INSERT (cols) VALUES (vals) — same layout
+        as the top-level :meth:`_emit_insert` single-tuple branch so the
+        whole MERGE reads uniformly with standalone INSERT.
+        """
+        lines: List[_Line] = [_Line(prefix=self._kw("INSERT"), text="")]
+
+        cols_node = ins.this  # Tuple of cols
+        vals_node = ins.args.get("expression")  # Tuple of vals
+        cols = list(cols_node.expressions) if isinstance(cols_node, exp.Tuple) else []
+        vals = list(vals_node.expressions) if isinstance(vals_node, exp.Tuple) else []
+
+        empty_prefix = self._kw("")
+        if cols and vals:
+            lines.append(_Line(prefix=empty_prefix, text="("))
+            for i, c in enumerate(cols):
+                lines.append(_Line(
+                    prefix=empty_prefix if i == 0 else self.style.comma_prefix(),
+                    text=self._sql(c),
+                ))
+            lines.append(_Line(prefix=empty_prefix, text=") VALUES ("))
+            for i, v in enumerate(vals):
+                lines.append(_Line(
+                    prefix=empty_prefix if i == 0 else self.style.comma_prefix(),
+                    text=self._sql(v),
+                ))
+            lines.append(_Line(prefix=empty_prefix, text=")"))
+        else:
+            # Non-standard shape — emit verbatim so we don't silently lose info.
+            lines.append(_Line(prefix=empty_prefix, text=ins.sql(dialect="oracle")))
+
+        where = ins.args.get("where")
+        if where is not None:
+            lines.extend(self._emit_where(where))
+        return lines
 
     # ── JOIN ────────────────────────────────────────────────────────────
     def _emit_join(self, join: exp.Join) -> List[_Line]:
