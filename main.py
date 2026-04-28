@@ -1638,8 +1638,10 @@ def cmd_analyze_legacy(args):
     # legacy_report._legacy_output_dir 가 base_output 받아 영역+일자 폴더 만든다.
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
-    backends_root = args.backends_root
-    backend_dir = args.backend_dir
+    # Path 인자 strip — multi-line CLI 작성 시 trailing newline / 공백
+    # 케이스 방어. main.py 의 모든 path argument 동일 정책.
+    backends_root = (args.backends_root or "").strip() or None
+    backend_dir = (args.backend_dir or "").strip() or None
 
     if not backends_root and not backend_dir:
         print("Error: either --backend-dir or --backends-root is required.")
@@ -1654,7 +1656,9 @@ def cmd_analyze_legacy(args):
         print(f"Error: Backend dir not found: {backend_dir}")
         return
     # Resolve frontend dir: --frontends-root takes priority over --frontend-dir
-    frontend_dir = getattr(args, "frontends_root", None) or args.frontend_dir
+    _fr_root = (getattr(args, "frontends_root", None) or "").strip() or None
+    _fr_dir = (getattr(args, "frontend_dir", None) or "").strip() or None
+    frontend_dir = _fr_root or _fr_dir
     is_frontends_root = bool(getattr(args, "frontends_root", None))
     if frontend_dir and not os.path.isdir(frontend_dir):
         print(f"Error: Frontend dir not found: {frontend_dir}")
@@ -1731,7 +1735,11 @@ def cmd_analyze_legacy(args):
     biz_max_handlers = int(getattr(args, "biz_max_handlers", 300))
     biz_use_cache = not bool(getattr(args, "no_biz_cache", False))
     biz_config = config if isinstance(config, dict) else {}
-    library_dirs = list(getattr(args, "library_dirs", None) or [])
+    # Path 인자 사용 전 strip — PowerShell multi-line continuation 등에서
+    # 끝에 newline / 공백이 섞여 들어가는 케이스 방어 (사용자 제보:
+    # ``--library-dir`` 값에 ``\n`` trailing 으로 ``exists=False`` 발생).
+    library_dirs = [str(d).strip() for d in (getattr(args, "library_dirs", None) or [])
+                    if d and str(d).strip()]
 
     terms_md = getattr(args, "terms_md", None) or None
 
