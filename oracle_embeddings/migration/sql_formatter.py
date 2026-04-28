@@ -164,11 +164,50 @@ class _Formatter:
             return self._emit_delete(node)
         if isinstance(node, exp.Merge):
             return self._emit_merge(node)
+        # Set operations (UNION / UNION ALL / INTERSECT / MINUS-aka-EXCEPT) —
+        # render each operand with our SELECT layout and join with the set
+        # keyword on its own line.
+        if isinstance(node, (exp.Union, exp.Intersect, exp.Except)):
+            return self._emit_set_op(node)
         # With clause carrying a top-level select
         if isinstance(node, exp.With):
             # fallback — CTE 자체는 sqlglot 기본 사용 (복잡)
             return node.sql(dialect="oracle", pretty=True)
         return node.sql(dialect="oracle")
+
+    # ── Set ops (UNION / UNION ALL / INTERSECT / EXCEPT-aka-MINUS) ──────
+    def _emit_set_op(self, node) -> str:
+        """``SELECT ... UNION [ALL] SELECT ...`` — each operand keeps its
+        full multi-line KoreanLegacy layout, joined by the set keyword on
+        a line of its own (keyword right-aligned to ``keyword_col_width``).
+        """
+        if isinstance(node, exp.Union):
+            distinct = node.args.get("distinct")
+            # sqlglot models UNION ALL as ``distinct=False``. Default UNION
+            # (distinct) is ``distinct=True`` or ``None``.
+            kw = "UNION" if (distinct is None or distinct is True) else "UNION ALL"
+        elif isinstance(node, exp.Intersect):
+            kw = "INTERSECT"
+        elif isinstance(node, exp.Except):
+            # Oracle uses ``MINUS`` for the same operation.
+            kw = "MINUS"
+        else:
+            return node.sql(dialect="oracle")
+
+        left = self.emit(node.this)
+        right_node = node.args.get("expression")
+        right = self.emit(right_node) if right_node is not None else ""
+
+        # Right-align the set keyword to ``keyword_col_width`` so it lines up
+        # under SELECT / FROM / WHERE in the operands. Wider keywords like
+        # ``UNION ALL`` (9 chars) fall back to a single leading space so they
+        # still read as a header line rather than left-justified to col 1.
+        kc = self.style.keyword_col_width
+        if len(kw) <= kc:
+            kw_line = " " * (kc - len(kw)) + kw
+        else:
+            kw_line = " " + kw
+        return f"{left}\n{kw_line}\n{right}" if right else left
 
     # ── SELECT ──────────────────────────────────────────────────────────
     def _emit_select(self, sel: exp.Select) -> str:
@@ -599,37 +638,42 @@ class _Formatter:
                 alias_name = node.alias or ""
                 inner = self._wrap_nested_select(sub.this)
                 return inner + (f" AS {alias_name}" if alias_name else "")
-        # ``(SELECT ...)`` — surfaced from FROM inline views, scalar
-        # subqueries in SELECT, IN-subqueries on the RHS of comparisons.
-        if isinstance(node, exp.Subquery) and isinstance(node.this, exp.Select):
+        # ``(SELECT ...)`` / ``(SELECT ... UNION SELECT ...)`` — surfaced from
+        # FROM inline views, scalar subqueries in SELECT, IN-subqueries on
+        # the RHS of comparisons.
+        if isinstance(node, exp.Subquery) and _is_select_or_setop(node.this):
             return self._wrap_nested_select(node.this, alias=node.alias_or_name)
-        # ``EXISTS (SELECT ...)``
+        # ``EXISTS (SELECT ...)`` — also accept Union/Intersect/Except inside
         if isinstance(node, exp.Exists):
             inner = node.this
-            if isinstance(inner, exp.Subquery) and isinstance(inner.this, exp.Select):
+            if isinstance(inner, exp.Subquery) and _is_select_or_setop(inner.this):
                 return "EXISTS " + self._wrap_nested_select(inner.this)
-            if isinstance(inner, exp.Select):
+            if _is_select_or_setop(inner):
                 return "EXISTS " + self._wrap_nested_select(inner)
         # ``<lhs> IN (SELECT ...)`` — exp.In with ``query`` arg set
         if isinstance(node, exp.In):
             query = node.args.get("query")
             if query is not None:
-                if isinstance(query, exp.Subquery) and isinstance(query.this, exp.Select):
+                if isinstance(query, exp.Subquery) and _is_select_or_setop(query.this):
                     return f"{self._sql(node.this)} IN " + self._wrap_nested_select(query.this)
-                if isinstance(query, exp.Select):
+                if _is_select_or_setop(query):
                     return f"{self._sql(node.this)} IN " + self._wrap_nested_select(query)
         return node.sql(dialect="oracle")
 
     def _wrap_nested_select(
-        self, sel: exp.Select, *, alias: str = "",
+        self, sel, *, alias: str = "",
     ) -> str:
         """Emit ``sel`` in the same KoreanLegacy layout as the top-level
         statement, indented one keyword-column-width deeper, and surrounded
-        by parens. Each inner line is prefixed with 7 spaces so the inner
-        ``SELECT`` lands directly under the caller's keyword (``  FROM (``,
-        ``      , ``, …) — visually nested without breaking column counts.
+        by parens. Accepts a plain ``exp.Select`` or any set-op
+        (``Union`` / ``Intersect`` / ``Except``). Each inner line is
+        prefixed with 7 spaces so the inner ``SELECT`` lands directly under
+        the caller's keyword.
         """
-        inner = self._emit_select(sel)
+        if isinstance(sel, (exp.Union, exp.Intersect, exp.Except)):
+            inner = self._emit_set_op(sel)
+        else:
+            inner = self._emit_select(sel)
         indent = " " * (self.style.keyword_col_width + 1)  # 7 spaces
         indented = "\n".join(indent + ln for ln in inner.split("\n"))
         suffix = f" {alias}" if alias else ""
@@ -695,6 +739,14 @@ def _normalise_lookup(ko_lookup: Dict[str, str]) -> Dict[str, str]:
         if "." in ku:
             out.setdefault(ku.rsplit(".", 1)[1], v)
     return out
+
+
+def _is_select_or_setop(node) -> bool:
+    """True for any node that participates in a SELECT-shaped layout —
+    ``exp.Select`` or any of the binary set ops. Used by the subquery
+    wrappers so that ``(SELECT ... UNION SELECT ...)`` inside a FROM /
+    IN / EXISTS goes through the multi-line emitter."""
+    return isinstance(node, (exp.Select, exp.Union, exp.Intersect, exp.Except))
 
 
 def _flatten_and(node: exp.Expression):
