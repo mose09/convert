@@ -970,7 +970,9 @@ _NS_CONST_RE = re.compile(
 _NS_VALUE_RE = re.compile(r"^[\w.\-]+$")
 
 
-def _extract_ns_constants(content: str) -> dict:
+def _extract_ns_constants(content: str,
+                            method_ranges: list[tuple[int, int]] | None = None
+                            ) -> dict:
     """Collect ``{variable_name: string_value}`` for namespace prefix resolution.
 
     Accepts both dotted prefixes (``"com.example."``) and bare namespace
@@ -979,9 +981,20 @@ def _extract_ns_constants(content: str) -> dict:
     Boundary 검증은 resolve 지점 (``_extract_sql_calls`` /
     ``_collect_body_sql_calls``) 에서 `prefix.endswith(".") or
     suffix.startswith(".")` 로 처리한다.
+
+    ``method_ranges`` (list of ``(body_start, body_end)`` tuples) 지정 시
+    그 범위 안의 ``String x = "y";`` 매치는 무시. Method body 내부의
+    local 변수 declaration 이 ns_constants 에 leak 해서 evaluator 가
+    body assignment 추적 단계로 못 가는 버그 방어 (예: ``String sqlId =
+    "init";`` 이 captured 되면 ``sqlId`` identifier lookup 이 첫 값
+    만 반환하고 분기 할당들 무시함).
     """
     constants = {}
+    method_ranges = method_ranges or []
     for m in _NS_CONST_RE.finditer(content):
+        pos = m.start()
+        if any(start <= pos < end for start, end in method_ranges):
+            continue
         name = m.group("name")
         value = m.group("value")
         if _NS_VALUE_RE.match(value):
@@ -2341,7 +2354,6 @@ def parse_java_file(filepath: str) -> dict:
     # has been blanked out — this matters for method body brace
     # balancing.
     rfc_constants = {n: v for n, v in _RFC_CONST_RE.findall(raw)}
-    ns_constants = _extract_ns_constants(raw)
     # Per-file SQL receiver auto-detection — autowired 필드 중 타입이
     # ``SqlSession`` / ``SqlSessionTemplate`` 등인 것의 변수명을 SQL
     # receiver 로 자동 등록. ``simpleSqlSession`` / ``mySqlSession`` 같이
@@ -2353,6 +2365,12 @@ def parse_java_file(filepath: str) -> dict:
         sql_call_head_re = None  # 기본값 사용
 
     methods = _extract_method_bodies(content_nc, class_info)
+    # ns_constants 추출은 method body 범위 정보가 필요 — method 안의
+    # ``String sqlId = "x";`` 같은 local declaration 이 namespace 상수로
+    # leak 해서 evaluator 가 body assignment 추적 단계 skip 하는 버그 방어.
+    method_ranges = [(m.get("body_start", 0), m.get("body_end", 0))
+                     for m in methods]
+    ns_constants = _extract_ns_constants(raw, method_ranges=method_ranges)
     for meth in methods:
         body = meth["body"]
         meth["body_sql_calls"] = _collect_body_sql_calls(
