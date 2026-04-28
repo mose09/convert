@@ -1022,8 +1022,22 @@ def cmd_migrate_sql(args):
     to_be_schema_path = Path(args.to_be_schema) if args.to_be_schema else None
     terms_md = Path(args.terms_md) if args.terms_md else None
 
-    if not mybatis_dir.is_dir():
-        print(f"Error: --mybatis-dir 없음: {mybatis_dir}")
+    # ``--mybatis-dir`` accepts either a directory (recursive scan) or a
+    # single ``.xml`` file. Single-file form is handy under ``--format-only``
+    # for spot-checking one mapper at a time.
+    if mybatis_dir.is_file():
+        if mybatis_dir.suffix.lower() != ".xml":
+            print(f"Error: --mybatis-dir 가 파일이지만 .xml 아님: {mybatis_dir}")
+            return
+        single_file_mode = True
+        xml_files_iter = [mybatis_dir]
+        scan_root = mybatis_dir.parent  # relative_to base for output path layout
+    elif mybatis_dir.is_dir():
+        single_file_mode = False
+        xml_files_iter = None  # filled in below by rglob
+        scan_root = mybatis_dir
+    else:
+        print(f"Error: --mybatis-dir 없음 (디렉토리 또는 .xml 파일): {mybatis_dir}")
         return
 
     if args.format_only:
@@ -1099,8 +1113,12 @@ def cmd_migrate_sql(args):
         print(f"Korean comment lookup: {len(ko_lookup)} entries (source: {cs})")
 
     # Collect XML files
-    xml_files = sorted(mybatis_dir.rglob("*.xml"))
-    print(f"Scanning {len(xml_files)} XML file(s) under {mybatis_dir}...")
+    if single_file_mode:
+        xml_files = xml_files_iter
+        print(f"Scanning 1 XML file (single-file mode): {mybatis_dir}")
+    else:
+        xml_files = sorted(scan_root.rglob("*.xml"))
+        print(f"Scanning {len(xml_files)} XML file(s) under {scan_root}...")
 
     all_results = []
     base_output = config.get("storage", {}).get("output_dir", "./output")
@@ -1188,7 +1206,7 @@ def cmd_migrate_sql(args):
                 preserve_as_is=not args.no_xml_preserve_as_is,
                 force_show_to_be=args.format_only,
             )
-            rel = xml_path.relative_to(mybatis_dir)
+            rel = xml_path.relative_to(scan_root)
             out_path = converted_root / rel
             serialize_tree(out.tree, out_path)
 
@@ -2008,7 +2026,8 @@ def main():
         help="column_mapping.yaml 기반 MyBatis XML → TO-BE 스키마용 변환 + Stage A 검증 + 산출물 생성",
     )
     ms_parser.add_argument("--mybatis-dir", required=True,
-                           help="AS-IS MyBatis mapper XML 디렉토리")
+                           help="AS-IS MyBatis mapper XML 디렉토리 또는 단일 .xml 파일 "
+                                "(--format-only 으로 한 파일만 빠르게 검토할 때 유용)")
     ms_parser.add_argument("--mapping",
                            help="column_mapping.yaml 경로 (--format-only 면 생략 가능)")
     ms_parser.add_argument("--to-be-schema",
