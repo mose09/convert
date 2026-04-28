@@ -1003,13 +1003,35 @@ def _extract_ns_constants(content: str,
 
 
 def _extract_sql_calls(content: str) -> list[dict]:
-    """Find string-based MyBatis SQL helper calls.
+    """File-level SQL helper call extractor — unified evaluator.
 
-    Handles two forms:
-    1. Literal: ``sqlSession.selectList("namespace.sqlId", param)``
-    2. Variable prefix: ``sqlSession.selectList(namespace + "sqlId", param)``
-       where ``namespace`` is resolved from ``String namespace = "..."``
+    body-level 의 ``_collect_body_sql_calls`` evaluator 를 file 전체에 동일
+    적용. 이전엔 file-level 만 옛 3-regex 구조 (``_SQL_CALL_RE`` /
+    ``_SQL_CALL_VAR_RE`` / ``_SQL_CALL_TERNARY_RE``) 라 cartesian / nested
+    ternary / identifier tracking 정확도가 body-level 에 비해 떨어졌다.
+    통합 후 두 layer 동일 평가 — 새 변형 등장 시 한 곳만 수정.
     """
+    ns_constants = _extract_ns_constants(content)
+    raw = _collect_body_sql_calls(content, ns_constants)
+    out = []
+    for r in raw:
+        offset = r.get("offset", 0)
+        line = content.count("\n", 0, offset) + 1
+        out.append({
+            "op": r["op"],
+            "sqlid": r["sqlid"],
+            "namespace": r["namespace"],
+            "sql_id": r["sql_id"],
+            "line": line,
+        })
+    return out
+
+
+# ── 옛 file-level 구현 (backward compat 위해 보존, _extract_sql_calls
+#    는 더 이상 사용 안 함). _SQL_CALL_*_RE 변수 자체는 다른 모듈이
+#    import 하고 있을 수도 있어 그대로 둠.
+def _extract_sql_calls_legacy(content: str) -> list[dict]:
+    """DEPRECATED — old 3-regex implementation kept for reference."""
     ns_constants = _extract_ns_constants(content)
     results = []
     seen = set()
@@ -2224,18 +2246,41 @@ def _collect_body_field_calls(body: str) -> list[dict]:
         if name in _METHOD_NAME_RESERVED or name in _BARE_CALL_SKIP:
             continue
         # ``new X(`` 형태에서 ``X`` 만 bare call 처럼 매칭되는 케이스 제외.
-        # ``new`` 자체는 _BARE_CALL_SKIP 로 걸렀지만 뒤따르는 타입명은
-        # 여전히 매칭되기 때문에 앞 8글자 문맥을 확인.
-        start = m.start()
-        pre = body[max(0, start - 8):start]
-        if re.search(r"\bnew\s+$", pre):
+        # 이전 구현은 8자 prefix 만 봐서 `new\n    LongClass(`처럼 줄바꿈
+        # + 들여쓰기로 거리가 떨어진 경우 false positive. 토큰 walk:
+        # match 위치에서 거꾸로 whitespace skip → 직전 word identifier 가
+        # ``new`` 인지 확인. window 크기와 무관하게 정확.
+        if _is_after_new_keyword(body, m.start()):
             continue
         key = ("this", name)
         if key in seen:
             continue
         seen.add(key)
-        results.append({"receiver": "this", "method": name, "offset": start})
+        results.append({"receiver": "this", "method": name, "offset": m.start()})
     return results
+
+
+def _is_after_new_keyword(body: str, start: int) -> bool:
+    """Return True when ``body[start]`` 가 ``new <Type>(`` 의 ``<Type>`` 위치.
+
+    토큰 단위로 거꾸로 walk — whitespace 만 skip 후 직전 단어가 ``new``
+    이면 True. generic 절 ``Foo<X>(`` 은 ``_BARE_CALL_RE`` 가 ``\\w+\\s*\\(``
+    이라 이미 매칭이 안 되므로 (사이의 ``>`` 가 word boundary) 여기선
+    고려할 필요 없음.
+    """
+    i = start - 1
+    while i >= 0 and body[i] in " \t\r\n":
+        i -= 1
+    end = i + 1
+    while i >= 0 and (body[i].isalnum() or body[i] == "_"):
+        i -= 1
+    word = body[i + 1:end]
+    if word != "new":
+        return False
+    # 직전이 word char 면 ``something_new`` 같은 다른 식별자 — skip 안 함.
+    if i >= 0 and (body[i].isalnum() or body[i] == "_"):
+        return False
+    return True
 
 
 def resolve_type_fqcn(type_simple: str, imports: dict, package: str) -> str:
