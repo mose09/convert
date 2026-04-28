@@ -1061,8 +1061,15 @@ KoreanLegacy 포매터의 줄맞춤 / 리딩 콤마 / 키워드 우측정렬을 
 하는지 먼저 확인하고, 그 뒤 매핑 yaml 작성으로 진행하는 흐름.
 
 ```powershell
+# 디렉토리 전체
 python main.py migrate-sql `
   --mybatis-dir C:\work\mapper `
+  --format-only `
+  --output-format xml
+
+# 한 파일만 빠르게 — --mybatis-dir 에 .xml 경로 직접 지정 가능
+python main.py migrate-sql `
+  --mybatis-dir C:\work\mapper\CustomerMapper.xml `
   --format-only `
   --output-format xml
 ```
