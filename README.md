@@ -25,7 +25,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
 | `convert-mapping` | AS-IS↔TO-BE 컬럼 매핑 .md → `column_mapping.yaml` (LLM + heuristic 이 kind/transform 추론; **사용자 표준 9-컬럼 flat 포맷 지원** — asis/tobe table/column/type/comment/remark) | 선택 | X |
 | `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
-| `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 | X | 선택 |
+| `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 (`--format-only` 로 매핑 없이 포매터만 미리보기 가능) | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
@@ -1022,6 +1022,40 @@ python main.py migrate-sql `
 - `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
 - `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
 - `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+- `--format-only`: 매핑 / TO-BE 스키마 없이 **포매터만** 적용 — 줄맞춤 / 메타블록
+  양식 사전 검토용 (아래 §3.5 참고)
+
+**3.5) 매핑 작성 전 포매터 양식만 미리보기 (`--format-only`)**:
+
+매핑 yaml / TO-BE 스키마 .md 가 아직 없을 때 **AS-IS XML 만 던져서**
+변환기가 어떤 양식으로 출력할지 미리 visual 검토할 수 있습니다.
+KoreanLegacy 포매터의 줄맞춤 / 리딩 콤마 / 키워드 우측정렬을 마음에 들어
+하는지 먼저 확인하고, 그 뒤 매핑 yaml 작성으로 진행하는 흐름.
+
+```powershell
+python main.py migrate-sql `
+  --mybatis-dir C:\work\mapper `
+  --format-only `
+  --output-format xml
+```
+
+각 statement 위에 3 코멘트 블록이 emit 됩니다:
+
+| 블록 | 내용 |
+|---|---|
+| **MIGRATION 메타블록** | Applied / Changed / Stage A / Stage B / ORA / Notes 모두 `-` (placeholder) — 매핑이 없으니 변환 0건이라 자연스럽게 비어 있음 |
+| **AS-IS (original)** | 입력 SQL 원본 (max-path 평탄화) |
+| **SUGGESTED TO-BE** | KoreanLegacy 포매터 결과 — leading comma / 6-char keyword 우측정렬 / 동적 태그 평탄화된 형태. 본문은 활성화되지 않는 코멘트라 실행 안전 |
+
+본문 (실제 statement body) 은 원본 layout + `<if>`/`<choose>` 등 동적 태그
+**그대로 보존**. Stage A 검증 (sqlglot 스키마 lookup) 도 자동 skip 됩니다 —
+스키마 dict 가 비어있어 의미 없으므로.
+
+용도:
+- 사용자가 마음에 드는 포매터 옵션 (`leading_comma`, `keyword_case`, etc.) 을
+  결정한 뒤 column_mapping.yaml `options.output_format` 에 옮기기
+- 회사 표준 SQL 양식과 비교해서 변환기 출력이 적합한지 사전 합의용
+- 차세대 전환 PoC 단계에서 매핑 데이터 없이도 산출물 샘플 시연용
 
 **column_mapping.yaml 의 `options` 로 제어 가능한 UX 옵션**:
 
