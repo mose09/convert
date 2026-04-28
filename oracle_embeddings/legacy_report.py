@@ -41,6 +41,16 @@ def _bare_table_name(cell: str) -> str:
     return _CRUD_SUFFIX_RE.sub("", cell).strip()
 
 
+def _legacy_subdir_with_date() -> str:
+    """Return ``legacy_analysis/<YYYYMMDD>`` per shared output convention.
+
+    공통 출력 규약 (CLAUDE.md "출력 / 입력 경로 규약" 참고): 영역 폴더
+    하위에 일자 폴더를 둔다. ``LEGACY_SUBDIR`` 는 하위 호환을 위해 남겨둔다.
+    """
+    from datetime import datetime as _dt
+    return os.path.join(LEGACY_SUBDIR, _dt.now().strftime("%Y%m%d"))
+
+
 def _backend_slug(backend_dir: str) -> str:
     """Derive a filename-safe slug from the backend directory path.
 
@@ -60,14 +70,14 @@ def _backend_slug(backend_dir: str) -> str:
 
 
 def _legacy_output_dir(output_dir: str) -> str:
-    """Return the dedicated subfolder for AS-IS legacy outputs.
+    """Return ``<output>/legacy_analysis/<YYYYMMDD>`` and create it.
 
-    Ensures the directory exists on disk. All analyze-legacy artifacts
-    (Markdown + Excel) are written under this path instead of the
-    top-level ``output/`` so they do not mingle with files produced by
-    ``schema`` / ``query`` / ``terms`` / etc.
+    All analyze-legacy artifacts (Markdown + Excel) are written under
+    the area subfolder + 일자 폴더 (공통 출력 규약). ``.biz_cache`` 는
+    ``legacy_biz_extractor._cache_dir`` 가 영역 루트 (`output/
+    legacy_analysis/.biz_cache`) 에 직접 만들므로 일자 폴더 영향 없음.
     """
-    target = os.path.join(output_dir or ".", LEGACY_SUBDIR)
+    target = os.path.join(output_dir or ".", _legacy_subdir_with_date())
     os.makedirs(target, exist_ok=True)
     return target
 

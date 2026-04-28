@@ -23,7 +23,34 @@
 
 ## 0. 공통 / 인프라
 
-_진행 중 없음_
+### 진행 중: 출력 경로 규약 통일 — `output/<영역>/<일자>/<파일>`
+
+각 커맨드가 산출물을 다른 깊이/이름으로 떨어뜨려서 (`output/스키마.md` /
+`output/morpheme/...` / `output/sql_migration/...`) 일관성 부족. 영역별
+폴더 + 일자 (YYYYMMDD) 하위 폴더로 일괄 통일.
+
+- [x] `main.py` 에 `_build_dated_output_dir(base, area)` 헬퍼 추가
+- [x] cmd 별 영역 폴더 매핑 적용 (총 13 영역):
+      `schema` / `query` / `enrich-schema` / `erd` (4개 erd cmd 통합) /
+      `terms` / `morpheme` / `standardize` / `sql_review` /
+      `naming_validation` / `ddl` / `audit` /
+      `legacy_analysis` (analyze-legacy + discover-patterns + raw LLM
+      덤프) / `migration` (3개 cmd 통합, 기존 `sql_migration` 이름 단순화)
+- [x] 제외 대상 유지: `convert-mapping` / `convert-menu` → `input/`
+- [x] 영구 캐시 유지: `output/legacy_analysis/.biz_cache/`
+      (`legacy_biz_extractor._cache_dir` 가 영역 루트 직속에 생성)
+- [x] `legacy_report._legacy_output_dir` 가 자체 `legacy_analysis/<date>`
+      서브폴더 생성하도록 변경 (main.py 가 base_output 만 넘기면 됨)
+- [x] `legacy_pattern_discovery._dump_raw` 도 dated 경로로 갱신
+- [x] `--output` 명시 지정 시 사용자 경로 그대로 (모든 cmd 일관)
+- [x] CLAUDE.md 출력/입력 경로 규약 표 + Migration 산출물 경로 덤프 갱신
+- [x] README 상단에 "산출물 경로 규약" 섹션 신규 + morpheme/legacy/migration
+      산출물 트리 갱신
+- [x] smoke test:
+      * `_build_dated_output_dir` 13 영역 전부 정상 mkdir
+      * `morpheme` 실 실행 → `./output/morpheme/20260428/morpheme_*.{md,xlsx}` 생성
+      * `legacy_report._legacy_output_dir` → `legacy_analysis/20260428/` 반환
+- [ ] PR + squash-merge + local cleanup
 
 ---
 

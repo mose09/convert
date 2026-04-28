@@ -96,11 +96,11 @@
 **매핑 템플릿 / 산출물**:
 - `input/column_mapping_template.yaml`: 스펙 §4 의 7 예제 (rename/type/split/merge/value_map/drop/split-discriminator) 그대로 — 상세 rich YAML 샘플
 - `input/column_mapping_template.md`: **사용자 표준 9-컬럼 flat 포맷 샘플** (DRM-safe md/txt). `convert-mapping --md` 로 rich YAML 자동 변환. 헤더: `asis_table | asis_column | asis_column_type | tobe_table | tobe_table_comment | tobe_column | tobe_column_type | tobe_column_comment | remark`
-- `output/sql_migration/converted/<rel>.xml`: 변환 XML (구조 보존)
-- `output/sql_migration/sql_migration_TIMESTAMP.xlsx`: 5 시트 리포트
-- `output/sql_migration/impact_report_TIMESTAMP.xlsx`: 사전 영향분석 리포트
-- `output/sql_migration/validation_report_TIMESTAMP.xlsx`: Stage B 리포트
-- `output/legacy_analysis/.biz_cache/<sha256>.json`: Phase A biz 추출 결과 캐시 (method body SHA-256 키, `BIZ_SCHEMA_VERSION` bump 으로 전량 무효화)
+- `output/migration/<YYYYMMDD>/converted/<rel>.xml`: 변환 XML (구조 보존)
+- `output/migration/<YYYYMMDD>/sql_migration_TIMESTAMP.xlsx`: 5 시트 리포트
+- `output/migration/<YYYYMMDD>/impact_report_TIMESTAMP.xlsx`: 사전 영향분석 리포트
+- `output/migration/<YYYYMMDD>/validation_report_TIMESTAMP.xlsx`: Stage B 리포트
+- `output/legacy_analysis/.biz_cache/<sha256>.json`: Phase A biz 추출 결과 캐시 (영역 루트 직속, 일자 폴더 **제외**. method body SHA-256 키, `BIZ_SCHEMA_VERSION` bump 으로 전량 무효화)
 
 **column_mapping.yaml 확장 필드** (Phase 1~3 신규):
 - `options.comment_source`: `mapping` (mapping.yaml 만) / `mapping_first` (mapping > terms > schema chain) / `terms_dictionary` / `to_be_schema` / `both` (legacy)
@@ -137,14 +137,31 @@ LLM 게이트웨이 (200+ tok/s) 에서 순차 1시간 / 4병렬 15~20분.
 
 ## 출력 / 입력 경로 규약
 
-| 종류 | 경로 | 비고 |
-|------|------|------|
-| 일반 리포트 | `output/` | schema, query, erd, terms, standardize 등 |
-| 레거시 분석서 | `output/legacy_analysis/` | `as_is_analysis_<slug>_TIMESTAMP.{md,xlsx}`. 단일 모드는 backend 디렉토리 이름이 slug, 배치 모드는 `batch` |
-| 형태소분석 | `output/morpheme/` | `morpheme_TIMESTAMP.{md,xlsx}` — 단일 시트 xlsx + md 요약. `--output` 으로 override 가능. |
-| 패턴 파일 | `output/legacy_analysis/patterns.yaml` | `discover-patterns` 생성, `analyze-legacy --patterns`로 주입 |
-| 입력 템플릿 | `input/` | `menu_template.xlsx` (1~5레벨 + URL + README 시트), `menu_template.md` (DRM 우회용), **`morpheme_guide_template.md`** (형태소분석 지침 — 원칙 6 + few-shot 7 + 배치정책) |
-| 설정 | `config.yaml` | DB 연결, LLM 엔드포인트, `legacy.menu.*` 테이블 매핑, `legacy.rfc_depth` |
+**공통 컨벤션**: 모든 커맨드는 산출물을 `output/<영역>/<YYYYMMDD>/<파일>`
+형태로 떨어뜨린다. `main.py._build_dated_output_dir(base, area)` 헬퍼가
+영역 폴더 + 일자 폴더 생성을 담당. `--output` 으로 사용자가 명시 지정 시
+사용자 경로 그대로 사용. `convert-mapping` / `convert-menu` 두 커맨드만
+예외로 `input/` 에 떨어뜨린다 (다음 커맨드의 입력 자료라서).
+
+| 영역 폴더 | 사용 커맨드 | 산출물 예 |
+|-----------|------------|-----------|
+| `output/schema/<date>/` | schema | `스키마.md`, `스키마.txt` |
+| `output/query/<date>/` | query | `query_<TS>.md` |
+| `output/enrich-schema/<date>/` | enrich-schema | `스키마_enriched.md` |
+| `output/erd/<date>/` | erd / erd-md / erd-group / erd-rag | `erd_<owner>_<TS>.{md,html}`, `erd_groups_<TS>/` |
+| `output/terms/<date>/` | terms | `terms_dictionary_<TS>.{md,xlsx}` |
+| `output/morpheme/<date>/` | morpheme | `morpheme_<TS>.{md,xlsx}` |
+| `output/standardize/<date>/` | standardize | 표준화 리포트 디렉토리 |
+| `output/sql_review/<date>/` | review-sql | `sql_review_<TS>.{md,xlsx}` |
+| `output/naming_validation/<date>/` | validate-naming | `naming_validation_<TS>.{md,xlsx}` |
+| `output/ddl/<date>/` | gen-ddl | `ddl_<TS>.sql` |
+| `output/audit/<date>/` | audit-standards | `audit_<TS>.{md,xlsx}` |
+| `output/legacy_analysis/<date>/` | analyze-legacy + discover-patterns | `as_is_analysis_<slug>_<TS>.{md,xlsx}`, `patterns.yaml`, `pattern_llm_raw_<label>.txt` |
+| `output/migration/<date>/` | migration-impact + migrate-sql + validate-migration | `impact_report_<TS>.xlsx`, `sql_migration_<TS>.xlsx`, `validation_report_<TS>.xlsx`, `converted/<rel>.xml` |
+| `output/legacy_analysis/.biz_cache/` | (영구 캐시) | `<sha256>.json`. 일자 폴더 **밖** — 입력 method body SHA-256 키 기반이라 일자와 무관 |
+| `input/` (예외) | convert-mapping / convert-menu | 다음 커맨드의 입력 자료 |
+| 입력 템플릿 | `input/` | `menu_template.xlsx`, `menu_template.md`, **`morpheme_guide_template.md`** |
+| 설정 | `config.yaml` | DB 연결, LLM 엔드포인트, `legacy.menu.*` 등 |
 | 벡터 DB | `vectordb/` | ChromaDB (erd-rag용) |
 
 ## 지원 매트릭스 (변경 시 회귀 확인 필수)

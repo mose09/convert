@@ -31,6 +31,34 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
 
+## 산출물 경로 규약
+
+모든 커맨드는 `output/<영역>/<YYYYMMDD>/<파일>` 형태로 떨어집니다 — 영역
+폴더 + 일자별 하위 폴더 구조로 통일돼 있어 같은 날 여러 번 돌려도 한
+폴더 안에 모이고, 날짜가 바뀌면 자동으로 새 폴더로 분리됩니다.
+
+| 영역 폴더 | 사용 커맨드 |
+|----------|------------|
+| `output/schema/<날짜>/` | schema |
+| `output/query/<날짜>/` | query |
+| `output/enrich-schema/<날짜>/` | enrich-schema |
+| `output/erd/<날짜>/` | erd / erd-md / erd-group / erd-rag |
+| `output/terms/<날짜>/` | terms |
+| `output/morpheme/<날짜>/` | morpheme |
+| `output/standardize/<날짜>/` | standardize |
+| `output/sql_review/<날짜>/` | review-sql |
+| `output/naming_validation/<날짜>/` | validate-naming |
+| `output/ddl/<날짜>/` | gen-ddl |
+| `output/audit/<날짜>/` | audit-standards |
+| `output/legacy_analysis/<날짜>/` | analyze-legacy + discover-patterns |
+| `output/migration/<날짜>/` | migration-impact + migrate-sql + validate-migration |
+
+예외:
+- `--output` 으로 명시 지정 시 사용자 경로 그대로 사용
+- `convert-mapping` / `convert-menu` 두 커맨드는 다음 단계 입력 자료라
+  `input/` 으로 출력
+- `output/legacy_analysis/.biz_cache/` 는 영구 캐시 — 일자 폴더 밖
+
 ## 프로젝트 구조
 
 ```
@@ -738,7 +766,7 @@ leaf 행의 조상을 따라 `main_menu / sub_menu / tab / program_name` 4단계
 **산출물:**
 
 ```
-output/legacy_analysis/
+output/legacy_analysis/<YYYYMMDD>/
 ├── patterns.yaml                           # discover-patterns 산출물
 ├── as_is_analysis_<slug>_TIMESTAMP.md      # Markdown 리포트
 └── as_is_analysis_<slug>_TIMESTAMP.xlsx    # Excel (7개 기본 시트 + 최대 3개 opt-in)
@@ -996,7 +1024,7 @@ python main.py migration-impact `
   --to-be-schema .\output\to_be_schema.md
 ```
 
-출력: `output/sql_migration/impact_report_TIMESTAMP.xlsx` (5 시트 — Summary /
+출력: `output/migration/<날짜>/impact_report_TIMESTAMP.xlsx` (5 시트 — Summary /
 Table Impact / Column Impact / Affected Statements / Validation).
 
 **3) 실제 변환 + Stage A 검증**:
@@ -1012,9 +1040,9 @@ python main.py migrate-sql `
 ```
 
 출력:
-- `output/sql_migration/sql_migration_TIMESTAMP.xlsx` — 5 시트 (Summary /
+- `output/migration/<날짜>/sql_migration_TIMESTAMP.xlsx` — 5 시트 (Summary /
   Conversions (18컬럼) / Validation Errors / Unresolved Queue / Mapping Coverage)
-- `output/sql_migration/converted/<원본 경로>.xml` — 구조 보존 치환된 XML.
+- `output/migration/<날짜>/converted/<원본 경로>.xml` — 구조 보존 치환된 XML.
   각 statement 위에 `MIGRATION` 메타데이터 블록 + `AS-IS (original)` 주석.
 
 주요 플래그:
@@ -1113,10 +1141,10 @@ python main.py morpheme --input attrs.txt --guide input\morpheme_guide.md `
 기본 배치 크기: `max(10, min(50, 1200 // 평균 속성길이))` 자동. 사내 LLM
 게이트웨이에서 rate limit 이 여유 있다면 `--parallel 4` 정도로 올려도 됩니다.
 
-**산출물** (`output/morpheme/`):
+**산출물** (`output/morpheme/<YYYYMMDD>/`):
 
 ```
-output/morpheme/
+output/morpheme/<YYYYMMDD>/
 ├── morpheme_TIMESTAMP.md    # Summary + 저신뢰/실패/잘림 상위 20 샘플
 └── morpheme_TIMESTAMP.xlsx  # 단일 시트 "형태소분석" (15 컬럼)
     └── 속성명 | 컨피던스 | 단어1 | 단어2 | ... | 단어12 | 비고

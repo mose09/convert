@@ -13,6 +13,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _build_dated_output_dir(base_output_dir: str, area: str) -> str:
+    """Return ``{base}/{area}/{YYYYMMDD}`` and create it if missing.
+
+    공통 출력 경로 규약 (CLAUDE.md "출력 / 입력 경로 규약" 참고):
+    각 커맨드는 `output/<영역>/<일자>/<파일>` 로 산출물을 떨어뜨린다.
+    `--output` 으로 사용자가 명시 지정한 경우는 호출 측에서 우회.
+    """
+    from datetime import datetime as _dt
+    dated = os.path.join(base_output_dir, area, _dt.now().strftime("%Y%m%d"))
+    os.makedirs(dated, exist_ok=True)
+    return dated
+
+
 def load_config(config_path: str) -> dict:
     """Load YAML config and resolve ``${VAR}`` references from env.
 
@@ -55,7 +68,8 @@ def cmd_schema(args):
     owner = args.owner or config.get("oracle", {}).get("schema_owner", os.environ.get("ORACLE_USER", ""))
     table_names = [args.table] if args.table else config.get("tables")
     file_format = args.format or config.get("storage", {}).get("file_format", "markdown")
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "schema")
 
     connection = get_connection(config)
     try:
@@ -81,7 +95,8 @@ def cmd_query(args):
     from oracle_embeddings.storage import save_query_markdown
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "query")
 
     mybatis_dir = args.mybatis_dir
     if not os.path.isdir(mybatis_dir):
@@ -131,7 +146,8 @@ def cmd_erd(args):
     load_dotenv()
     config = load_config(args.config)
 
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "erd")
     owner = args.owner or config.get("oracle", {}).get("schema_owner", os.environ.get("ORACLE_USER", ""))
     table_names = [args.table] if args.table else config.get("tables")
 
@@ -218,7 +234,8 @@ def cmd_erd_rag(args):
     load_dotenv()
     config = load_config(args.config)
     db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "erd")
 
     # Validate vector DB exists
     if not os.path.isdir(db_path):
@@ -258,7 +275,8 @@ def cmd_standardize(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "standardize")
 
     if not args.schema_md:
         print("Error: --schema-md 는 필수입니다.")
@@ -333,7 +351,8 @@ def cmd_audit_standards(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "audit")
 
     if not args.schema_md:
         print("Error: --schema-md 는 필수입니다.")
@@ -370,7 +389,8 @@ def cmd_gen_ddl(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "ddl")
 
     if not args.request:
         print("Error: --request 로 자연어 요청을 입력하세요.")
@@ -459,7 +479,8 @@ def cmd_validate_naming(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "naming_validation")
 
     validator = NamingValidator(terms_dict_path=args.terms_md)
     print(f"  Loaded: {len(validator.standard_abbreviations)} abbreviations, "
@@ -532,7 +553,8 @@ def cmd_review_sql(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "sql_review")
 
     if not args.mybatis_dir:
         print("Error: --mybatis-dir 는 필수입니다.")
@@ -584,7 +606,8 @@ def cmd_terms(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "terms")
 
     if not args.schema_md and not args.react_dir:
         print("Error: --schema-md 또는 --react-dir 중 하나 이상 지정하세요.")
@@ -643,7 +666,8 @@ def cmd_enrich_schema(args):
 
     load_dotenv()
     config = load_config(args.config)
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "enrich-schema")
 
     if not args.schema_md:
         print("Error: --schema-md 는 필수입니다.")
@@ -691,7 +715,8 @@ def cmd_erd_group(args):
     from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "erd")
     max_size = args.max_size or 30
 
     if not args.schema_md:
@@ -840,7 +865,8 @@ def cmd_erd_md(args):
     from oracle_embeddings.erd_generator import generate_mermaid_erd, build_erd_markdown
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "erd")
 
     if not args.schema_md:
         print("Error: --schema-md 는 필수입니다.")
@@ -969,7 +995,7 @@ def cmd_migrate_sql(args):
     """column_mapping.yaml 기반으로 MyBatis XML 전체를 TO-BE 스키마용으로 변환.
 
     Stage A (sqlglot static) 는 항상 실행. --llm-fallback 이면 NEEDS_LLM 상태
-    statement 를 LLM 으로 보조 변환 시도. 산출물: output/sql_migration/
+    statement 를 LLM 으로 보조 변환 시도. 산출물: output/migration/<YYYYMMDD>/
     converted/<경로>.xml (--output-format 에 xml 포함) + Excel 5 시트 리포트.
     """
     import os
@@ -1077,7 +1103,8 @@ def cmd_migrate_sql(args):
     print(f"Scanning {len(xml_files)} XML file(s) under {mybatis_dir}...")
 
     all_results = []
-    out_root = Path("output/sql_migration")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    out_root = Path(_build_dated_output_dir(base_output, "migration"))
     converted_root = out_root / "converted"
 
     for xml_path in xml_files:
@@ -1345,11 +1372,13 @@ def cmd_validate_migration(args):
     failed = len(results) - passed
     print(f"\nStage B: {passed} pass / {failed} fail / {len(results)} total")
 
-    output = (
-        Path(args.report)
-        if args.report
-        else converted_dir.parent / f"validation_report_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    )
+    if args.report:
+        output = Path(args.report)
+    else:
+        config = load_config(args.config) if os.path.exists(args.config) else {}
+        base_output = config.get("storage", {}).get("output_dir", "./output")
+        dated = _build_dated_output_dir(base_output, "migration")
+        output = Path(dated) / f"validation_report_{_dt.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
     write_validation_report(results, stmt_meta, output)
     print(f"Report: {output}")
 
@@ -1395,7 +1424,10 @@ def cmd_migration_impact(args):
         output_path = Path(args.output)
     else:
         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-        output_path = Path("output/sql_migration") / f"impact_report_{ts}.xlsx"
+        config = load_config(args.config) if os.path.exists(args.config) else {}
+        base_output = config.get("storage", {}).get("output_dir", "./output")
+        dated = _build_dated_output_dir(base_output, "migration")
+        output_path = Path(dated) / f"impact_report_{ts}.xlsx"
     write_impact_excel(report, output_path)
     print(f"\nExcel report: {output_path}")
 
@@ -1406,7 +1438,7 @@ def cmd_discover_patterns(args):
 
     load_dotenv()
     config = load_config(args.config) if os.path.exists(args.config) else {}
-    output_dir = config.get("storage", {}).get("output_dir", "./output")
+    base_output = config.get("storage", {}).get("output_dir", "./output")
 
     if not os.path.isdir(args.backend_dir):
         print(f"Error: Backend dir not found: {args.backend_dir}")
@@ -1422,8 +1454,8 @@ def cmd_discover_patterns(args):
     if args.output:
         output_path = args.output
     else:
-        os.makedirs(os.path.join(output_dir, "legacy_analysis"), exist_ok=True)
-        output_path = os.path.join(output_dir, "legacy_analysis", "patterns.yaml")
+        dated = _build_dated_output_dir(base_output, "legacy_analysis")
+        output_path = os.path.join(dated, "patterns.yaml")
 
     save_patterns(patterns, output_path)
     print(f"\nPatterns saved: {os.path.abspath(output_path)}")
@@ -1457,11 +1489,8 @@ def cmd_morpheme(args):
     load_dotenv()
     config = load_config(args.config)
 
-    default_output = os.path.join(
-        config.get("storage", {}).get("output_dir", "./output"),
-        "morpheme",
-    )
-    output_dir = args.output or default_output
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = args.output or _build_dated_output_dir(base_output, "morpheme")
 
     print("=== Step 1: Loading inputs ===")
     print(f"  Input: {args.input}")
@@ -1519,6 +1548,7 @@ def cmd_analyze_legacy(args):
 
     load_dotenv()
     config = load_config(args.config) if os.path.exists(args.config) else {}
+    # legacy_report._legacy_output_dir 가 base_output 받아 영역+일자 폴더 만든다.
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
     backends_root = args.backends_root
@@ -1927,7 +1957,7 @@ def main():
     dp_parser.add_argument("--backend-dir", required=True,
                            help="Backend project root to analyze")
     dp_parser.add_argument("--output",
-                           help="Output YAML path (default: output/legacy_analysis/patterns.yaml)")
+                           help="Output YAML path (default: output/legacy_analysis/<YYYYMMDD>/patterns.yaml)")
     dp_parser.add_argument("--menu-md",
                            help="메뉴 Markdown (URL 관례 학습용). 지정하면 LLM 이 "
                                 "url_prefix_strip / app_key 등 URL 섹션도 추출.")
@@ -2039,7 +2069,7 @@ def main():
     mi_parser.add_argument("--to-be-schema",
                            help="(선택) TO-BE 스키마 .md — 지정 시 매핑 타겟 검증")
     mi_parser.add_argument("--output",
-                           help="출력 Excel 경로 (기본: output/sql_migration/impact_report_TIMESTAMP.xlsx)")
+                           help="출력 Excel 경로 (기본: output/migration/<YYYYMMDD>/impact_report_TIMESTAMP.xlsx)")
 
     # morpheme command
     morph_parser = subparsers.add_parser(
@@ -2068,7 +2098,7 @@ def main():
     )
     morph_parser.add_argument(
         "--output",
-        help="출력 디렉토리 (기본: output/morpheme/)",
+        help="출력 디렉토리 (기본: output/morpheme/<YYYYMMDD>/)",
     )
 
     # all command
