@@ -1835,11 +1835,13 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # as a flat union (namespaces are globally unique by FQCN so no
     # collision risk).
     for lib_dir in library_dirs_effective:
+        # 진단: 동일 path 가 직접 호출에선 11 잡히는데 library-dir 모드에선
+        # 0 으로 보이는 케이스. abs path / cwd / dir 존재 여부를 한 줄
+        # emit 해서 path 변형 가능성 즉시 검증.
+        abs_lib = os.path.abspath(lib_dir)
+        print(f"  Library dir resolve: input={lib_dir!r} abs={abs_lib!r} "
+              f"exists={os.path.isdir(abs_lib)} cwd={os.getcwd()!r}")
         lib_result = parse_all_mappers(lib_dir)
-        # 진단 로그 — common 같은 라이브러리 레포의 mapper XML 합집합이
-        # 제대로 들어가는지 시각화. 사용자 케이스: common 단독 분석에선
-        # 14 XML 잡히는데 library-dir 모드에선 statement 미해결 87건 →
-        # 어떤 lib_dir 가 어느 만큼 합집합되는지 한 줄 emit.
         lib_mc = lib_result.get("mapper_count", 0)
         lib_sc = lib_result.get("statement_count", 0)
         print(f"  Library mappers from {lib_dir}: "
