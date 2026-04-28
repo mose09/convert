@@ -158,6 +158,7 @@ def annotate_statements(
     results: List[RewriteResult],
     *,
     preserve_as_is: bool = True,
+    force_show_to_be: bool = False,
 ) -> None:
     """Prepend a migration metadata comment to each statement (docs spec §12.2).
 
@@ -173,6 +174,11 @@ def annotate_statements(
     body (xml_rewriter left them untouched). The suggested TO-BE from
     ``rr.to_be_sql`` is emitted inside the metadata block as a ``SUGGESTED``
     comment so it's visible but never executed.
+
+    ``force_show_to_be=True`` (used by ``--format-only``) emits the SUGGESTED
+    block for *every* row whose to_be_sql differs from as_is_sql — useful as
+    a visual preview of the formatter output even when the row's status is
+    AUTO and the XML body itself wasn't replaced.
     """
     by_id = {
         (r.namespace or "", r.sql_id or ""): r for r in results
@@ -197,7 +203,10 @@ def annotate_statements(
         blocks: List[str] = [_format_metadata_block(rr)]
         if preserve_as_is and rr.as_is_sql:
             blocks.append(_format_as_is_block(rr.as_is_sql))
-        if rr.status in ("UNRESOLVED", "NEEDS_LLM") and rr.to_be_sql and rr.to_be_sql != rr.as_is_sql:
+        show_to_be = (
+            rr.status in ("UNRESOLVED", "NEEDS_LLM") or force_show_to_be
+        )
+        if show_to_be and rr.to_be_sql and rr.to_be_sql != rr.as_is_sql:
             blocks.append(_format_suggested_block(rr.to_be_sql))
 
         if not blocks:
