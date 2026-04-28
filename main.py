@@ -1204,8 +1204,14 @@ def cmd_migrate_sql(args):
             annotate_statements(
                 out.tree, out.results,
                 preserve_as_is=not args.no_xml_preserve_as_is,
-                force_show_to_be=args.format_only,
+                # AS-IS comment now preserves the user's verbatim layout
+                # (xml_rewriter populates rr.as_is_raw), so format-only no
+                # longer needs the SUGGESTED block — the body itself will
+                # carry the formatted SQL via _replace_bodies_with_formatted.
+                force_show_to_be=False,
             )
+            if args.format_only:
+                _replace_bodies_with_formatted(out.tree, out.results)
             rel = xml_path.relative_to(scan_root)
             out_path = converted_root / rel
             serialize_tree(out.tree, out_path)
@@ -1243,6 +1249,61 @@ def cmd_migrate_sql(args):
         print(f"Converted XML: {converted_root}")
     elif args.dry_run:
         print("(--dry-run: XML 파일은 작성되지 않음)")
+
+
+def _replace_bodies_with_formatted(tree, results) -> None:
+    """``--format-only`` only: replace each statement body with the formatted
+    ``to_be_sql``, preserving the migration / AS-IS comment block that
+    :func:`annotate_statements` already inserted.
+
+    Trade-off: any dynamic-SQL children (``<if>`` / ``<choose>`` / ``<foreach>``)
+    inside the statement get removed because the formatted SQL is the
+    max-path flattened render. That's fine for format-only mode — it's a
+    visual-review tool, not a real conversion. The verbatim original is
+    still visible in the AS-IS comment block right above (xml_rewriter
+    captured it via ``rr.as_is_raw``).
+    """
+    from lxml import etree
+
+    statement_tags = {"select", "insert", "update", "delete"}
+    by_id = {(r.namespace or "", r.sql_id or ""): r for r in results}
+    root = tree.getroot()
+    ns_attr = root.get("namespace", "") or ""
+
+    for stmt in root.iter():
+        tag = stmt.tag if isinstance(stmt.tag, str) else ""
+        local = tag.split("}", 1)[-1] if "}" in tag else tag
+        if local not in statement_tags:
+            continue
+        rr = by_id.get((ns_attr, stmt.get("id", "") or ""))
+        if rr is None or not rr.to_be_sql:
+            continue
+
+        # Keep all leading Comment children (annotate_statements put them
+        # there); drop everything else.
+        keep_comments = []
+        drop_children = []
+        last_comment = None
+        seen_non_comment = False
+        for child in list(stmt):
+            if isinstance(child, etree._Comment) and not seen_non_comment:
+                keep_comments.append(child)
+                last_comment = child
+            else:
+                seen_non_comment = True
+                drop_children.append(child)
+        for child in drop_children:
+            stmt.remove(child)
+
+        # Re-emit the formatted SQL as the body. Indent each line by 2
+        # spaces so it sits cleanly inside the <select>...</select> frame
+        # at the same column as the comments.
+        formatted = (rr.to_be_sql or "").strip("\r\n").rstrip()
+        indented = formatted.replace("\n", "\n  ")
+        if last_comment is not None:
+            last_comment.tail = "\n  " + indented + "\n  "
+        else:
+            stmt.text = "\n  " + indented + "\n  "
 
 
 def _build_ko_lookup(to_be_schema_path, terms_md):
