@@ -176,7 +176,14 @@ def _is_sql_mapper(filepath: str) -> bool:
 
 
 def parse_mapper_file(filepath: str) -> list[dict]:
-    """Parse a MyBatis or iBatis mapper XML and extract SQL statements."""
+    """Parse a MyBatis or iBatis mapper XML and extract SQL statements.
+
+    ``<include refid="x">`` 형태 (다른 ``<sql id="x">`` 조각 참조) 도
+    pre-built fragment registry 로 inline 치환해서 select/insert/update/
+    delete 본문에 실제 SQL 이 들어가도록 한다 — 그렇지 않으면
+    ``<select>`` 안이 ``<include>`` 만 있는 경우 sql_text 가 비어 테이블
+    추출 0건.
+    """
     statements = []
     try:
         # Read and strip DOCTYPE to avoid DTD resolution errors (common in iBatis)
@@ -191,12 +198,16 @@ def parse_mapper_file(filepath: str) -> list[dict]:
     namespace = root.attrib.get("namespace", "")
     mapper_name = os.path.basename(filepath)
 
+    # 같은 파일 안의 ``<sql id="...">`` 조각 수집. cross-file include
+    # (``namespace.frag``) 은 현재 미지원 — 같은 파일 안 정의가 99% 케이스.
+    sql_fragments = _build_sql_fragments(root)
+
     # MyBatis: select/insert/update/delete
     # iBatis: also uses same tags, but may have additional ones like statement, procedure
     for tag in ("select", "insert", "update", "delete", "statement", "procedure"):
         for elem in root.iter(tag):
             stmt_id = elem.attrib.get("id", "unknown")
-            sql_text = _extract_sql_text(elem)
+            sql_text = _extract_sql_text(elem, sql_fragments=sql_fragments)
             if sql_text.strip():
                 statements.append({
                     "mapper": mapper_name,
@@ -210,6 +221,50 @@ def parse_mapper_file(filepath: str) -> list[dict]:
                 })
 
     return statements
+
+
+def _build_sql_fragments(root) -> dict:
+    """Collect ``{sql_id: sql_text}`` for all ``<sql id="x">`` elements.
+
+    Used to expand ``<include refid="x">`` references inline. Same-file
+    fragments only (cross-file ``namespace.frag`` references skipped —
+    very rare in practice).
+    """
+    fragments: dict[str, str] = {}
+    for sql_elem in root.iter("sql"):
+        frag_id = sql_elem.attrib.get("id", "")
+        if not frag_id:
+            continue
+        # Concatenate text + tail of all children, recursively. We don't
+        # call _extract_sql_text yet because fragments may include OTHER
+        # fragments — handled at expansion time with visited-set guard.
+        fragments[frag_id] = _raw_element_text(sql_elem)
+    return fragments
+
+
+def _raw_element_text(elem) -> str:
+    """Recursively concatenate text + tail of an element + children.
+
+    Used for sql fragment registration. ``<include>`` 자식은 refid 만
+    보존해서 expansion 단계에서 다시 치환되도록 sentinel 형태로 emit.
+    """
+    parts = []
+    if elem.text:
+        parts.append(elem.text)
+    for child in elem:
+        # 다른 fragment 를 참조하는 ``<include refid="x">`` 는 expansion
+        # 단계에서 다시 풀어야 하므로 sentinel 으로 보존.
+        if child.tag == "include":
+            ref = child.attrib.get("refid", "")
+            if ref:
+                # ref 이름에 underscore / hyphen / dot 들어가도 안전하도록
+                # BEGIN/END 마커 사이에 raw ref 보존.
+                parts.append(f" __MYBATIS_INC_BEGIN__{ref}__MYBATIS_INC_END__ ")
+        else:
+            parts.append(_raw_element_text(child))
+        if child.tail:
+            parts.append(child.tail)
+    return " ".join(parts)
 
 
 # Oracle stored-procedure / package invocation patterns, in priority order.
@@ -579,18 +634,63 @@ def _parse_mapper_fallback(filepath: str) -> list[dict]:
     return statements
 
 
-def _extract_sql_text(elem) -> str:
-    """Extract full SQL text from an XML element, recursing all nested levels."""
+def _extract_sql_text(elem, sql_fragments: dict | None = None,
+                       _visited: set | None = None) -> str:
+    """Extract full SQL text from an XML element, recursing all nested levels.
+
+    ``sql_fragments`` (dict ``{sql_id: raw_text}``) 가 주어지면 ``<include
+    refid="x">`` 자식을 fragment text 로 inline 치환. 재귀 fragment
+    (A → B → A cycle) 는 ``_visited`` set 으로 차단.
+    """
+    sql_fragments = sql_fragments or {}
+    visited = _visited if _visited is not None else set()
     parts = []
     if elem.text:
         parts.append(elem.text)
     for child in elem:
-        # Recursively extract from all nested dynamic SQL elements
-        # (<if>, <where>, <foreach>, <choose>, <when>, <otherwise>, <trim>, <set>, <include>, etc.)
-        parts.append(_extract_sql_text(child))
+        if child.tag == "include":
+            ref = child.attrib.get("refid", "")
+            if ref and ref not in visited and ref in sql_fragments:
+                # 재귀 expansion: fragment text 안에 또 ``<include>`` 가
+                # 있을 수 있어 sentinel 토큰을 같은 식으로 inline 치환.
+                parts.append(_expand_include_sentinels(
+                    sql_fragments[ref], sql_fragments, visited | {ref},
+                ))
+            # ref 가 unknown 이거나 cycle 이면 silently skip — 빈 텍스트
+        else:
+            parts.append(_extract_sql_text(child, sql_fragments, visited))
         if child.tail:
             parts.append(child.tail)
     return _clean_sql(" ".join(parts))
+
+
+def _expand_include_sentinels(text: str, sql_fragments: dict,
+                                visited: set) -> str:
+    """``__MYBATIS_INCLUDE__:ref__`` sentinel 들을 fragment text 로 치환.
+
+    ``_raw_element_text`` 가 fragment 등록 시 ``<include>`` 를 sentinel
+    로 보존해뒀던 것을 expansion 단계에서 풀어줌. visited cycle guard
+    로 재귀 무한루프 차단 (depth 5 까지 안전).
+    """
+    pattern = re.compile(
+        r"\s*__MYBATIS_INC_BEGIN__(.*?)__MYBATIS_INC_END__\s*"
+    )
+
+    def _sub(m):
+        ref = m.group(1)
+        if ref in visited or ref not in sql_fragments:
+            return " "
+        return _expand_include_sentinels(
+            sql_fragments[ref], sql_fragments, visited | {ref},
+        )
+
+    out = text
+    for _ in range(5):  # depth 5 cap
+        new = pattern.sub(_sub, out)
+        if new == out:
+            break
+        out = new
+    return out
 
 
 def _clean_sql(sql: str) -> str:
