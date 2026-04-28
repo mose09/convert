@@ -174,10 +174,13 @@ class _Formatter:
     def _emit_select(self, sel: exp.Select) -> str:
         lines: List[_Line] = []
 
-        # WITH (CTE) 가 있으면 기본 pretty 로 prefix 한 줄 뽑아주고,
-        # inner Select 만 우리 스타일로 처리하는 케이스는 복잡 → fallback 한 줄.
-        if sel.args.get("with"):
-            return sel.sql(dialect="oracle", pretty=True)
+        # WITH (CTE) — ``WITH a AS ( ... ), b AS ( ... ) SELECT ...`` 형태.
+        # sqlglot 의 Oracle dialect 는 ``with_`` 키로 저장 (다른 dialect 는
+        # ``with`` — 두 키 모두 조회). 첫 CTE 는 ``WITH`` prefix, 나머지는
+        # leading-comma prefix, 각 본문은 multi-line nested SELECT.
+        with_clause = sel.args.get("with_") or sel.args.get("with")
+        if with_clause is not None and with_clause.expressions:
+            lines.extend(self._emit_with(with_clause))
 
         # SELECT 절
         projs = sel.expressions or []
@@ -389,6 +392,27 @@ class _Formatter:
             ))
         return lines
 
+    # ── WITH (CTE) ──────────────────────────────────────────────────────
+    def _emit_with(self, with_clause: exp.With) -> List[_Line]:
+        """Emit ``WITH name AS ( ... ), name2 AS ( ... )`` — leading-comma
+        between CTEs, each body multi-line nested SELECT.
+        """
+        lines: List[_Line] = []
+        ctes = with_clause.expressions or []
+        indent = " " * (self.style.keyword_col_width + 1)
+        for i, cte in enumerate(ctes):
+            alias = cte.alias_or_name or ""
+            inner = cte.this
+            if isinstance(inner, exp.Select):
+                body = self._wrap_nested_select(inner)
+                text = f"{alias} AS {body}" if alias else body
+            else:
+                # Non-Select CTE body (rare) — fall back to generic emit.
+                text = self._sql(cte)
+            prefix = self._kw("WITH") if i == 0 else self.style.comma_prefix()
+            lines.append(_Line(prefix=prefix, text=text))
+        return lines
+
     # ── WHERE ───────────────────────────────────────────────────────────
     def _emit_where(self, where: exp.Where) -> List[_Line]:
         return self._split_predicate(
@@ -505,9 +529,57 @@ class _Formatter:
         return self.style.keyword_prefix(kw)
 
     def _sql(self, node) -> str:
+        """Emit a single AST node to SQL text. Falls through to sqlglot's
+        generic emit, but specially handles nested SELECTs so they pick up
+        our KoreanLegacy layout (leading-comma columns, ``=`` alignment,
+        keyword right-justification) instead of getting flattened to a
+        single line.
+        """
         if node is None:
             return ""
+        # ``(SELECT ...) AS x`` — scalar subquery in projection list arrives
+        # wrapped in exp.Alias. Unwrap and re-emit with the alias appended.
+        if isinstance(node, exp.Alias) and isinstance(node.this, exp.Subquery):
+            sub = node.this
+            if isinstance(sub.this, exp.Select):
+                alias_name = node.alias or ""
+                inner = self._wrap_nested_select(sub.this)
+                return inner + (f" AS {alias_name}" if alias_name else "")
+        # ``(SELECT ...)`` — surfaced from FROM inline views, scalar
+        # subqueries in SELECT, IN-subqueries on the RHS of comparisons.
+        if isinstance(node, exp.Subquery) and isinstance(node.this, exp.Select):
+            return self._wrap_nested_select(node.this, alias=node.alias_or_name)
+        # ``EXISTS (SELECT ...)``
+        if isinstance(node, exp.Exists):
+            inner = node.this
+            if isinstance(inner, exp.Subquery) and isinstance(inner.this, exp.Select):
+                return "EXISTS " + self._wrap_nested_select(inner.this)
+            if isinstance(inner, exp.Select):
+                return "EXISTS " + self._wrap_nested_select(inner)
+        # ``<lhs> IN (SELECT ...)`` — exp.In with ``query`` arg set
+        if isinstance(node, exp.In):
+            query = node.args.get("query")
+            if query is not None:
+                if isinstance(query, exp.Subquery) and isinstance(query.this, exp.Select):
+                    return f"{self._sql(node.this)} IN " + self._wrap_nested_select(query.this)
+                if isinstance(query, exp.Select):
+                    return f"{self._sql(node.this)} IN " + self._wrap_nested_select(query)
         return node.sql(dialect="oracle")
+
+    def _wrap_nested_select(
+        self, sel: exp.Select, *, alias: str = "",
+    ) -> str:
+        """Emit ``sel`` in the same KoreanLegacy layout as the top-level
+        statement, indented one keyword-column-width deeper, and surrounded
+        by parens. Each inner line is prefixed with 7 spaces so the inner
+        ``SELECT`` lands directly under the caller's keyword (``  FROM (``,
+        ``      , ``, …) — visually nested without breaking column counts.
+        """
+        inner = self._emit_select(sel)
+        indent = " " * (self.style.keyword_col_width + 1)  # 7 spaces
+        indented = "\n".join(indent + ln for ln in inner.split("\n"))
+        suffix = f" {alias}" if alias else ""
+        return f"(\n{indented}\n{indent})" + suffix
 
     def _col_comment(self, node, table_hint: Optional[exp.Expression] = None) -> str:
         """Column 에 해당하는 한글 주석 반환 (없으면 빈 문자열)."""

@@ -509,11 +509,14 @@ def _apply_subs_to_tree(
 
 def _maybe_cdata(text: str):
     """Wrap ``text`` with ``etree.CDATA`` when it carries XML-significant
-    characters that would otherwise be entity-escaped (``<``, ``&``).
-    Returns either the original string (when nothing needs escaping) or an
-    ``etree.CDATA`` object that lxml emits as ``<![CDATA[...]]>``.
+    characters that lxml would otherwise entity-escape — ``<``, ``>``, or
+    ``&``. Note that ``>`` is *technically* legal as plain text in XML 1.0,
+    but lxml's serializer escapes it to ``&gt;`` regardless, which breaks
+    SQL like ``AMT >= 100``. Wrapping in CDATA preserves all three
+    verbatim. Returns the original string when nothing needs escaping or
+    an ``etree.CDATA`` object that emits as ``<![CDATA[...]]>``.
     """
-    if text and ("<" in text or "&" in text):
+    if text and any(c in text for c in "<>&"):
         return etree.CDATA(text)
     return text
 
