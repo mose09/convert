@@ -215,7 +215,7 @@ def annotate_statements(
         body_text = stmt.text or ""
         stmt.text = "\n  "  # leading indent before the first comment
 
-        comments = [etree.Comment(text) for text in blocks]
+        comments = [etree.Comment(_sanitize_for_xml(text)) for text in blocks]
         for i, comment in enumerate(comments):
             stmt.insert(i, comment)
             # Spacer between comments (overwritten on the last comment below).
@@ -262,6 +262,37 @@ def _format_suggested_block(to_be_sql: str) -> str:
         + to_be_sql.strip().replace("\n", "\n  ")
         + "\n  "
     )
+
+
+# ---------------------------------------------------------------------------
+# XML 1.0 comment text sanitization
+# ---------------------------------------------------------------------------
+
+
+# XML 1.0 forbids control chars below 0x20 except TAB / LF / CR. Real legacy
+# mapper SQL occasionally carries BEL / VT / FF / NUL etc. as copy-paste
+# residue from old IDEs or DB tools — feeding that into ``etree.Comment(text)``
+# raises ``ValueError: All strings must be XML compatible …``. We escape such
+# bytes to a visible ``\xNN`` token so the comment block still renders and the
+# reviewer can spot where the gunk is, instead of the whole migrate-sql run
+# crashing on a single bad statement.
+_XML_FORBIDDEN_CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
+
+
+def _sanitize_for_xml(text: str) -> str:
+    """Replace XML-forbidden control chars with ``\\xNN`` and neutralise the
+    ``--`` sequence which is also illegal inside an XML comment body."""
+    if not text:
+        return text
+    out = _XML_FORBIDDEN_CTRL_RE.sub(
+        lambda m: f"\\x{ord(m.group(0)):02x}", text
+    )
+    # ``-->`` would prematurely close the comment; ``--`` itself is illegal
+    # inside <!-- ... -->. Soften with a thin space so users still see the
+    # original characters without breaking the XML.
+    if "--" in out:
+        out = out.replace("--", "- -")
+    return out
 
 
 def _format_changes_short(items: List["ChangeItem"]) -> str:  # type: ignore[name-defined]
