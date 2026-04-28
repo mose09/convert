@@ -1297,13 +1297,21 @@ def _replace_bodies_with_formatted(tree, results) -> None:
 
         # Re-emit the formatted SQL as the body. Indent each line by 2
         # spaces so it sits cleanly inside the <select>...</select> frame
-        # at the same column as the comments.
+        # at the same column as the comments. Wrap with CDATA when the SQL
+        # carries XML-significant characters (``<``, ``&``) so users see
+        # ``<![CDATA[...]]>`` in the output rather than entity-escaped
+        # ``&lt;`` — same convention as the AS-IS body reattachment.
         formatted = (rr.to_be_sql or "").strip("\r\n").rstrip()
         indented = formatted.replace("\n", "\n  ")
+        new_text = "\n  " + indented + "\n  "
+        wrapped = (
+            etree.CDATA(new_text) if ("<" in new_text or "&" in new_text)
+            else new_text
+        )
         if last_comment is not None:
-            last_comment.tail = "\n  " + indented + "\n  "
+            last_comment.tail = wrapped
         else:
-            stmt.text = "\n  " + indented + "\n  "
+            stmt.text = wrapped
 
 
 def _build_ko_lookup(to_be_schema_path, terms_md):
