@@ -638,6 +638,45 @@ def _find_service_namespaces(service_fqcn: str, indexes: dict) -> set:
     return namespaces
 
 
+# 진단 카운터 — analyze_legacy 시작 시 _reset_chain_diag() 로 초기화하고
+# 끝에 _emit_chain_diag() 로 콘솔 출력. 어느 단계 (statement miss /
+# namespace ambiguous / chain depth cap) 가 chain 누락의 원인인지
+# 가시화. 어떤 row 도 안 바꾸고 logging 만 추가.
+_CHAIN_DIAG: dict = {
+    "unresolved_stmt": 0,
+    "unresolved_stmt_samples": [],
+    "ambiguous_ns": 0,
+    "ambiguous_ns_samples": [],
+    "truncated_chain": 0,
+}
+
+
+def _reset_chain_diag() -> None:
+    _CHAIN_DIAG["unresolved_stmt"] = 0
+    _CHAIN_DIAG["unresolved_stmt_samples"] = []
+    _CHAIN_DIAG["ambiguous_ns"] = 0
+    _CHAIN_DIAG["ambiguous_ns_samples"] = []
+    _CHAIN_DIAG["truncated_chain"] = 0
+
+
+def _emit_chain_diag() -> None:
+    """Print 1~3 줄 진단 요약. 0 인 항목은 skip."""
+    parts = []
+    if _CHAIN_DIAG["unresolved_stmt"]:
+        s = _CHAIN_DIAG["unresolved_stmt_samples"][:3]
+        parts.append(f"  Chain diag: {_CHAIN_DIAG['unresolved_stmt']} statement id "
+                     f"unresolved (sample: {s})")
+    if _CHAIN_DIAG["ambiguous_ns"]:
+        s = _CHAIN_DIAG["ambiguous_ns_samples"][:3]
+        parts.append(f"  Chain diag: {_CHAIN_DIAG['ambiguous_ns']} namespace "
+                     f"ambiguous matches (sample: {s})")
+    if _CHAIN_DIAG["truncated_chain"]:
+        parts.append(f"  Chain diag: {_CHAIN_DIAG['truncated_chain']} transitive "
+                     f"chain walks truncated by rfc_depth cap")
+    for line in parts:
+        print(line)
+
+
 def _match_namespace(ns: str, ns_to_xml: dict) -> str | None:
     """Find the MyBatis XML namespace that corresponds to ``ns``.
 
@@ -660,6 +699,12 @@ def _match_namespace(ns: str, ns_to_xml: dict) -> str | None:
         if k == ns or k.endswith("." + ns)
     ]
     if suffix_matches:
+        if len(suffix_matches) > 1:
+            _CHAIN_DIAG["ambiguous_ns"] += 1
+            samples = _CHAIN_DIAG["ambiguous_ns_samples"]
+            if len(samples) < 5:
+                samples.append(f"{ns} → {sorted(suffix_matches)}")
+        # 기존 선택 알고리즘 유지 (max by length) — 회귀 방지.
         return max(suffix_matches, key=len)
     # Prefix match: FQCN SQL call → shorter XML namespace
     parts = ns.split(".")
@@ -959,7 +1004,12 @@ def _collect_body_calls(method: dict, mybatis_idx: dict) -> tuple[set, set, set,
             # 이름이 섞여나왔다 (사용자 제보). 진단용으로 sql_ids 에만
             # raw key 를 남겨 XML method 컬럼에서 "미해결 statement" 로
             # 드러나게 한다.
-            sql_ids.add(f"{matched_ns}.{sql_id}" if sql_id else matched_ns)
+            raw_key = f"{matched_ns}.{sql_id}" if sql_id else matched_ns
+            sql_ids.add(raw_key)
+            _CHAIN_DIAG["unresolved_stmt"] += 1
+            samples = _CHAIN_DIAG["unresolved_stmt_samples"]
+            if len(samples) < 5 and raw_key not in samples:
+                samples.append(raw_key)
 
     for rfc in method.get("body_rfc_calls") or []:
         name = rfc.get("name")
@@ -1031,6 +1081,16 @@ def _resolve_endpoint_chain(endpoint: dict, controller: dict,
             sql_ids.update(sids)
 
             if depth >= rfc_depth:
+                # 더 깊은 service helper 가 있을 수 있는데 depth cap 으로
+                # walk 중단. body_field_calls 에 inter-class call (this 아닌)
+                # 이 있으면 그 만큼 transitive chain 을 놓치는 것 — 진단
+                # 카운터에 기록.
+                inter_class_calls = sum(
+                    1 for fc in (method.get("body_field_calls") or [])
+                    if fc.get("receiver") and fc.get("receiver") != "this"
+                )
+                if inter_class_calls:
+                    _CHAIN_DIAG["truncated_chain"] += inter_class_calls
                 continue
 
             # Follow field.method() calls into their service classes.
@@ -1680,6 +1740,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         rows, unmatched_controllers, orphan_menus, stats
     """
     print(f"  Backend dir: {backend_dir}")
+    _reset_chain_diag()
     framework = detect_backend_framework(backend_dir)
     _FRAMEWORK_LABEL = {
         "spring": "Spring (detected via pom/gradle or @Controller annotations)",
@@ -2297,6 +2358,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     }
     print(f"  Method-scope resolution: {resolved_method_scope}/{len(rows)} "
           f"endpoints (fallback: {resolved_class_scope})")
+    _emit_chain_diag()
 
     # Reorder rows for display to follow menu.md source order + emit
     # menu-only placeholder for every menu entry without a matching
