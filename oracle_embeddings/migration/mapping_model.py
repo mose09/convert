@@ -271,6 +271,12 @@ class RewriteResult:
     # Original / converted
     as_is_sql: str
     to_be_sql: Optional[str] = None
+    # Verbatim XML body of the original statement (text + dynamic-tag children
+    # rendered as XML). Used by ``annotate_statements`` for the AS-IS comment
+    # block so the user's original layout (newlines, tabs, dynamic tags) is
+    # preserved exactly. Falls back to ``as_is_sql`` (max-path single-line)
+    # when not populated.
+    as_is_raw: Optional[str] = None
 
     # Status
     status: Status = "AUTO"

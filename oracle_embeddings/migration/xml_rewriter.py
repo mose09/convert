@@ -34,6 +34,7 @@ from lxml import etree
 
 from ..mybatis_parser import _read_file_safe
 from .dynamic_sql_expander import build_sql_includes, expand_paths
+from .ibatis_translator import translate_ibatis_to_mybatis
 from .mapping_model import ChangeItem, Mapping, RewriteResult, SqlType
 from .sql_rewriter import rewrite_sql
 
@@ -102,6 +103,25 @@ def rewrite_xml(
         )
 
     root = tree.getroot()
+
+    # Capture each statement's verbatim body BEFORE any translation so the
+    # AS-IS comment block can show the user's original iBatis layout
+    # (newlines, tabs, ``<isNotNull>`` / ``<dynamic>`` etc.) untouched.
+    # Keyed on ``stmt.get("id")`` (semantic id) — lxml's Python proxy
+    # wrappers regenerate per ``root.iter()`` call so ``id(stmt)`` is
+    # unstable across iterations.
+    pre_namespace = root.get("namespace", "") or ""
+    raw_by_stmt: Dict[Tuple[str, str], str] = {
+        (pre_namespace, stmt.get("id", "") or ""): _capture_stmt_inner_raw(stmt)
+        for stmt in root.iter()
+        if isinstance(stmt.tag, str) and _local(stmt.tag) in _STATEMENT_TAGS
+    }
+
+    # iBatis 2.x → MyBatis 3.x preflight. No-op on an already-MyBatis tree.
+    # Doing this before downstream walking lets sql_rewriter / dynamic_sql
+    # _expander treat everything as canonical MyBatis.
+    translate_ibatis_to_mybatis(tree)
+
     namespace = root.get("namespace", "") or ""
     sql_includes = build_sql_includes(root)
 
@@ -114,6 +134,11 @@ def rewrite_xml(
 
     for stmt in statements:
         rr = _rewrite_statement(stmt, sql_includes, mapping, xml_path, namespace)
+        # Override post-translate capture with the pre-translate snapshot so
+        # the AS-IS block shows the user's original iBatis form verbatim.
+        pre = raw_by_stmt.get((pre_namespace, stmt.get("id", "") or ""))
+        if pre is not None:
+            rr.as_is_raw = pre
         results.append(rr)
         all_changes.extend(rr.changed_items)
 
@@ -202,7 +227,7 @@ def annotate_statements(
         # body text onto the last comment's ``.tail``.
         blocks: List[str] = [_format_metadata_block(rr)]
         if preserve_as_is and rr.as_is_sql:
-            blocks.append(_format_as_is_block(rr.as_is_sql))
+            blocks.append(_format_as_is_block(rr))
         show_to_be = (
             rr.status in ("UNRESOLVED", "NEEDS_LLM") or force_show_to_be
         )
@@ -252,8 +277,24 @@ def _format_metadata_block(rr: RewriteResult) -> str:
     )
 
 
-def _format_as_is_block(as_is_sql: str) -> str:
-    return "\n  AS-IS (original)\n  " + as_is_sql.strip().replace("\n", "\n  ") + "\n  "
+def _format_as_is_block(rr: "RewriteResult") -> str:  # type: ignore[name-defined]
+    """Render the AS-IS comment block.
+
+    Prefers ``rr.as_is_raw`` (the user's verbatim XML body, preserving
+    original line breaks / tabs / dynamic tags) when available, falling back
+    to ``rr.as_is_sql`` (single-line max-path render) for legacy callers
+    that build RewriteResult directly without populating ``as_is_raw``.
+    """
+    raw = rr.as_is_raw if rr.as_is_raw is not None else rr.as_is_sql
+    if not raw:
+        return "\n  AS-IS (original)\n  -\n  "
+    # Drop only outer blank padding; keep any meaningful internal whitespace.
+    body = raw.strip("\r\n")
+    body = body.rstrip()
+    # Re-indent to sit cleanly inside the comment frame ("  " before each
+    # line). Existing tabs / extra spaces inside the user's SQL are kept.
+    body = body.replace("\n", "\n  ")
+    return "\n  AS-IS (original)\n  " + body + "\n  "
 
 
 def _format_suggested_block(to_be_sql: str) -> str:
@@ -351,6 +392,7 @@ def _rewrite_statement(
         sql_id=sql_id,
         sql_type=sql_type,
         as_is_sql=max_path.rendered_sql,
+        as_is_raw=_capture_stmt_inner_raw(stmt),
         to_be_sql=outcome.to_be_sql,
         status=outcome.status,
         applied_transformers=outcome.applied_transformers,
@@ -361,6 +403,25 @@ def _rewrite_statement(
         warnings=outcome.warnings,
         last_modified=datetime.now(),
     )
+
+
+def _capture_stmt_inner_raw(stmt: etree._Element) -> str:
+    """Serialize the stmt's inner content (text + dynamic-tag children) to a
+    string, preserving the user's original whitespace exactly. Comment nodes
+    are skipped because :func:`annotate_statements` adds them later — we only
+    want the SQL body the user wrote.
+    """
+    parts: List[str] = []
+    if stmt.text:
+        parts.append(stmt.text)
+    for child in stmt:
+        if isinstance(child.tag, str):
+            parts.append(etree.tostring(child, encoding="unicode"))
+        elif child.tail:
+            # Bare comment / PI we skipped — still preserve its tail so we
+            # don't drop trailing whitespace between siblings.
+            parts.append(child.tail)
+    return "".join(parts)
 
 
 # ---------------------------------------------------------------------------
