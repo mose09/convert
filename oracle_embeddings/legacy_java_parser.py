@@ -714,6 +714,74 @@ def _build_sql_call_head_re(extra_receivers: list[str] = None,
 _SQL_CALL_HEAD_RE = _build_sql_call_head_re()
 
 
+def _build_sql_constructor_head_re(sql_session_vars: list[str]
+                                     ) -> re.Pattern | None:
+    """``new XxxClass(<sqlSessionVar>, ...`` 형태 매치 (head 만).
+
+    사용 예: ``new QueryFloaterStream(sqlSession, NAMESPACE + "id", param)``
+    같이 사내 wrapper 클래스가 1st arg = SqlSession, 2nd arg = sqlid 형태로
+    호출하는 케이스. ``sql_session_vars`` 는 그 파일의 autowired SqlSession
+    필드 이름 목록 (PR #76 의 ``_collect_sql_receiver_names_from_fields``
+    재활용).
+
+    sql_session_vars 가 비어있으면 None 반환 → constructor scan 건너뜀
+    (회귀 0).
+
+    클래스명을 캡처해서 ``op`` 필드에 ``cls`` 그룹으로 노출.
+    """
+    if not sql_session_vars:
+        return None
+    vars_pat = "|".join(re.escape(v) for v in sql_session_vars)
+    return re.compile(
+        rf"""\bnew\s+(?P<cls>\w+)\s*\(\s*
+            (?:{vars_pat})\s*,\s*
+        """,
+        re.VERBOSE,
+    )
+
+
+def _extract_arg_at(text: str, start: int, initial_depth: int = 1) -> str:
+    """``start`` 위치에서 시작해 한 인자를 추출 (top-level ``,`` 또는 ``)`` 까지).
+
+    ``_extract_first_arg`` 와 같은 walker 인데 시작 시점 depth 와 위치를
+    호출자가 지정. constructor 매처 (``new X(<var>,``) 가 콤마까지 소비한
+    뒤 그 다음 인자 (sqlid 식) 를 추출할 때 사용.
+    """
+    n = len(text)
+    depth = initial_depth
+    i = start
+    in_str = None
+    arg_start = i
+    while i < n:
+        c = text[i]
+        if in_str is not None:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ('"', "'"):
+            in_str = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+            i += 1
+            continue
+        if c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[arg_start:i].strip()
+            i += 1
+            continue
+        if c == "," and depth == 1:
+            return text[arg_start:i].strip()
+        i += 1
+    return ""
+
+
 def _extract_first_arg(text: str, paren_open_idx: int) -> str:
     """``(`` 위치에서 시작해 1st arg 의 raw 표현 반환.
 
@@ -2198,6 +2266,7 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None,
                               sql_var_re: re.Pattern | None = None,
                               sql_ternary_re: re.Pattern | None = None,
                               sql_call_head_re: re.Pattern | None = None,
+                              sql_constructor_head_re: re.Pattern | None = None,
                               ) -> list[dict]:
     """SQL helper calls in a method body — unified evaluator.
 
@@ -2253,6 +2322,37 @@ def _collect_body_sql_calls(body: str, ns_constants: dict | None = None,
                 "sql_id": sql_id,
                 "offset": m.start(),
             })
+
+    # Constructor 형태 SQL 호출 — ``new XxxClass(<sqlSessionVar>, <sqlid>, ...)``
+    # 사내 wrapper (QueryFloaterStream / 대용량 조회용) 같은 패턴. 1st arg
+    # 가 SqlSession 인 것은 이미 head_re 빌드 시 사용한 sql_session_vars 로
+    # 결정되므로 sql_constructor_head_re 가 None 이면 자동 skip.
+    if sql_constructor_head_re is not None:
+        for m in sql_constructor_head_re.finditer(body):
+            cls_name = m.group("cls")
+            arg2 = _extract_arg_at(body, m.end(), initial_depth=1)
+            if not arg2:
+                continue
+            sqlids = _eval_string_expr(arg2, body, ns_constants)
+            op = cls_name  # wrapper class name 그대로 op 로 기록
+            for sqlid in sqlids:
+                if not sqlid or "." not in sqlid:
+                    continue
+                namespace, _, sql_id = sqlid.rpartition(".")
+                if not namespace or not sql_id:
+                    continue
+                key = (op, sqlid)
+                if key in seen:
+                    continue
+                seen.add(key)
+                results.append({
+                    "op": op,
+                    "sqlid": sqlid,
+                    "namespace": namespace,
+                    "sql_id": sql_id,
+                    "offset": m.start(),
+                    "resolved_from": f"constructor:{cls_name}",
+                })
     return results
 
 
@@ -2454,6 +2554,10 @@ def parse_java_file(filepath: str) -> dict:
         sql_call_head_re = _build_sql_call_head_re(extra_receivers=extra_sql_receivers)
     else:
         sql_call_head_re = None  # 기본값 사용
+    # Constructor 형태 SQL 호출 (``new XxxClass(<sqlSessionVar>, <sqlid>, ..)``)
+    # 매처 — 같은 SqlSession field 이름 목록으로 빌드. 빈 목록이면 None
+    # (자동 skip, 회귀 0).
+    sql_constructor_head_re = _build_sql_constructor_head_re(extra_sql_receivers)
 
     methods = _extract_method_bodies(content_nc, class_info)
     # method_ranges 는 두 곳에서 활용 —
@@ -2469,6 +2573,7 @@ def parse_java_file(filepath: str) -> dict:
         meth["body_sql_calls"] = _collect_body_sql_calls(
             body, ns_constants,
             sql_call_head_re=sql_call_head_re,
+            sql_constructor_head_re=sql_constructor_head_re,
         )
         meth["body_rfc_calls"] = _collect_body_rfc_calls(body, rfc_constants)
         meth["body_field_calls"] = _collect_body_field_calls(body)
