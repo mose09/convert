@@ -167,15 +167,48 @@ def serialize_tree(tree: etree._ElementTree, out_path: Path) -> None:
     """Write ``tree`` back to disk preserving the XML declaration and DTD.
 
     Uses ``pretty_print=False`` so we don't reformat the author's layout.
+    Post-processes the serialized bytes to insert a linebreak around any
+    ``<![CDATA[...]]>`` block that lxml emits flush against an adjacent tag
+    — lxml's API offers no way to control whitespace before/after a CDATA
+    section that's been attached via ``etree.CDATA(...)`` on ``.tail``, so
+    a careful string-level fixup is the simplest path.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    tree.write(
-        str(out_path),
+    raw = etree.tostring(
+        tree,
         encoding="utf-8",
         xml_declaration=True,
         pretty_print=False,
         standalone=None,
     )
+    out_path.write_bytes(_pretty_cdata_breaks(raw))
+
+
+# Post-process patterns. Each replacement preserves the original characters
+# and only inserts whitespace — never deletes anything — so the round-trip
+# stays valid XML and idempotent on already-broken outputs.
+_CDATA_AFTER_COMMENT_RE = re.compile(rb"-->(<!\[CDATA\[)")
+_CDATA_AFTER_OPEN_TAG_RE = re.compile(rb"(<[A-Za-z][^>]*>)(<!\[CDATA\[)")
+_CDATA_BEFORE_CLOSE_TAG_RE = re.compile(rb"(\]\]>)(</[A-Za-z])")
+
+
+def _pretty_cdata_breaks(xml_bytes: bytes) -> bytes:
+    """Insert ``\\n  `` between adjacent ``-->`` / open-tag / close-tag and a
+    neighbouring CDATA section so the SQL body lines up under the SELECT.
+
+    Handles three flush-against-tag patterns:
+
+    1. ``--><![CDATA[`` — comment close immediately followed by CDATA open
+       (the AS-IS / SUGGESTED comment block followed by the body)
+    2. ``<select id="x"><![CDATA[`` — element open followed by CDATA (rare;
+       only happens when the body is set on ``stmt.text`` directly)
+    3. ``]]></select>`` — CDATA close flush against the parent's close tag
+    """
+    indent = b"\n  "
+    xml_bytes = _CDATA_AFTER_COMMENT_RE.sub(b"-->" + indent + rb"\1", xml_bytes)
+    xml_bytes = _CDATA_AFTER_OPEN_TAG_RE.sub(rb"\1" + indent + rb"\2", xml_bytes)
+    xml_bytes = _CDATA_BEFORE_CLOSE_TAG_RE.sub(rb"\1" + indent + rb"\2", xml_bytes)
+    return xml_bytes
 
 
 def annotate_statements(
