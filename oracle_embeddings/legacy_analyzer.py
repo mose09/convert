@@ -1836,13 +1836,21 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # collision risk).
     for lib_dir in library_dirs_effective:
         lib_result = parse_all_mappers(lib_dir)
+        # 진단 로그 — common 같은 라이브러리 레포의 mapper XML 합집합이
+        # 제대로 들어가는지 시각화. 사용자 케이스: common 단독 분석에선
+        # 14 XML 잡히는데 library-dir 모드에선 statement 미해결 87건 →
+        # 어떤 lib_dir 가 어느 만큼 합집합되는지 한 줄 emit.
+        lib_mc = lib_result.get("mapper_count", 0)
+        lib_sc = lib_result.get("statement_count", 0)
+        print(f"  Library mappers from {lib_dir}: "
+              f"{lib_mc} XMLs, {lib_sc} statements")
         if lib_result.get("statements"):
             mybatis_result["statements"].extend(lib_result["statements"])
             mybatis_result["mapper_count"] = (
-                mybatis_result.get("mapper_count", 0) + lib_result.get("mapper_count", 0)
+                mybatis_result.get("mapper_count", 0) + lib_mc
             )
             mybatis_result["statement_count"] = (
-                mybatis_result.get("statement_count", 0) + lib_result.get("statement_count", 0)
+                mybatis_result.get("statement_count", 0) + lib_sc
             )
     mybatis_idx = _build_mybatis_indexes(mybatis_result)
     xml_namespaces = set(mybatis_idx["namespace_to_xml_files"].keys())
