@@ -246,7 +246,13 @@ def annotate_statements(
             # Spacer between comments (overwritten on the last comment below).
             comment.tail = "\n  "
         # Reattach the original SQL body so it appears AFTER all comments.
-        comments[-1].tail = "\n  " + body_text.lstrip(" \t\r\n") if body_text.strip() else "\n  "
+        # Body may carry XML special chars (e.g. raw ``<`` from the user's
+        # ``<![CDATA[ ... <= ... ]]>``); ``_maybe_cdata`` re-wraps with
+        # CDATA so they round-trip unchanged.
+        new_tail = (
+            "\n  " + body_text.lstrip(" \t\r\n") if body_text.strip() else "\n  "
+        )
+        comments[-1].tail = _maybe_cdata(new_tail)
 
 
 # ---------------------------------------------------------------------------
@@ -480,14 +486,36 @@ def _apply_subs_to_tree(
     root: etree._Element,
     subs: List[Tuple[re.Pattern, str]],
 ) -> None:
+    """Walk the tree and apply word-boundary substitutions to text/tail.
+
+    Critically, we **only reassign elem.text / elem.tail when the value
+    actually changed**. Reassigning a string to ``elem.text`` clobbers
+    lxml's internal CDATA marker even if the new value is identical — that
+    would silently turn ``<![CDATA[ ... <= ... ]]>`` into entity-escaped
+    text like ``&lt;= ...`` on serialization. When the text *does* change
+    and contains XML special chars, we re-wrap with ``etree.CDATA(...)`` so
+    the user's CDATA section survives the round-trip.
+    """
     for elem in root.iter():
-        # Skip attributes entirely (namespace / refid / id etc. shouldn't be
-        # rewritten; we only touch SQL text). If a transform needs to rename
-        # ``namespace`` attributes, that's a separate higher-level concern.
         if elem.text:
-            elem.text = _apply_subs_outside_literals(elem.text, subs)
+            new_text = _apply_subs_outside_literals(elem.text, subs)
+            if new_text != elem.text:
+                elem.text = _maybe_cdata(new_text)
         if elem.tail:
-            elem.tail = _apply_subs_outside_literals(elem.tail, subs)
+            new_tail = _apply_subs_outside_literals(elem.tail, subs)
+            if new_tail != elem.tail:
+                elem.tail = _maybe_cdata(new_tail)
+
+
+def _maybe_cdata(text: str):
+    """Wrap ``text`` with ``etree.CDATA`` when it carries XML-significant
+    characters that would otherwise be entity-escaped (``<``, ``&``).
+    Returns either the original string (when nothing needs escaping) or an
+    ``etree.CDATA`` object that lxml emits as ``<![CDATA[...]]>``.
+    """
+    if text and ("<" in text or "&" in text):
+        return etree.CDATA(text)
+    return text
 
 
 def _apply_subs(text: str, subs: List[Tuple[re.Pattern, str]]) -> str:

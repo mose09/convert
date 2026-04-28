@@ -31,7 +31,7 @@ Scope 제한:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import sqlglot
 from sqlglot import exp
@@ -397,17 +397,57 @@ class _Formatter:
             cont_kw="AND",
         )
 
-    # ── 공통: AND/OR chain 분해 ─────────────────────────────────────────
+    # ── 공통: AND/OR chain 분해 + 단순 `<lhs> <op> <rhs>` 의 = 정렬 ─────
     def _split_predicate(
         self, pred: exp.Expression, *, first_prefix: str, cont_kw: str
     ) -> List[_Line]:
+        """Flatten an AND chain and align simple comparison operators.
+
+        For predicates of the form ``<column> <op> <expr>`` (EQ / NEQ / GT /
+        LT / GTE / LTE), the LHS column gets right-padded so every
+        operator (``=``, ``<>``, …) lands on the same column — matching the
+        Korean legacy convention::
+
+            WHERE EQ_MST_ID = #{EQ_MST_ID}
+              AND EQ_ID     = #{EQ_ID}
+
+        Predicates that don't match the simple shape (function calls,
+        ``EXISTS``, ``IN`` with subquery, ``BETWEEN``, …) are emitted as-is
+        and don't disturb the alignment of their neighbors.
+        """
         parts = list(_flatten_and(pred))
-        lines: List[_Line] = []
+
+        # Pass 1: classify each predicate.
+        Tracked = Tuple[str, str, str, str]  # (prefix, lhs_text, op_text, rhs_text)
+        Plain   = Tuple[str, str]            # (prefix, raw_sql_text)
+        items: List[object] = []
+        simple_lhs_widths: List[int] = []
         for i, p in enumerate(parts):
-            lines.append(_Line(
-                prefix=first_prefix if i == 0 else self._kw(cont_kw),
-                text=self._sql(p),
-            ))
+            prefix = first_prefix if i == 0 else self._kw(cont_kw)
+            simple = _classify_simple_compare(p)
+            if simple is not None:
+                lhs_text = self._sql(simple.lhs)
+                rhs_text = self._sql(simple.rhs)
+                items.append((prefix, lhs_text, simple.op, rhs_text))
+                simple_lhs_widths.append(len(lhs_text))
+            else:
+                items.append((prefix, self._sql(p)))
+
+        # Pass 2: figure out target LHS width from the simple ones only.
+        target = max(simple_lhs_widths, default=0)
+
+        lines: List[_Line] = []
+        for it in items:
+            if len(it) == 4:
+                prefix, lhs, op, rhs = it  # type: ignore[misc]
+                padded_lhs = lhs.ljust(target) if target else lhs
+                lines.append(_Line(
+                    prefix=prefix,
+                    text=f"{padded_lhs} {op} {rhs}",
+                ))
+            else:
+                prefix, raw = it  # type: ignore[misc]
+                lines.append(_Line(prefix=prefix, text=raw))
         return lines
 
     # ── 공통: 리스트 항목 줄 빌드 ───────────────────────────────────────
@@ -538,6 +578,50 @@ def _flatten_and(node: exp.Expression):
         yield from _flatten_and(node.args.get("expression"))
     else:
         yield node
+
+
+# ----------------------------------------------------------------------------
+# Simple ``<column> <op> <expr>`` predicate classifier (used by `=` alignment)
+# ----------------------------------------------------------------------------
+
+
+@dataclass
+class _SimpleCompare:
+    lhs: exp.Expression
+    op: str
+    rhs: exp.Expression
+
+
+# sqlglot binary comparison node → operator text. Oracle uses ``<>`` for NEQ
+# in legacy code; sqlglot emits whichever the input had, so we mirror.
+_COMPARE_OPS: Dict[type, str] = {
+    exp.EQ:  "=",
+    exp.NEQ: "<>",
+    exp.GT:  ">",
+    exp.LT:  "<",
+    exp.GTE: ">=",
+    exp.LTE: "<=",
+}
+
+
+def _classify_simple_compare(node: exp.Expression):
+    """Return ``_SimpleCompare`` when ``node`` is exactly ``<col> <op> <expr>``
+    with a Column / Identifier on the LHS (so it has a meaningful "name"
+    width to align on), else ``None``.
+
+    The RHS can be anything — literal, parameter placeholder, function call.
+    Only the LHS shape matters for alignment.
+    """
+    op = _COMPARE_OPS.get(type(node))
+    if op is None:
+        return None
+    lhs = node.this
+    if not isinstance(lhs, (exp.Column, exp.Identifier, exp.Dot)):
+        return None
+    rhs = node.args.get("expression")
+    if rhs is None:
+        return None
+    return _SimpleCompare(lhs=lhs, op=op, rhs=rhs)
 
 
 def _from_sources(frm: exp.From) -> List[exp.Expression]:
