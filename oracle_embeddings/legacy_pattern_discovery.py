@@ -762,13 +762,14 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
 
 
 def _dump_raw_response(text: str, label: str) -> None:
-    """Write the raw LLM response to ``output/legacy_analysis/pattern_llm_raw_<label>.txt``.
+    """Write the raw LLM response to ``output/legacy_analysis/<YYYYMMDD>/pattern_llm_raw_<label>.txt``.
 
-    Silently skipped if the target dir can't be created — this is a best-
-    effort debug aid, not a hard requirement.
+    공통 출력 규약 (영역 폴더 + 일자 폴더) 적용. Silently skipped if the
+    target dir can't be created — this is a best-effort debug aid.
     """
     try:
-        outdir = os.path.join("output", "legacy_analysis")
+        from datetime import datetime as _dt
+        outdir = os.path.join("output", "legacy_analysis", _dt.now().strftime("%Y%m%d"))
         os.makedirs(outdir, exist_ok=True)
         path = os.path.join(outdir, f"pattern_llm_raw_{label}.txt")
         with open(path, "w", encoding="utf-8") as f:
