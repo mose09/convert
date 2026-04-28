@@ -279,22 +279,6 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: migrate-sql `--format-only` — 매핑 없이 포매터만 검토
-
-사용자 시나리오: 매핑 데이터 없이 AS-IS XML 만 던져서 줄맞춤/주석 양식
-출력만 확인하고 싶음. 현재는 `--mapping`, `--to-be-schema` 둘 다 required
-+ 파일 존재 체크 → 둘 다 없으면 실행 자체 안 됨.
-
-- [ ] argparse: `--mapping`/`--to-be-schema` 를 optional 로 + `--format-only`
-      플래그 추가
-- [ ] `cmd_migrate_sql`: format_only 분기에서 빈 `Mapping` (style=korean_legacy)
-      구성, 스키마 로드 skip, Stage A 검증 skip
-- [ ] format_sql 은 그대로 동작 (style 이 KoreanLegacy 면 매핑 0 건이어도
-      AST roundtrip 으로 줄맞춤 적용됨)
-- [ ] `annotate_statements` 메타블록은 기존 `_format_metadata_block` 의 빈
-      값 → `-` 폴백 활용 — Applied/Changed/Stage A/B 모두 `-` 로 표시
-- [ ] 검증: 단순 mapper.xml 1개 던져서 출력 visual 확인
-
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
 🟡 (실환경 드물 + 다른 검증 단계가 받쳐줌 → 운영 차단급 아님):
