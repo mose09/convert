@@ -992,30 +992,59 @@ def cmd_migrate_sql(args):
     config = load_config(args.config) if os.path.exists(args.config) else {}
 
     mybatis_dir = Path(args.mybatis_dir)
-    mapping_path = Path(args.mapping)
-    to_be_schema_path = Path(args.to_be_schema)
+    mapping_path = Path(args.mapping) if args.mapping else None
+    to_be_schema_path = Path(args.to_be_schema) if args.to_be_schema else None
     terms_md = Path(args.terms_md) if args.terms_md else None
 
     if not mybatis_dir.is_dir():
         print(f"Error: --mybatis-dir 없음: {mybatis_dir}")
         return
-    if not mapping_path.is_file():
-        print(f"Error: --mapping 파일 없음: {mapping_path}")
-        return
-    if not to_be_schema_path.is_file():
-        print(f"Error: --to-be-schema 파일 없음: {to_be_schema_path}")
-        return
+
+    if args.format_only:
+        # Format-only mode — no mapping / schema needed. Build an empty
+        # Mapping with style=korean_legacy so the formatter still re-emits
+        # SQL with leading-comma alignment and the metadata scaffold.
+        from oracle_embeddings.migration.mapping_model import (
+            DefaultSchema, Mapping, MappingOptions, OutputFormat,
+        )
+        mapping = Mapping(
+            version="format-only",
+            default_schema=DefaultSchema(),
+            options=MappingOptions(
+                output_format=OutputFormat(style="korean_legacy"),
+            ),
+            tables=[],
+            columns=[],
+        )
+        to_be_schema_tables: dict = {}
+        if mapping_path is not None and not mapping_path.is_file():
+            print(f"  warning: --mapping 무시됨 (파일 없음): {mapping_path}")
+        if to_be_schema_path is not None and not to_be_schema_path.is_file():
+            print(f"  warning: --to-be-schema 무시됨 (파일 없음): {to_be_schema_path}")
+        print("Mode: --format-only (매핑/스키마 없이 포매터만 적용, Stage A skip)")
+    else:
+        if mapping_path is None:
+            print("Error: --mapping 필수 (--format-only 로 매핑 없이 포매터만 돌릴 수 있음)")
+            return
+        if to_be_schema_path is None:
+            print("Error: --to-be-schema 필수 (--format-only 로 스키마 없이 돌릴 수 있음)")
+            return
+        if not mapping_path.is_file():
+            print(f"Error: --mapping 파일 없음: {mapping_path}")
+            return
+        if not to_be_schema_path.is_file():
+            print(f"Error: --to-be-schema 파일 없음: {to_be_schema_path}")
+            return
+        to_be_schema_tables = load_schema_tables(to_be_schema_path)
+        try:
+            mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
+        except Exception as exc:
+            print(f"Error: 매핑 파일 로드 실패:\n{exc}")
+            return
 
     formats = {f.strip().lower() for f in (args.output_format or "excel,xml").split(",")}
     emit_excel = "excel" in formats
     emit_xml = "xml" in formats
-
-    to_be_schema_tables = load_schema_tables(to_be_schema_path)
-    try:
-        mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
-    except Exception as exc:
-        print(f"Error: 매핑 파일 로드 실패:\n{exc}")
-        return
 
     # Korean comment lookup for --emit-column-comments
     # Source priority is driven by mapping.options.comment_source:
@@ -1058,8 +1087,10 @@ def cmd_migrate_sql(args):
             continue
 
         for rr in out.results:
-            # Stage A
-            if rr.to_be_sql:
+            # Stage A — skipped under --format-only since there's no schema
+            # to look identifiers up against. stage_a_pass stays None →
+            # report shows "-".
+            if rr.to_be_sql and not args.format_only:
                 vr = validate_static(rr.to_be_sql, to_be_schema_tables)
                 rr.stage_a_pass = vr.ok
                 if not vr.ok and not rr.parse_error:
@@ -1088,13 +1119,14 @@ def cmd_migrate_sql(args):
                         rr.status = "UNRESOLVED"
                     else:
                         rr.status = "AUTO_WARN"
-                    # Re-run Stage A on the LLM output
-                    vr = validate_static(llm_out.converted_sql, to_be_schema_tables)
-                    rr.stage_a_pass = vr.ok
-                    if not vr.ok:
-                        rr.parse_error = "; ".join(
-                            f"[{i.code}] {i.message}" for i in vr.errors
-                        )
+                    # Re-run Stage A on the LLM output (skip under format-only)
+                    if not args.format_only:
+                        vr = validate_static(llm_out.converted_sql, to_be_schema_tables)
+                        rr.stage_a_pass = vr.ok
+                        if not vr.ok:
+                            rr.parse_error = "; ".join(
+                                f"[{i.code}] {i.message}" for i in vr.errors
+                            )
 
             # Korean comments + 사용자 표준 포매터 (style=korean_legacy)
             style = getattr(mapping.options.output_format, "style", "none")
@@ -1127,6 +1159,7 @@ def cmd_migrate_sql(args):
             annotate_statements(
                 out.tree, out.results,
                 preserve_as_is=not args.no_xml_preserve_as_is,
+                force_show_to_be=args.format_only,
             )
             rel = xml_path.relative_to(mybatis_dir)
             out_path = converted_root / rel
@@ -1946,10 +1979,10 @@ def main():
     )
     ms_parser.add_argument("--mybatis-dir", required=True,
                            help="AS-IS MyBatis mapper XML 디렉토리")
-    ms_parser.add_argument("--mapping", required=True,
-                           help="column_mapping.yaml 경로")
-    ms_parser.add_argument("--to-be-schema", required=True,
-                           help="TO-BE 스키마 .md (schema 커맨드 결과물)")
+    ms_parser.add_argument("--mapping",
+                           help="column_mapping.yaml 경로 (--format-only 면 생략 가능)")
+    ms_parser.add_argument("--to-be-schema",
+                           help="TO-BE 스키마 .md (--format-only 면 생략 가능)")
     ms_parser.add_argument("--terms-md",
                            help="(선택) terms_dictionary.md — 한글 주석 삽입용")
     ms_parser.add_argument("--output-format", default="excel,xml",
@@ -1962,6 +1995,10 @@ def main():
                            help="NEEDS_LLM 상태 statement 를 LLM 으로 보조 변환")
     ms_parser.add_argument("--dry-run", action="store_true",
                            help="XML 파일은 쓰지 않고 리포트만 생성")
+    ms_parser.add_argument("--format-only", action="store_true",
+                           help="매핑/스키마 없이 KoreanLegacy 포매터만 적용 — "
+                                "줄맞춤/메타블록 양식 사전 검토용 (Stage A 검증 skip, "
+                                "변환 0건 → 모든 행 AUTO 로 출력)")
 
     # validate-migration command (Stage B)
     vm_parser = subparsers.add_parser(
