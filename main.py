@@ -1813,12 +1813,15 @@ def cmd_analyze_legacy(args):
             xlsx_path = save_legacy_excel(result, output_dir, menu_only=menu_only)
             print(f"  Excel:    {os.path.abspath(xlsx_path)}")
 
-    # Mermaid sequence diagrams: endpoint 당 .md 하나씩 폴더에 건별 저장.
-    # --sequence-diagram 으로 rows 에 sequence_diagram 필드가 채워졌을
-    # 때만 동작 (empty rows 면 자동 skip).
+    # Mermaid sequence diagrams: --sequence-diagram-group 기준으로 .md 묶음.
+    # default=main_menu (업무 대분류). --sequence-diagram 으로 rows 에
+    # sequence_diagram 필드가 채워졌을 때만 동작.
     if emit_sequence_diagram:
         from oracle_embeddings.legacy_report import save_sequence_diagrams_folder
-        save_sequence_diagrams_folder(result, output_dir)
+        save_sequence_diagrams_folder(
+            result, output_dir,
+            group_by=getattr(args, "sequence_diagram_group", "main_menu"),
+        )
 
     s = result["stats"]
     print()
@@ -2044,6 +2047,15 @@ def main():
                                 "(파서만 사용). Markdown 리포트에 endpoint 별 "
                                 "코드블럭 + Excel 에 'Sequence Diagrams' 시트 "
                                 "신규. Phase II 와 독립 — 단독 사용 가능.")
+    al_parser.add_argument("--sequence-diagram-group",
+                           choices=["main_menu", "menu_path", "sub_menu",
+                                    "controller_class", "none"],
+                           default="main_menu",
+                           help="Sequence diagram .md 파일을 어떤 단위로 묶을지. "
+                                "default=main_menu (업무 대분류 별 묶음). "
+                                "menu_path=main+sub+tab 합쳐 더 세분화. "
+                                "controller_class=Java Controller 단위. "
+                                "none=endpoint 별 한 파일씩 (legacy).")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(

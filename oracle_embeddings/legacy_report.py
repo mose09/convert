@@ -120,16 +120,24 @@ def _slugify_for_filename(text: str, fallback: str = "endpoint") -> str:
     return slug[:80]
 
 
-def save_sequence_diagrams_folder(result: dict, output_dir: str) -> str:
-    """endpoint 별 Mermaid ``.md`` 파일을 폴더에 건별 저장.
+def save_sequence_diagrams_folder(result: dict, output_dir: str,
+                                   group_by: str = "main_menu") -> str:
+    """Mermaid ``.md`` 파일을 폴더에 저장 — group_by 기준으로 묶음.
 
-    ``result["rows"]`` 의 각 row 에 ``sequence_diagram`` 이 있으면
-    그 endpoint 전용 ``.md`` 하나를 생성. 파일명은 고유성 + 가독성
-    을 위해 ``<idx>_<HTTP>_<slug>.md`` 형식.
+    ``group_by`` 옵션:
+      - ``"main_menu"`` (default): 같은 main_menu 의 모든 endpoint 를 한
+        파일에 묶음. 업무 단위 (대분류) 별 시퀀스 묶음.
+      - ``"menu_path"``: ``main_menu/sub_menu/tab`` 까지 같은 row 끼리
+        묶음 (더 세분화).
+      - ``"sub_menu"``: sub_menu 단위.
+      - ``"controller_class"``: Java Controller 클래스 단위.
+      - ``"none"``: endpoint 별 한 파일씩 (legacy 동작).
 
-    폴더 경로는 리포트 파일명과 같은 prefix (``as_is_analysis_<slug>_<ts>/``).
-    sequence_diagram 이 있는 row 가 하나도 없으면 폴더 자체를
-    생성하지 않고 빈 문자열 반환 (회귀 없음).
+    파일명: ``<idx>_<group_slug>.md``. 같은 그룹의 endpoint 들은 한 파일
+    안에 ``## 1. <program>``, ``## 2. <program>`` ... 순으로 나열.
+
+    sequence_diagram 이 있는 row 가 하나도 없으면 폴더 자체를 생성하지
+    않고 빈 문자열 반환 (회귀 없음).
     """
     rows = result.get("rows") or []
     diagram_rows = [r for r in rows if (r.get("sequence_diagram") or "").strip()]
@@ -137,26 +145,110 @@ def save_sequence_diagrams_folder(result: dict, output_dir: str) -> str:
         return ""
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     folder = _build_diagram_folder(output_dir, result, ts)
-    seen_names: dict[str, int] = {}
-    for idx, r in enumerate(diagram_rows, 1):
-        http = (r.get("http_method") or "").upper() or "ANY"
-        program = r.get("program_name") or ""
-        url = r.get("url") or ""
-        slug_source = program or url or f"endpoint_{idx}"
-        slug = _slugify_for_filename(slug_source, fallback=f"endpoint_{idx}")
-        base = f"{idx:03d}_{http}_{slug}"
-        # 중복 파일명 방어 (program 이 같은 경우)
-        fname = base
-        if base in seen_names:
-            seen_names[base] += 1
-            fname = f"{base}_{seen_names[base]}"
-        else:
-            seen_names[base] = 1
-        filepath = os.path.join(folder, f"{fname}.md")
-        _write_single_diagram_md(filepath, r)
-    logger.info("Sequence diagrams folder saved: %s (%d files)", folder, len(diagram_rows))
-    print(f"  Sequence diagrams: {len(diagram_rows)} files → {folder}")
+
+    if group_by == "none":
+        # legacy: endpoint 별 한 파일씩
+        seen_names: dict[str, int] = {}
+        for idx, r in enumerate(diagram_rows, 1):
+            http = (r.get("http_method") or "").upper() or "ANY"
+            program = r.get("program_name") or ""
+            url = r.get("url") or ""
+            slug_source = program or url or f"endpoint_{idx}"
+            slug = _slugify_for_filename(slug_source, fallback=f"endpoint_{idx}")
+            base = f"{idx:03d}_{http}_{slug}"
+            fname = base
+            if base in seen_names:
+                seen_names[base] += 1
+                fname = f"{base}_{seen_names[base]}"
+            else:
+                seen_names[base] = 1
+            filepath = os.path.join(folder, f"{fname}.md")
+            _write_single_diagram_md(filepath, r)
+        logger.info("Sequence diagrams folder saved: %s (%d files, per-endpoint)",
+                    folder, len(diagram_rows))
+        print(f"  Sequence diagrams: {len(diagram_rows)} files (per-endpoint) → {folder}")
+        return folder
+
+    # grouped 모드: row 들을 group_by field 로 묶음
+    groups: dict[str, list[dict]] = {}
+    for r in diagram_rows:
+        key = _resolve_group_key(r, group_by)
+        groups.setdefault(key, []).append(r)
+    # 그룹 키 정렬 — 미분류 ("_") 는 항상 마지막으로
+    sorted_keys = sorted(groups.keys(),
+                         key=lambda k: (k == "_미분류_", k))
+    for idx, key in enumerate(sorted_keys, 1):
+        slug = _slugify_for_filename(key, fallback=f"group_{idx}")
+        fname = f"{idx:03d}_{slug}.md"
+        filepath = os.path.join(folder, fname)
+        _write_grouped_diagram_md(filepath, key, groups[key])
+    logger.info("Sequence diagrams folder saved: %s (%d files, grouped by %s)",
+                folder, len(groups), group_by)
+    print(f"  Sequence diagrams: {len(groups)} files "
+          f"(grouped by {group_by}, {len(diagram_rows)} endpoints) → {folder}")
     return folder
+
+
+def _resolve_group_key(row: dict, group_by: str) -> str:
+    """row 에서 group_by field 의 값을 추출. 비어있으면 ``"_미분류_"``."""
+    if group_by == "menu_path":
+        parts = [row.get("main_menu", ""), row.get("sub_menu", ""),
+                 row.get("tab", "")]
+        joined = " / ".join(p for p in parts if p)
+        return joined or "_미분류_"
+    val = (row.get(group_by) or "").strip()
+    return val or "_미분류_"
+
+
+def _write_grouped_diagram_md(filepath: str, group_name: str,
+                               rows: list[dict]) -> None:
+    """그룹 .md 작성 — 같은 group_by 의 모든 endpoint sequence 를 한 파일에."""
+    lines: list[str] = []
+    lines.append(f"# {group_name}")
+    lines.append("")
+    lines.append(f"_총 {len(rows)} endpoint_")
+    lines.append("")
+    for idx, r in enumerate(rows, 1):
+        program = r.get("program_name") or ""
+        http = r.get("http_method") or ""
+        url = r.get("url") or ""
+        title_bits = []
+        if program:
+            title_bits.append(program)
+        if http or url:
+            title_bits.append(f"{http} {url}".strip())
+        title = " — ".join(b for b in title_bits if b) or f"Endpoint {idx}"
+        lines.append(f"## {idx}. {title}")
+        lines.append("")
+        meta_pairs = [
+            ("Sub menu", r.get("sub_menu", "")),
+            ("Tab", r.get("tab", "")),
+            ("Program", program),
+            ("HTTP", http),
+            ("URL", url),
+            ("Controller", r.get("controller_class", "")),
+            ("File", r.get("file_name", "")),
+            ("Service", r.get("service", "")),
+            ("Service method", r.get("service_method", "")),
+            ("XML", r.get("query_xml", "")),
+            ("XML method", r.get("sql_ids", "")),
+            ("Tables", r.get("related_tables", "")),
+            ("Columns", r.get("related_columns", "")),
+            ("Procedures", r.get("procedures", "")),
+            ("RFC", r.get("rfc", "")),
+        ]
+        for label, value in meta_pairs:
+            if not value:
+                continue
+            inline = str(value).replace("\n", "<br>")
+            lines.append(f"- **{label}**: {inline}")
+        lines.append("")
+        lines.append("```mermaid")
+        lines.append(r.get("sequence_diagram", "") or "")
+        lines.append("```")
+        lines.append("")
+    with open(filepath, "w", encoding="utf-8") as fh:
+        fh.write("\n".join(lines))
 
 
 def _write_single_diagram_md(filepath: str, row: dict) -> None:
