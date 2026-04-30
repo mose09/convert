@@ -1544,6 +1544,29 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     }
 
 
+def _split_rows_per_trigger(rows: list[dict]) -> list[dict]:
+    """``--row-per-trigger`` 활성 시 각 row 의 frontend_trigger (``;\\n`` join)
+    를 단일 라벨 단위로 분리해 N row 로 확장.
+
+    같은 endpoint 가 여러 트리거 (조회/등록/등록완료/...) 에서 호출될 때
+    한 셀에 모이는 대신 각 트리거 = 1 row 로 펼침. 백엔드 chain
+    (Controller / Service / XML / Tables) 은 동일 복제. 사용자 요청:
+    "이벤트 별 백엔드 chain" 시각화. trigger 가 0~1 개 row 는 그대로.
+    """
+    out: list[dict] = []
+    for r in rows:
+        triggers_raw = r.get("frontend_trigger") or ""
+        triggers = [t.strip() for t in triggers_raw.split(";\n") if t.strip()]
+        if len(triggers) <= 1:
+            out.append(r)
+            continue
+        for t in triggers:
+            new_r = dict(r)
+            new_r["frontend_trigger"] = t
+            out.append(new_r)
+    return out
+
+
 def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
                            base_dirs: dict) -> list[dict]:
     """Reorder ``rows`` to follow the **menu.md source order** and
@@ -1654,12 +1677,12 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
         "file_name": _rel(controller["filepath"], backend_dir),
         "frontend_project": (react_entry or {}).get("frontend_name", ""),
         # react_file may be (a) a single absolute path from the Router
-        # scanner → _rel it to frontend_dir, or (b) a "; "-joined list
+        # scanner → _rel it to frontend_dir, or (b) a ";\n"-joined list
         # already relative to frontends_root (from the 2-hop api
-        # scanner). Only normalize the first case.
+        # scanner). Only normalize the first case (single absolute path).
         "presentation_layer": (
             _rel(react_file, frontend_dir)
-            if react_file and "; " not in react_file and os.path.isabs(react_file)
+            if react_file and ";" not in react_file and os.path.isabs(react_file)
             else (react_file or "")
         ),
         "frontend_trigger": frontend_trigger,
@@ -1713,7 +1736,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    library_dirs: list[str] | None = None,
                    terms_md: str | None = None,
                    extract_program_spec: bool = False,
-                   emit_sequence_diagram: bool = False) -> dict:
+                   emit_sequence_diagram: bool = False,
+                   row_per_trigger: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -2240,14 +2264,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             # Prefer the concrete 2-hop screens as Frontend screen — they
             # are the files that actually call this endpoint. Fall back
             # to the router-matched file for simple projects.
-            presentation = "; ".join(screen_files) if screen_files else react_file
+            # ``;\n`` 구분자로 한 셀 안 한 줄씩 표시 — Excel / Markdown
+            # 가독성. service_methods / query_xml / sql_ids 와 일관.
+            presentation = ";\n".join(screen_files) if screen_files else react_file
 
             row = _build_row(
                 ep, controller, indexes, mybatis_idx,
                 menu_entry, presentation, base_dirs, rfc_depth=rfc_depth,
                 menu_raw_url=raw_menu_url,
                 react_entry=react_entry,
-                frontend_trigger="; ".join(trigger_labels),
+                frontend_trigger=";\n".join(trigger_labels),
                 emit_sequence_diagram=emit_sequence_diagram,
             )
             rows.append(row)
@@ -2392,6 +2418,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         display_rows = list(rows)
     else:
         display_rows = _reorder_rows_by_menu(rows, menu_rows, base_dirs)
+    if row_per_trigger:
+        display_rows = _split_rows_per_trigger(display_rows)
 
     return {
         "rows": display_rows,
@@ -2464,7 +2492,8 @@ def analyze_legacy_batch(backends_root: str,
                         library_dirs: list[str] | None = None,
                         terms_md: str | None = None,
                         extract_program_spec: bool = False,
-                        emit_sequence_diagram: bool = False) -> dict:
+                        emit_sequence_diagram: bool = False,
+                        row_per_trigger: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -2585,6 +2614,7 @@ def analyze_legacy_batch(backends_root: str,
             # Mermaid sequence diagram (Phase A). Opt-in, parser-only,
             # LLM 불필요. 각 row 에 sequence_diagram 필드가 붙음.
             emit_sequence_diagram=emit_sequence_diagram,
+            row_per_trigger=row_per_trigger,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.
@@ -2652,6 +2682,8 @@ def analyze_legacy_batch(backends_root: str,
         "url_strip": (patterns or {}).get("url", {}).get("url_prefix_strip") or [],
     }
     display_rows = _reorder_rows_by_menu(all_rows, menu_rows, batch_base_dirs)
+    if row_per_trigger:
+        display_rows = _split_rows_per_trigger(display_rows)
 
     return {
         "rows": display_rows,
