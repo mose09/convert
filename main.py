@@ -2052,12 +2052,14 @@ def main():
                                 "신규. Phase II 와 독립 — 단독 사용 가능.")
     al_parser.add_argument("--sequence-diagram-group",
                            choices=["main_menu", "menu_path", "sub_menu",
-                                    "controller_class", "none"],
+                                    "controller_class", "backend_project",
+                                    "none"],
                            default="main_menu",
                            help="Sequence diagram .md 파일을 어떤 단위로 묶을지. "
                                 "default=main_menu (업무 대분류 별 묶음). "
                                 "menu_path=main+sub+tab 합쳐 더 세분화. "
                                 "controller_class=Java Controller 단위. "
+                                "backend_project=레포 단위 (--backends-root 모드). "
                                 "none=endpoint 별 한 파일씩 (legacy).")
     al_parser.add_argument("--row-per-trigger", action="store_true",
                            help="같은 endpoint 가 여러 frontend trigger "
