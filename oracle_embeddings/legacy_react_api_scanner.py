@@ -435,6 +435,172 @@ _ON_HANDLER_RE = re.compile(
     re.VERBOSE,
 )
 
+# ── 모든 JSX 이벤트 핸들러 + lifecycle (Phase E2) ─────────────────
+# 기존 _ON_HANDLER_RE 는 Click/Submit/Change 만 처리. 사용자 요청: backend
+# 호출 트리거 모두 (다른 on* 이벤트 + useEffect / componentDidMount 등
+# lifecycle) 잡아서 chain 분석.
+
+# 모든 on<EventName>={handler} 패턴. 이벤트 이름은 ``on`` 다음 PascalCase.
+_ANY_JSX_EVENT_RE = re.compile(
+    r"""\bon(?P<event>[A-Z]\w+)\s*=\s*\{\s*
+        (?:
+            (?:[\w.]+\.)?(?P<name>\w+)
+          | \(?\s*[\w,\s]*\)?\s*=>\s*(?:[\w.]+\.)?(?P<arrow>\w+)\s*\(
+        )
+    """,
+    re.VERBOSE,
+)
+
+# useEffect(() => {...}, [deps]) — React Hooks. inline arrow handler.
+_USE_EFFECT_RE = re.compile(r"\buseEffect\s*\(")
+# componentDidMount() {...} — class lifecycle. 클래스 메서드.
+_DID_MOUNT_RE = re.compile(
+    r"\bcomponentDid(?P<phase>Mount|Update)\s*\(\s*[^)]*\)\s*\{"
+)
+
+
+def _walk_paren_end(text: str, open_idx: int) -> int:
+    """``text[open_idx]`` 가 ``(`` 일 때 매칭되는 ``)`` 직후 offset 반환.
+
+    문자열 리터럴 / 중첩 paren 인식. 실패 시 len(text). useEffect 의
+    arg 영역 추출용 (inline arrow body 가 그 안에 있음).
+    """
+    if open_idx >= len(text) or text[open_idx] != "(":
+        return open_idx
+    i = open_idx + 1
+    depth = 1
+    n = len(text)
+    in_str: str | None = None
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            in_str = c
+            i += 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _walk_brace_end(text: str, open_idx: int) -> int:
+    """``text[open_idx]`` 가 ``{`` 일 때 매칭 ``}`` 직후 offset."""
+    if open_idx >= len(text) or text[open_idx] != "{":
+        return open_idx
+    i = open_idx + 1
+    depth = 1
+    n = len(text)
+    in_str: str | None = None
+    while i < n:
+        c = text[i]
+        if in_str:
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            in_str = c
+            i += 1
+            continue
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def collect_event_handlers(content: str) -> list[dict]:
+    """파일 안의 모든 backend-호출 가능한 trigger event 수집.
+
+    Returns: ``[{event, handler, label, body, source_offset}, ...]``
+      - event: ``onClick`` / ``onSubmit`` / ``onChange`` 등 JSX 이벤트명,
+        또는 ``useEffect`` / ``componentDidMount`` / ``componentDidUpdate``.
+      - handler: 이벤트 핸들러의 leaf 이름. 익명 inline 이면 ``""``.
+      - label: 버튼/태그 children 텍스트가 있으면 그 값 (40자 이내).
+      - body: 핸들러 함수 body 의 raw text (API 호출 스캔용).
+      - source_offset: content 안 시작 offset (정렬 + dedup 용).
+
+    동일 (event, handler) 가 여러번 등장하면 첫 발견만 유지 (dedup).
+    """
+    out: list[dict] = []
+    seen: set = set()
+
+    def _emit(event: str, handler: str, label: str, body: str, offset: int):
+        key = (event, handler, label[:30], offset)
+        if key in seen:
+            return
+        seen.add(key)
+        out.append({
+            "event": event,
+            "handler": handler or "",
+            "label": label or "",
+            "body": body or "",
+            "source_offset": offset,
+        })
+
+    # 1) JSX 이벤트: 모든 on<Event>={handler}
+    for m in _ANY_JSX_EVENT_RE.finditer(content):
+        event_suffix = m.group("event")
+        handler = m.group("name") or m.group("arrow") or ""
+        label = ""
+        # 핸들러가 속한 enclosing JSX tag 의 children 을 label 로 시도 — 같은 tag 의
+        # close `>` 와 close `</Tag>` 사이 텍스트를 capture.
+        # 간단히: m.start() 이전 200자 안에 마지막 ``<Tag`` 시작점 찾기.
+        head_window = content[max(0, m.start() - 400):m.start()]
+        tag_open = head_window.rfind("<")
+        if tag_open >= 0:
+            after_tag = m.end()
+            close_idx = content.find(">", after_tag)
+            if 0 <= close_idx < after_tag + 200:
+                next_lt = content.find("<", close_idx + 1)
+                if 0 <= next_lt - close_idx <= 200:
+                    inner = content[close_idx + 1:next_lt].strip()
+                    if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
+                        label = inner
+        _emit(f"on{event_suffix}", handler, label, "", m.start())
+
+    # 2) useEffect((...) => {...}, [deps])
+    for m in _USE_EFFECT_RE.finditer(content):
+        paren_open = m.end() - 1
+        paren_close = _walk_paren_end(content, paren_open)
+        arg_region = content[paren_open + 1:paren_close - 1]
+        # arrow body { ... } 첫 번째 brace block 추출
+        brace_open = arg_region.find("{")
+        body = ""
+        if brace_open >= 0:
+            brace_close = _walk_brace_end(arg_region, brace_open)
+            body = arg_region[brace_open + 1:brace_close - 1]
+        _emit("useEffect", "", "mount", body, m.start())
+
+    # 3) componentDidMount / componentDidUpdate { ... }
+    for m in _DID_MOUNT_RE.finditer(content):
+        # 매치 끝의 `{` 에서 brace walk
+        brace_open = m.end() - 1
+        brace_close = _walk_brace_end(content, brace_open)
+        body = content[brace_open + 1:brace_close - 1]
+        phase = m.group("phase")
+        _emit(f"componentDid{phase}", "", phase.lower(), body, m.start())
+
+    return out
+
 
 def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                               patterns: dict | None = None,
@@ -479,29 +645,20 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         except Exception:
             continue
 
-        # Collect handler → label pairs.
-        handler_label: dict[str, str] = {}
-        for m in _BUTTON_LABEL_RE.finditer(content):
-            attrs = m.group("attrs") or ""
-            label = (m.group("label") or "").strip()
-            if not label or len(label) > 30:
-                continue
-            hm = _ON_HANDLER_RE.search(attrs)
-            if not hm:
-                continue
-            handler = hm.group("name") or hm.group("arrow")
-            if handler:
-                handler_label.setdefault(handler, label)
-
-        if not handler_label:
+        # 모든 backend 호출 트리거 수집 (JSX 이벤트 + lifecycle).
+        events = collect_event_handlers(content)
+        if not events:
             continue
 
-        # For each handler, grab the function body (def or arrow) and
-        # scan for API calls. We keep the scan heuristic: from the
-        # handler definition to the next top-level closing brace at the
-        # same indent-ish, capped at 4000 chars.
-        for handler, label in handler_label.items():
-            body = _locate_handler_body(content, handler)
+        for ev in events:
+            event_type = ev["event"]
+            handler = ev["handler"]
+            label = ev["label"]
+            body = ev["body"]
+            # body 가 inline (useEffect / lifecycle) 이면 그대로, named
+            # handler 이면 _locate_handler_body 로 위치 찾기.
+            if not body and handler:
+                body = _locate_handler_body(content, handler)
             if not body:
                 continue
             for m in call_re.finditer(body):
@@ -516,7 +673,11 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 canonical = normalize_url(_normalize_template(raw), strip_patterns)
                 if not canonical:
                     continue
-                triggers.setdefault(canonical, set()).add(label)
+                # 트리거 라벨 포맷: [event] label-or-handler
+                # label 이 있으면 우선 (버튼 텍스트), 없으면 handler 이름 사용.
+                tag_text = label or handler or "<inline>"
+                trigger_label = f"[{event_type}] {tag_text}"
+                triggers.setdefault(canonical, set()).add(trigger_label)
 
     return {k: sorted(v) for k, v in triggers.items()}
 
@@ -560,30 +721,28 @@ def collect_handler_contexts(
         except Exception:
             continue
 
-        handler_label: dict[str, str] = {}
-        for m in _BUTTON_LABEL_RE.finditer(content):
-            attrs = m.group("attrs") or ""
-            label = (m.group("label") or "").strip()
-            if not label or len(label) > 30:
-                continue
-            hm = _ON_HANDLER_RE.search(attrs)
-            if not hm:
-                continue
-            handler = hm.group("name") or hm.group("arrow")
-            if handler:
-                handler_label.setdefault(handler, label)
-
-        if not handler_label:
+        events = collect_event_handlers(content)
+        if not events:
             continue
 
         rel = os.path.relpath(fp, frontend_dir)
 
-        for handler, label in handler_label.items():
-            start = _locate_handler_start(content, handler)
-            if start is None:
+        for ev in events:
+            event_type = ev["event"]
+            handler = ev["handler"]
+            label = ev["label"]
+            body = ev["body"]
+            offset = ev["source_offset"]
+            # body 가 inline (useEffect / lifecycle) 이면 그대로, named
+            # handler (onClick={fn}) 면 _locate_handler_start 로 별도 위치.
+            if not body and handler:
+                start = _locate_handler_start(content, handler)
+                if start is None:
+                    continue
+                body = content[start: start + 8000]
+            if not body:
                 continue
-            body = content[start: start + 8000]
-            jsx = _locate_enclosing_jsx(content, start)
+            jsx = _locate_enclosing_jsx(content, offset)
             validation_props = extract_validation_props(jsx)
 
             urls_in_handler: set[str] = set()
@@ -600,9 +759,13 @@ def collect_handler_contexts(
                 if canonical:
                     urls_in_handler.add(canonical)
 
+            if not urls_in_handler:
+                continue
+
             ctx = {
                 "file": rel,
-                "handler": handler,
+                "handler": handler or f"<inline:{event_type}>",
+                "event": event_type,
                 "label": label,
                 "body": body,
                 "jsx_slice": jsx,
