@@ -485,17 +485,43 @@ _rfc_custom_var_re = None  # variable-arg version
 
 
 def _build_rfc_custom_re(methods: list[str], id_prefixes: list[str] | None = None) -> re.Pattern | None:
-    """Build a regex for custom RFC call patterns like service.execute("IF-*", ..., Z*.class)."""
+    """Build a regex for custom RFC call patterns.
+
+    인자 위치 고정 안 함 — wrapper method 의 args 어디든 RFC ID literal
+    이 등장하면 매칭. 사용자 사례:
+    - ``site_service.execute("IF-GERP-180", paramTI, ZMM_GPS.class)``  ← 1st arg
+    - ``this.excuteSap(dataset, sessionObj, "ZPM_N_MODEL_BOM_COPY_ER_EQ_BOM", inList, outList)``  ← 3rd arg
+
+    ``id_prefixes`` 가 주어지면 그 prefix 로 시작하는 string literal 만
+    인식 (e.g., ``["IF-", "Z"]``). 없으면 흔한 SAP/Korean enterprise
+    패턴 default 사용 (``Z* / BAPI_* / RFC_* / BBP_* / IF-* / IF_*``).
+    """
     if not methods:
         return None
     method_alt = "|".join(re.escape(m) for m in methods)
-    # Capture: (1) string arg = interface ID, (2) optional ClassName before .class
+    if id_prefixes:
+        prefix_alt = "|".join(re.escape(p) for p in id_prefixes)
+        id_pat = rf"(?:{prefix_alt})[\w-]*"
+    else:
+        # SAP custom + Korean enterprise IF-* / IF_* 흔한 prefix 들.
+        id_pat = (
+            r"(?:Z[A-Z0-9_]+"
+            r"|BAPI_[A-Z0-9_]+"
+            r"|RFC_[A-Z0-9_]+"
+            r"|BBP_[A-Z0-9_]+"
+            r"|IF[-_][A-Z0-9_-]+)"
+        )
+    # ``\b(?:\w+\.)?(?:method_alt)\s*\(`` head + ``[^)]*?`` lazy 로 args
+    # 영역 진입 → 첫 매칭 RFC ID literal 까지. 다른 일반 string literal
+    # 은 id_pat 에 안 맞아서 skip. ``ClassName.class`` 가 같은 args 안
+    # 어딘가 있으면 cls 도 capture.
     return re.compile(
-        rf"""\b\w+\.(?:{method_alt})\s*\(
-            \s*"(?P<id>[^"]+)"              # first string arg (interface ID)
-            (?:[^)]*,\s*(?P<cls>\w+)\.class)?  # optional ClassName.class
+        rf"""\b(?:\w+\.)?(?:{method_alt})\s*\(
+            [^)]*?
+            "(?P<id>{id_pat})"
+            (?:[^)]*?,\s*(?P<cls>\w+)\.class)?
         """,
-        re.VERBOSE,
+        re.VERBOSE | re.DOTALL,
     )
 
 
