@@ -1745,6 +1745,7 @@ def cmd_analyze_legacy(args):
 
     extract_program_spec = bool(getattr(args, "extract_program_spec", False))
     emit_sequence_diagram = bool(getattr(args, "sequence_diagram", False))
+    row_per_trigger = bool(getattr(args, "row_per_trigger", False))
     if extract_program_spec and not extract_biz:
         print("Error: --extract-program-spec requires --extract-biz-logic "
               "(endpoint narrative 는 Phase A/B 결과를 입력으로 씁니다).")
@@ -1771,6 +1772,7 @@ def cmd_analyze_legacy(args):
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
             emit_sequence_diagram=emit_sequence_diagram,
+            row_per_trigger=row_per_trigger,
         )
     else:
         result = analyze_legacy(
@@ -1792,6 +1794,7 @@ def cmd_analyze_legacy(args):
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
             emit_sequence_diagram=emit_sequence_diagram,
+            row_per_trigger=row_per_trigger,
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -2056,6 +2059,12 @@ def main():
                                 "menu_path=main+sub+tab 합쳐 더 세분화. "
                                 "controller_class=Java Controller 단위. "
                                 "none=endpoint 별 한 파일씩 (legacy).")
+    al_parser.add_argument("--row-per-trigger", action="store_true",
+                           help="같은 endpoint 가 여러 frontend trigger "
+                                "(조회/등록/등록완료/...) 에서 호출되면 한 셀에 "
+                                "join 하지 말고 trigger 별로 row 를 분리. "
+                                "각 row 의 backend chain 동일 복제 — 이벤트 별 "
+                                "백엔드 chain 시각화 (1:1 row).")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
