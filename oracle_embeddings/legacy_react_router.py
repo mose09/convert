@@ -176,7 +176,38 @@ _LAZY_IMPORT_RE = re.compile(
 _ROUTE_OPEN_RE = re.compile(r"<Route\b")
 _PATH_ATTR_RE = re.compile(r"""\bpath\s*=\s*["']([^"']+)["']""")
 _RENDER_ATTR_RE = re.compile(r"""\brender\s*=\s*\{""")
-_JSX_CAPITAL_COMP_RE = re.compile(r"<\s*([A-Z]\w+)")
+# JSX 컴포넌트 참조. PascalCase 가 표준인데 사용자 프로젝트 (Korean
+# enterprise) 가 ``<jCheckCmpheadManage>`` 같이 소문자 prefix +
+# camelCase 컨벤션도 사용. 이 경우 React 표준상 HTML element 로
+# 해석되지만 분석기는 component 로 인식해야 함. 소문자 시작도 허용
+# 하되 HTML primitive (div / span / a / p / ...) 는 ``_HTML_PRIMITIVES``
+# 로 post-filter.
+_JSX_COMP_RE = re.compile(r"<\s*([A-Za-z][\w$]+)")
+_HTML_PRIMITIVES = frozenset({
+    "div", "span", "a", "p", "i", "b", "em", "strong", "small", "code", "pre",
+    "h1", "h2", "h3", "h4", "h5", "h6",
+    "button", "input", "form", "label", "textarea", "select", "option",
+    "ul", "ol", "li", "dl", "dt", "dd",
+    "table", "thead", "tbody", "tfoot", "tr", "td", "th", "caption", "colgroup", "col",
+    "img", "video", "audio", "source", "track", "iframe", "br", "hr",
+    "section", "article", "header", "footer", "main", "nav", "aside",
+    "figure", "figcaption", "blockquote", "q", "cite", "abbr", "address",
+    "fieldset", "legend", "datalist", "details", "summary", "dialog",
+    "canvas", "svg", "path", "g", "rect", "circle", "ellipse", "line", "polygon",
+    "polyline", "text", "tspan", "title", "desc", "use", "symbol", "defs",
+    "head", "body", "html", "meta", "link", "script", "style", "noscript",
+    "fragment",
+})
+
+
+def _find_first_component_in_jsx(text: str) -> str:
+    """Return the first non-HTML-primitive JSX tag name in ``text``."""
+    for m in _JSX_COMP_RE.finditer(text):
+        name = m.group(1)
+        if name.lower() in _HTML_PRIMITIVES:
+            continue
+        return name
+    return ""
 
 
 def _walk_to_tag_end(content: str, start: int) -> int:
@@ -274,8 +305,7 @@ def _extract_render_routes(content: str) -> list[dict]:
         if open_brace < 0:
             continue
         body = _extract_brace_body(tag, open_brace)
-        comp_m = _JSX_CAPITAL_COMP_RE.search(body)
-        comp = comp_m.group(1) if comp_m else ""
+        comp = _find_first_component_in_jsx(body)
         routes.append({"path": path_m.group(1), "component": comp})
     return routes
 
