@@ -561,6 +561,9 @@ python main.py analyze-legacy `
 | `--biz-max-methods N` | 백엔드 메서드 LLM 호출 cap (기본 500) |
 | `--biz-max-handlers N` | React handler LLM 호출 cap (기본 300) |
 | `--no-biz-cache` | 디스크 캐시 끔 (기본 on — 재실행 0 LLM 호출) |
+| `--row-per-trigger` | 같은 endpoint 가 여러 trigger 에서 호출될 때 trigger 별 1 row 로 분리 (이벤트 별 1:1 backend chain). 기본 off — 한 셀에 `;\n` join. |
+| `--sequence-diagram` | Mermaid sequence diagram 생성 (LLM 불필요, parser-only). |
+| `--sequence-diagram-group` | sequence diagram .md 묶음 단위. `main_menu` (default) / `menu_path` / `sub_menu` / `controller_class` / `backend_project` (레포) / `none` (endpoint 별). |
 
 ---
 
@@ -601,7 +604,31 @@ python main.py analyze-legacy `
   --menu-md input\menu.md `
   --patterns output\legacy_analysis\patterns.yaml `
   --menu-only --extract-biz-logic
+
+# 5) Trigger 별 1 row 분리 (이벤트 별 1:1 chain)
+python main.py analyze-legacy `
+  --backend-dir ... --frontend-dir ... `
+  --extract-biz-logic --row-per-trigger
 ```
+
+**프론트 트리거 → 백엔드 chain 인식 범위 (자동)**:
+
+| 트리거 종류 | 예시 | 인식 |
+|---|---|---|
+| JSX 모든 이벤트 | `onClick / onChange / onSubmit / onMouseEnter / onScroll / onKeyDown / ...` | ✓ |
+| Hook lifecycle | `useEffect(() => { ... }, [...])` | ✓ |
+| Class lifecycle | `componentDidMount / componentDidUpdate` | ✓ |
+| dotted handler | `onClick={this.fnX}` (class component method ref) | ✓ |
+| class field arrow | `fnX = () => { ... }` | ✓ |
+| 직접 axios | `fnX = () => axios.post("/api/...")` | ✓ |
+| **redux + saga indirect** | `fnX = () => dispatch(actions.X)` + 같은 폴더 또는 `apps/<X>/` ↔ `store/<X>/` 의 saga.js 가 axios | ✓ (`+saga` 마커) |
+| 커스텀 Route wrapper | `<PropsRouter path="..." component={...}/>` 처럼 `<Route>` 를 감싼 wrapper component | ✓ (자동 감지) |
+
+**진단 스크립트 (`diag_menu.py` / `diag_frontend.py`)** — 매핑이
+원하는 대로 안 잡힐 때 어느 단계에서 끊기는지 1회 실행으로 ✓/⚠/✗
+판정. 파일 상단 `FRONTEND_DIR` / `BACKEND_DIR` / `MENU_URL` 만 수정 후
+`python diag_menu.py` 또는 `python diag_frontend.py`. 결과의 첫 줄
+✓/⚠/✗ 메시지로 다음 액션 결정.
 
 ### LLM 연결 (`.env`)
 
@@ -784,14 +811,48 @@ output/legacy_analysis/<YYYYMMDD>/
 ```
 
 `--sequence-diagram` 은 리포트 파일명과 같은 이름의 폴더
-(`as_is_analysis_<slug>_<ts>/`) 도 같이 만들어 endpoint 별 `.md` 파일
-(Mermaid 코드 포함) 을 건별 저장합니다. 상세는 아래 "Sequence Diagram"
-섹션 참고.
+(`as_is_analysis_<slug>_<ts>/`) 도 같이 만들어 그 안에 **그룹별 `.md`
+파일** (Mermaid 코드 포함) 을 저장합니다. 그룹 단위는
+`--sequence-diagram-group` 으로 선택:
 
-**Programs 시트 컬럼 (16개):**
+| 옵션 | 묶음 단위 |
+|---|---|
+| `main_menu` (default) | 업무 대분류 (메뉴 1뎁스) — 한 화면 안에 여러 endpoint |
+| `menu_path` | 메뉴 1+2+3뎁스 합쳐 더 세분화 |
+| `sub_menu` | 메뉴 2뎁스 |
+| `controller_class` | Java Controller 단위 |
+| `backend_project` | **레포 단위** (`--backends-root` 모드 sub-project 별) |
+| `none` | endpoint 별 한 파일씩 (legacy 동작) |
 
-`No, Main, Sub, Tab, Program, HTTP, URL, File, React, Controller, Service,
-Query XML, Tables, Columns, Procedure, RFC`
+상세는 아래 "Sequence Diagram" 섹션 참고.
+
+**Programs 시트 컬럼** — 메뉴 데이터 유무에 따라 schema 자동 전환:
+
+*WITH menu (24열)*: `No, 메뉴1뎁스, 메뉴2뎁스, 메뉴3뎁스, Menu path,
+Menu URL, Frontend project, Frontend screen, **Trigger**, Frontend
+Validation, Program, HTTP, Controller URL, Controller file, Controller,
+Service, Service method, Business Logic, XML, XML method, Tables,
+Columns, Procedure, RFC`
+
+*NO menu (`--skip-menu`, 18열)*: `Program, HTTP, URL, File, Frontend
+project, React, **Trigger**, Frontend Validation, Controller, Service,
+Service method, Business Logic, XML, XML method, Tables, Columns,
+Procedure, RFC`
+
+**Trigger 컬럼** 의 라벨 형식:
+```
+[onClick] 조회
+[onClick+saga] 등록           ← redux+saga indirect
+[useEffect] mount
+[componentDidMount] mount
+[onChange] handleSearch
+```
+`[event]` 가 트리거 종류, 그 뒤가 버튼 텍스트 또는 handler 이름.
+`+saga` 는 dispatch → 같은 폴더 또는 같은 app-slug (apps/X ↔ store/X)
+의 saga 가 실제 axios 호출하는 indirect handoff 라는 의미.
+
+**다중값 셀** (Trigger / React file / Service / XML method / Tables 등)
+은 `;\n` 구분자로 한 셀 안 항목당 한 줄 — Excel/Markdown 가독성.
 
 매칭되지 않은 행(unmatched controller)은 **노란색**, 매퍼 체인이 없는
 행은 **회색**으로 하이라이트됩니다.
@@ -890,16 +951,20 @@ python main.py analyze-legacy `
 output/legacy_analysis/
 ├── as_is_analysis_myapp_20260424_123456.md       # 통합 리포트 (Mermaid 섹션 포함)
 ├── as_is_analysis_myapp_20260424_123456.xlsx     # Excel (+ Sequence Diagrams 시트)
-└── as_is_analysis_myapp_20260424_123456/         # endpoint 별 .md 폴더
-    ├── 001_POST_saveOrder.md
-    ├── 002_GET_findCustomers.md
+└── as_is_analysis_myapp_20260424_123456/         # 그룹별 .md 폴더
+    ├── 001_주문관리.md       # main_menu 그룹 (default)
+    ├── 002_재고관리.md
     └── ...
 ```
 
-각 endpoint `.md` 파일은 메타데이터 (Controller / Service / Tables /
-Columns / RFC / procedures) + ```` ```mermaid ```` 코드블럭. GitHub /
-VSCode Mermaid Preview 에서 즉시 렌더, 아니면 <https://mermaid.live>
-에 복붙.
+`--sequence-diagram-group <option>` 으로 묶음 단위 선택:
+- `main_menu` (default), `menu_path`, `sub_menu`, `controller_class`,
+  `backend_project` (레포 단위), `none` (endpoint 별 1 파일).
+
+각 `.md` 파일은 그룹의 모든 endpoint 별 ` ## 1. <program>` 헤더 +
+메타데이터 (Controller / Service / Tables / Columns / RFC / procedures)
++ ```` ```mermaid ```` 코드블럭. GitHub / VSCode Mermaid Preview 에서
+즉시 렌더, 아니면 <https://mermaid.live> 에 복붙.
 
 **다이어그램 구조 — 고정 참가자 순서**:
 
