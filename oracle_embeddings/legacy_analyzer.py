@@ -1611,7 +1611,8 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                menu_raw_url: str = "",
                react_entry: dict | None = None,
                frontend_trigger: str = "",
-               emit_sequence_diagram: bool = False) -> dict:
+               emit_sequence_diagram: bool = False,
+               sequence_diagram_with_frontend: bool = False) -> dict:
     """Assemble a single program-row dict for one controller endpoint.
 
     Resolution runs against the **controller method's own body** when
@@ -1637,8 +1638,15 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                 endpoint, controller, indexes, mybatis_idx, rfc_depth=rfc_depth,
             )
             from .legacy_mermaid import render_sequence_diagram
+            # frontend portion 은 opt-in (--sequence-diagram-frontend).
+            # 비활성 시 빈 문자열 전달 → backend-only 다이어그램 (회귀
+            # 호환).
+            _ft = frontend_trigger or "" if sequence_diagram_with_frontend else ""
+            _pl = react_file or "" if sequence_diagram_with_frontend else ""
             sequence_diagram_text = render_sequence_diagram(
                 events, endpoint, controller.get("fqcn", ""),
+                frontend_trigger=_ft,
+                presentation_layer=_pl,
             )
         except Exception as e:  # noqa: BLE001
             logger.warning("sequence diagram render failed: %s", e)
@@ -1737,6 +1745,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    terms_md: str | None = None,
                    extract_program_spec: bool = False,
                    emit_sequence_diagram: bool = False,
+                   sequence_diagram_with_frontend: bool = False,
                    row_per_trigger: bool = False) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2275,6 +2284,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 react_entry=react_entry,
                 frontend_trigger=";\n".join(trigger_labels),
                 emit_sequence_diagram=emit_sequence_diagram,
+                sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             )
             rows.append(row)
             if not row["matched"]:
@@ -2493,6 +2503,7 @@ def analyze_legacy_batch(backends_root: str,
                         terms_md: str | None = None,
                         extract_program_spec: bool = False,
                         emit_sequence_diagram: bool = False,
+                        sequence_diagram_with_frontend: bool = False,
                         row_per_trigger: bool = False) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2614,6 +2625,7 @@ def analyze_legacy_batch(backends_root: str,
             # Mermaid sequence diagram (Phase A). Opt-in, parser-only,
             # LLM 불필요. 각 row 에 sequence_diagram 필드가 붙음.
             emit_sequence_diagram=emit_sequence_diagram,
+            sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
         )
         # Make sure every row carries the project name even if downstream

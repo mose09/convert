@@ -195,15 +195,23 @@ def _emit_transition(prev_ctx: List[dict], curr_ctx: List[dict],
 
 
 def render_sequence_diagram(events: List[dict], endpoint: dict,
-                             controller_fqcn: str) -> str:
+                             controller_fqcn: str,
+                             *,
+                             frontend_trigger: str = "",
+                             presentation_layer: str = "") -> str:
     """Event 리스트 → Mermaid ``sequenceDiagram`` 텍스트.
 
     Phase B 지원: 각 event 의 ``context_stack`` 으로 alt/else/loop/end
     자동 래핑. ``context_stack`` 이 없으면 Phase A 식 linear emit.
 
-    Participant 순서는 고정: **User → Controller → Service 들 (체인 순서)
-    → Mapper → DB → SAP**. 등장 여부는 events 사전 스캔으로 결정해서
-    필요한 것만 선언.
+    Participant 순서는 고정: **User → (View) → Controller → Service 들
+    (체인 순서) → Mapper → DB → SAP**. 등장 여부는 events 사전 스캔으로
+    결정해서 필요한 것만 선언.
+
+    ``frontend_trigger`` (e.g., ``"[onClick] 조회;\\n[useEffect] mount"``)
+    가 비어있지 않으면 frontend 부분도 같이 그림 — User → View 클릭
+    이벤트 + View → Controller HTTP 호출. ``presentation_layer`` 가
+    있으면 view 이름으로 사용 (없으면 ``View`` 로 표기).
     """
     used: Dict[str, str] = {}
 
@@ -231,11 +239,29 @@ def render_sequence_diagram(events: List[dict], endpoint: dict,
             if src and src != controller_fqcn and src not in services_order:
                 services_order.append(src)
 
+    has_frontend = bool((frontend_trigger or "").strip())
+    triggers: List[str] = []
+    view_label = ""
+    if has_frontend:
+        triggers = [t.strip() for t in frontend_trigger.split(";\n") if t.strip()]
+        # presentation_layer 는 ``;\n`` 으로 multi-file 일 수도. 첫 파일의
+        # basename 만 view 라벨로 사용 (mermaid label 가독성).
+        first_screen = (presentation_layer or "").split(";\n", 1)[0].strip()
+        if first_screen:
+            import os
+            view_label = os.path.basename(first_screen) or first_screen
+
     # Participant 선언 — 고정 순서
     header_lines = ["sequenceDiagram"]
     user_id = _participant_id("User", used)
-    ctrl_id = _participant_id(controller_fqcn or "Controller", used)
     header_lines.append(f"    actor {user_id}")
+    if has_frontend:
+        view_id = _participant_id("View", used)
+        view_alias = view_label or "View"
+        header_lines.append(
+            f"    participant {view_id} as {_escape_label(view_alias)}"
+        )
+    ctrl_id = _participant_id(controller_fqcn or "Controller", used)
     header_lines.append(
         f"    participant {ctrl_id} as {_escape_label(_short_alias(controller_fqcn))}"
     )
@@ -257,13 +283,23 @@ def render_sequence_diagram(events: List[dict], endpoint: dict,
     # Body 라인
     body_lines: List[str] = []
 
-    # Root 화살표
+    # Root 화살표 — frontend trigger 가 있으면 User → View → Controller,
+    # 없으면 기존대로 User → Controller 직접.
     http = endpoint.get("http_method") or "GET"
     url = endpoint.get("url") or "/"
     method_name = endpoint.get("method_name") or ""
-    body_lines.append(
-        f"    {user_id}->>{ctrl_id}: {_escape_label(http)} {_escape_label(url)}"
-    )
+    if has_frontend:
+        for tlabel in triggers:
+            body_lines.append(
+                f"    {user_id}->>{view_id}: {_escape_label(tlabel)}"
+            )
+        body_lines.append(
+            f"    {view_id}->>{ctrl_id}: {_escape_label(http)} {_escape_label(url)}"
+        )
+    else:
+        body_lines.append(
+            f"    {user_id}->>{ctrl_id}: {_escape_label(http)} {_escape_label(url)}"
+        )
     if method_name:
         body_lines.append(f"    Note over {ctrl_id}: {_escape_label(method_name)}()")
 
