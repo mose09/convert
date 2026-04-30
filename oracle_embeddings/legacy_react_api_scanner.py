@@ -716,14 +716,21 @@ def collect_handler_contexts(
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
     # ``dispatch(actions.X)`` 만 부르고 실제 axios 는 같은 폴더 saga.js
-    # 에 있는 사용자 케이스. handler body 안에서 직접 axios 못 찾으면
-    # 같은 폴더 saga URL 들에 귀속 (folder-scope fallback).
+    # 에 있는 경우. handler body 안에서 직접 axios 못 찾으면 같은
+    # 폴더 saga URL 들에 귀속 (folder-scope fallback).
     folder_to_urls: dict[str, set[str]] = {}
+    # slug_to_urls: ``apps/<X>/index.js`` ↔ ``store/<X>/saga.js`` 처럼
+    # 폴더가 분리된 redux+saga 구조 매칭. path 안 ``apps`` / ``store``
+    # / ``modules`` / ``pages`` 다음 segment 를 app slug 로 추출.
+    slug_to_urls: dict[str, set[str]] = {}
     for url, files in api_index.items():
         for f in files:
             abs_f = os.path.join(frontend_dir, f)
             folder = os.path.dirname(abs_f)
             folder_to_urls.setdefault(folder, set()).add(url)
+            slug = _extract_app_slug(abs_f)
+            if slug:
+                slug_to_urls.setdefault(slug.lower(), set()).add(url)
 
     out: dict[str, list[dict]] = {}
 
@@ -773,14 +780,23 @@ def collect_handler_contexts(
                     urls_in_handler.add(canonical)
 
             indirect = False
-            # Folder-scope fallback: handler body 가 axios 직접 호출 없고
-            # dispatch / props 패턴으로 indirect handoff 인 경우 같은
-            # 폴더의 sibling URL 들에 귀속. saga 패턴 커버.
+            # Indirect handoff (dispatch / props) 면 두 단계 fallback:
+            #   1) Folder-scope: 같은 폴더 saga URL (apps/X/index.js +
+            #      apps/X/saga.js 처럼 같은 폴더에 모인 케이스)
+            #   2) App-slug: apps/X/ ↔ store/X/ 처럼 분리된 케이스 —
+            #      path segment 의 app slug 로 cross-folder 매칭.
             if not urls_in_handler and _is_indirect_handoff(body):
                 folder_urls = folder_to_urls.get(folder, set())
                 if folder_urls:
                     urls_in_handler = set(folder_urls)
                     indirect = True
+                else:
+                    slug = _extract_app_slug(fp)
+                    if slug:
+                        slug_urls = slug_to_urls.get(slug.lower(), set())
+                        if slug_urls:
+                            urls_in_handler = set(slug_urls)
+                            indirect = True
 
             if not urls_in_handler:
                 continue
@@ -815,6 +831,40 @@ def _is_indirect_handoff(body: str) -> bool:
     if not body:
         return False
     return bool(_INDIRECT_HANDOFF_RE.search(body))
+
+
+# 흔한 React 프로젝트 모듈 root: ``apps/X/`` (Container) ↔ ``store/X/``
+# (saga) 처럼 같은 X (app slug) 가 두 폴더 트리에 분산된 경우 cross-
+# folder 매칭에 사용.
+_APP_SLUG_PARENT_MARKERS = frozenset({
+    "apps", "app", "store", "stores", "modules", "pages", "views",
+    "containers", "features", "domains", "screens",
+})
+
+
+def _extract_app_slug(file_path: str) -> str | None:
+    """``apps/<slug>/...`` / ``store/<slug>/...`` / ``modules/<slug>/...``
+    형태의 path 에서 marker 다음 segment 를 app slug 로 추출.
+
+    사용자 케이스 (전형적 Korean enterprise React+Redux+Saga):
+      ``src/apps/cbmModeling/index.js``  → slug=``cbmModeling``
+      ``src/store/cbmModeling/saga.js``  → slug=``cbmModeling`` (동일)
+    → 같은 slug 끼리 묶어 indirect handler ↔ saga URL 매칭.
+
+    여러 marker 가 path 에 있으면 첫 번째 발견. slug 가 file 이름
+    (``.``) 포함하면 폴더가 아니라 파일이라 skip 후 다음 marker 시도.
+    """
+    parts = file_path.replace("\\", "/").split("/")
+    for i, p in enumerate(parts):
+        if p.lower() not in _APP_SLUG_PARENT_MARKERS:
+            continue
+        if i + 1 >= len(parts):
+            continue
+        slug = parts[i + 1]
+        if "." in slug:
+            continue
+        return slug
+    return None
 
 
 def _locate_handler_body(content: str, handler: str, max_chars: int = 4000) -> str:
