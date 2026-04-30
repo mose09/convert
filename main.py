@@ -1745,6 +1745,9 @@ def cmd_analyze_legacy(args):
 
     extract_program_spec = bool(getattr(args, "extract_program_spec", False))
     emit_sequence_diagram = bool(getattr(args, "sequence_diagram", False))
+    sequence_diagram_with_frontend = bool(
+        getattr(args, "sequence_diagram_frontend", False)
+    )
     row_per_trigger = bool(getattr(args, "row_per_trigger", False))
     if extract_program_spec and not extract_biz:
         print("Error: --extract-program-spec requires --extract-biz-logic "
@@ -1772,6 +1775,7 @@ def cmd_analyze_legacy(args):
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
             emit_sequence_diagram=emit_sequence_diagram,
+            sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
         )
     else:
@@ -1794,6 +1798,7 @@ def cmd_analyze_legacy(args):
             terms_md=terms_md,
             extract_program_spec=extract_program_spec,
             emit_sequence_diagram=emit_sequence_diagram,
+            sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
         )
 
@@ -2053,14 +2058,22 @@ def main():
     al_parser.add_argument("--sequence-diagram-group",
                            choices=["main_menu", "menu_path", "sub_menu",
                                     "controller_class", "backend_project",
-                                    "none"],
+                                    "program_name", "none"],
                            default="main_menu",
                            help="Sequence diagram .md 파일을 어떤 단위로 묶을지. "
                                 "default=main_menu (업무 대분류 별 묶음). "
                                 "menu_path=main+sub+tab 합쳐 더 세분화. "
                                 "controller_class=Java Controller 단위. "
                                 "backend_project=레포 단위 (--backends-root 모드). "
+                                "program_name=메뉴 한 개당 1 파일 "
+                                "(--sequence-diagram-frontend 와 함께 권장). "
                                 "none=endpoint 별 한 파일씩 (legacy).")
+    al_parser.add_argument("--sequence-diagram-frontend", action="store_true",
+                           help="Sequence diagram 에 frontend portion 포함. "
+                                "User → View → Controller → Service → ... → DB / RFC "
+                                "전체 chain. frontend_trigger 가 채워진 row 만 적용. "
+                                "권장: ``--sequence-diagram-group program_name`` 와 "
+                                "함께 써서 메뉴 한 개당 .md 파일 1개씩 생성.")
     al_parser.add_argument("--row-per-trigger", action="store_true",
                            help="같은 endpoint 가 여러 frontend trigger "
                                 "(조회/등록/등록완료/...) 에서 호출되면 한 셀에 "
