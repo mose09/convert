@@ -425,8 +425,11 @@ _BUTTON_LABEL_RE = re.compile(
 _ON_HANDLER_RE = re.compile(
     r"""\bon(?:Click|Submit|Change)\s*=\s*\{\s*
         (?:
-            (?P<name>\w+)
-          | \(?\s*\)\s*=>\s*(?P<arrow>\w+)\s*\(
+            # dotted reference (this.fnX / obj.handler) — leaf 만 추출.
+            # 사용자 사례: ``onClick={this.fncModelingAllUpdate}`` 같은
+            # class component 패턴. 이전 ``\w+`` 는 ``this`` 만 잡고 stop.
+            (?:[\w.]+\.)?(?P<name>\w+)
+          | \(?\s*[\w,\s]*\)?\s*=>\s*(?:[\w.]+\.)?(?P<arrow>\w+)\s*\(
         )
     """,
     re.VERBOSE,
@@ -630,6 +633,9 @@ def _locate_handler_start(content: str, handler: str) -> int | None:
     patterns = [
         rf"\bfunction\s+{re.escape(handler)}\s*\([^)]*\)\s*\{{",
         rf"\b(?:const|let|var)\s+{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
+        # Class field arrow (no const/let/var) — class component 패턴.
+        # 사용자 사례: ``fncModelingAllUpdate = () => { axios.post(...) }``.
+        rf"\b{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
         rf"\b{re.escape(handler)}\s*\([^)]*\)\s*\{{",  # class method / object shorthand
     ]
     for pat in patterns:
