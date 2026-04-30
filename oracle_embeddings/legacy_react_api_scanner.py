@@ -713,9 +713,23 @@ def collect_handler_contexts(
     all_files = _scan_dir(frontend_dir)
     const_map = _collect_url_constants(all_files, const_files_hint)
 
+    # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
+    # redux + saga 패턴에서 Container/index.js 의 click handler 가
+    # ``dispatch(actions.X)`` 만 부르고 실제 axios 는 같은 폴더 saga.js
+    # 에 있는 사용자 케이스. handler body 안에서 직접 axios 못 찾으면
+    # 같은 폴더 saga URL 들에 귀속 (folder-scope fallback).
+    folder_to_urls: dict[str, set[str]] = {}
+    for url, files in api_index.items():
+        for f in files:
+            abs_f = os.path.join(frontend_dir, f)
+            folder = os.path.dirname(abs_f)
+            folder_to_urls.setdefault(folder, set()).add(url)
+
     out: dict[str, list[dict]] = {}
 
-    for fp in files_with_calls:
+    # 모든 react file 스캔 (files_with_calls 외에도 click handler 가 다른
+    # 파일에 있을 수 있는 redux + saga 케이스 포함).
+    for fp in all_files:
         try:
             content = _read_file_safe(fp)
         except Exception:
@@ -726,6 +740,7 @@ def collect_handler_contexts(
             continue
 
         rel = os.path.relpath(fp, frontend_dir)
+        folder = os.path.dirname(fp)
 
         for ev in events:
             event_type = ev["event"]
@@ -733,8 +748,6 @@ def collect_handler_contexts(
             label = ev["label"]
             body = ev["body"]
             offset = ev["source_offset"]
-            # body 가 inline (useEffect / lifecycle) 이면 그대로, named
-            # handler (onClick={fn}) 면 _locate_handler_start 로 별도 위치.
             if not body and handler:
                 start = _locate_handler_start(content, handler)
                 if start is None:
@@ -759,13 +772,24 @@ def collect_handler_contexts(
                 if canonical:
                     urls_in_handler.add(canonical)
 
+            indirect = False
+            # Folder-scope fallback: handler body 가 axios 직접 호출 없고
+            # dispatch / props 패턴으로 indirect handoff 인 경우 같은
+            # 폴더의 sibling URL 들에 귀속. saga 패턴 커버.
+            if not urls_in_handler and _is_indirect_handoff(body):
+                folder_urls = folder_to_urls.get(folder, set())
+                if folder_urls:
+                    urls_in_handler = set(folder_urls)
+                    indirect = True
+
             if not urls_in_handler:
                 continue
 
+            event_marker = f"{event_type}+saga" if indirect else event_type
             ctx = {
                 "file": rel,
                 "handler": handler or f"<inline:{event_type}>",
-                "event": event_type,
+                "event": event_marker,
                 "label": label,
                 "body": body,
                 "jsx_slice": jsx,
@@ -775,6 +799,22 @@ def collect_handler_contexts(
                 out.setdefault(u, []).append(ctx)
 
     return out
+
+
+# Indirect handoff (dispatch / props.X / useDispatch) 패턴 — handler body
+# 가 axios 직접 호출 없이 redux 액션 dispatch 만 하는 경우.
+_INDIRECT_HANDOFF_RE = re.compile(
+    r"\bdispatch\s*\(|\bthis\.props\.|\bprops\.\w+\s*\(|\buseDispatch\s*\("
+)
+
+
+def _is_indirect_handoff(body: str) -> bool:
+    """handler body 가 axios/fetch 가 아니라 dispatch / props 호출로
+    backend 트리거를 내려보내는 redux + saga 패턴인지 휴리스틱 검출.
+    """
+    if not body:
+        return False
+    return bool(_INDIRECT_HANDOFF_RE.search(body))
 
 
 def _locate_handler_body(content: str, handler: str, max_chars: int = 4000) -> str:
