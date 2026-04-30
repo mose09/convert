@@ -125,6 +125,28 @@ _ROUTE_JSX_RE = re.compile(
     re.VERBOSE,
 )
 
+
+def _build_route_jsx_re(extra_tags: list[str] | None = None) -> re.Pattern:
+    """Build ``_ROUTE_JSX_RE`` 와 동일 shape 의 regex 인데 ``<Route>`` 외에
+    extra wrapper tag (사용자 사례: ``<PropsRouter path=...>`` 같은 custom
+    component) 도 매칭. extra_tags 가 비어있으면 default ``<Route>`` 와
+    동일.
+    """
+    tags = ["Route"] + [t for t in (extra_tags or []) if t and t != "Route"]
+    alt = "|".join(re.escape(t) for t in tags)
+    return re.compile(
+        rf"""<(?:{alt})
+            \b[^>]*?
+            \bpath\s*=\s*(?P<quote>["'])(?P<path>[^"']*)(?P=quote)
+            [^>]*?
+            (?:
+                element\s*=\s*\{{\s*<\s*(?P<comp1>[A-Z]\w*)
+              | component\s*=\s*\{{\s*(?P<comp2>[A-Z]\w*)\s*\}}
+            )
+        """,
+        re.VERBOSE,
+    )
+
 # Object-style route config
 _ROUTE_OBJ_RE = re.compile(
     r"""\{\s*
@@ -293,14 +315,55 @@ def _resolve_import_path(rel: str, from_dir: str) -> str:
     return ""
 
 
-def _extract_routes_from_content(content: str) -> list[dict]:
+# Component declaration whose body contains ``<Route``. 사용자 사례:
+# ``const PropsRouter = (...) => { return <Route ...>...</Route>; }``
+# 같이 ``<Route>`` 를 감싼 wrapper component 가 사용처에서
+# ``<PropsRouter path="/x" component={X}/>`` 형태로 호출되는데, default
+# ``<Route\b`` regex 가 못 잡아 Route extraction 0건. wrapper 이름을
+# 모아서 dynamic regex alt 로 추가하면 매칭 성립.
+_WRAPPER_DECL_RE = re.compile(
+    r"""(?:const|let|var|function|class)\s+
+        (?P<name>[A-Z]\w*)
+        \s*(?:=|extends\s+\w+|\(|<)
+    """,
+    re.VERBOSE,
+)
+
+
+def detect_route_wrapper_components(content: str) -> set[str]:
+    """파일 안에서 ``<Route>`` 를 감싸는 wrapper component 이름 추출.
+
+    각 component 선언 (const/let/function/class) 의 시작 위치에서 일정
+    window (3000자) 안에 ``<Route\\b`` 가 등장하면 wrapper 후보로 등록.
+    PascalCase 이름만 (Component 컨벤션). 기본 ``Route`` 자체는 제외.
+    """
+    wrappers: set[str] = set()
+    if "<Route" not in content:
+        return wrappers
+    for m in _WRAPPER_DECL_RE.finditer(content):
+        name = m.group("name")
+        if not name or name == "Route":
+            continue
+        window = content[m.start():m.start() + 3000]
+        if "<Route" in window:
+            wrappers.add(name)
+    return wrappers
+
+
+def _extract_routes_from_content(content: str,
+                                  route_jsx_re: re.Pattern | None = None) -> list[dict]:
     """Extract ``{path, component}`` pairs from one file's source.
 
     Collapses duplicates across JSX and object patterns; returns entries in
     source order (important for nested-path propagation).
+
+    ``route_jsx_re`` 가 주어지면 ``<Route>`` 외에 wrapper component 도
+    매칭하는 dynamic regex 사용 (사용자 사례: ``<PropsRouter path=...>``).
+    None 이면 module-level ``_ROUTE_JSX_RE`` 사용.
     """
     routes = []
     seen = set()
+    jsx_re = route_jsx_re or _ROUTE_JSX_RE
 
     def _add(path: str, comp: str):
         key = (path, comp)
@@ -308,7 +371,7 @@ def _extract_routes_from_content(content: str) -> list[dict]:
             seen.add(key)
             routes.append({"path": path, "component": comp})
 
-    for m in _ROUTE_JSX_RE.finditer(content):
+    for m in jsx_re.finditer(content):
         _add(m.group("path"), m.group("comp1") or m.group("comp2"))
 
     for m in _ROUTE_OBJ_RE.finditer(content):
@@ -455,16 +518,36 @@ def build_url_to_component_map(react_dir: str, strip_patterns=None,
 
     prefix = route_prefix or ""
 
+    # Project-wide Route wrapper component scan. 사용자 사례:
+    # ``const PropsRouter = (...) => <Route ...>`` 같은 wrapper 가 사용처
+    # 에서 ``<PropsRouter path="/x" component={X}/>`` 로 호출 — default
+    # ``<Route\b`` regex 가 못 잡아 Route extraction 0건. 모든 file 에서
+    # wrapper 이름을 모아 dynamic regex alt 로 추가.
+    wrappers: set[str] = set()
+    for fp in files:
+        try:
+            wrappers.update(detect_route_wrapper_components(_read_file_safe(fp)))
+        except Exception:
+            continue
+    if wrappers:
+        logger.info("React Route wrappers detected: %s", sorted(wrappers))
+    route_jsx_re = _build_route_jsx_re(sorted(wrappers)) if wrappers else _ROUTE_JSX_RE
+
     url_map = {}
     for fp in files:
         try:
             content = _read_file_safe(fp)
         except Exception:
             continue
-        if "Route" not in content and "path:" not in content:
-            continue
+        # wrapper 가 있으면 사용처에서 ``<{Wrapper}\b`` 매칭이 되므로
+        # ``Route`` substring 이 없는 파일도 후보. 보수적으로 wrapper 의
+        # 첫 alt 만 검사.
+        has_route_keyword = "Route" in content or "path:" in content
+        if not has_route_keyword:
+            if not any(f"<{w}" in content for w in wrappers):
+                continue
         lazy_map = _extract_lazy_imports(content, os.path.dirname(fp))
-        routes = _extract_routes_from_content(content)
+        routes = _extract_routes_from_content(content, route_jsx_re=route_jsx_re)
         for r in routes:
             comp = r["component"]
             # comp 해석 실패 (render HOC / dynamic import 등) 하거나 lazy
