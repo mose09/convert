@@ -2307,6 +2307,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             handlers_by_url = collect_handler_contexts(
                 frontend_dir, api_idx, patterns or {},
             )
+            print(f"  frontend biz: api_idx={len(api_idx)} URLs, "
+                  f"handlers_by_url={len(handlers_by_url)} URLs collected")
             if handlers_by_url:
                 fe_biz_map = biz.extract_frontend_biz_logic(
                     handlers_by_url,
@@ -2316,6 +2318,13 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     config=biz_config or {},
                 )
                 biz.enrich_rows_with_frontend_biz(rows, fe_biz_map)
+            else:
+                print(f"  frontend biz: handler 컨텍스트 0건 — LLM skip. 가능 원인:")
+                print(f"     a) <Button>label</Button> 같은 텍스트-children 패턴 없음")
+                print(f"     b) onClick/onSubmit/onChange 가 아닌 다른 이벤트명")
+                print(f"     c) handler 가 i18n key 또는 동적 함수 (변수 바인딩)")
+                print(f"     d) API 호출 파일과 button JSX 가 분리되어 같은 파일 안에")
+                print(f"        모두 있어야 매칭되는데 분산된 구조")
         else:
             print("  frontend biz: no API calls indexed — skip")
 
