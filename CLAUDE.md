@@ -10,6 +10,10 @@
    헤더/순서 건드리지 말고 `### 진행 중: <제목>` 으로만 추가.
 2. 항목은 `- [ ]` / `- [x]`. 완료 시 즉시 체크.
 3. PR 머지 후 "진행 중" 섹션 삭제. 히스토리는 git log + PR 이 담당.
+4. **항상 `karpathy-guidelines` 스킬 사용**. 코드 작성 / 리뷰 / 리팩토링
+   시작 전 `Skill` 도구로 `karpathy-guidelines` 호출 → 4가지 원칙
+   (Think Before Coding / Simplicity First / Surgical Changes /
+   Goal-Driven Execution) 적용.
 
 ## 프로젝트 컨텍스트
 
