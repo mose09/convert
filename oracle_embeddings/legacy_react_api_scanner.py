@@ -627,19 +627,29 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     if call_re is None:
         return {}
 
-    # Reverse index: file → set of URLs it calls (to quickly iterate files
-    # that actually matter).
-    files_with_calls: set[str] = set()
-    for url, files in api_index.items():
-        for f in files:
-            files_with_calls.add(os.path.join(frontend_dir, f))
-
     all_files = _scan_dir(frontend_dir)
     const_map = _collect_url_constants(all_files, const_files_hint)
 
+    # folder_to_urls / slug_to_urls — handler body 에서 URL 못 찾을 때
+    # redux+saga indirect handoff fallback 용 (collect_handler_contexts
+    # 와 동일 전략). 같은 폴더 / 같은 app slug 의 saga URL 들에 귀속.
+    folder_to_urls: dict[str, set[str]] = {}
+    slug_to_urls: dict[str, set[str]] = {}
+    for url, files in api_index.items():
+        for f in files:
+            abs_f = os.path.join(frontend_dir, f)
+            folder = os.path.dirname(abs_f)
+            folder_to_urls.setdefault(folder, set()).add(url)
+            slug = _extract_app_slug(abs_f)
+            if slug:
+                slug_to_urls.setdefault(slug.lower(), set()).add(url)
+
     triggers: dict[str, set[str]] = {}
 
-    for fp in files_with_calls:
+    # 모든 react file 스캔 — handler 가 다른 파일 (saga.js) 의 함수를
+    # 직접 import 해서 onClick 에 바인딩하는 케이스도 포함하기 위해
+    # files_with_calls 가 아닌 all_files 순회.
+    for fp in all_files:
         try:
             content = _read_file_safe(fp)
         except Exception:
@@ -650,6 +660,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         if not events:
             continue
 
+        folder = os.path.dirname(fp)
+
         for ev in events:
             event_type = ev["event"]
             handler = ev["handler"]
@@ -659,24 +671,46 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             # handler 이면 _locate_handler_body 로 위치 찾기.
             if not body and handler:
                 body = _locate_handler_body(content, handler)
-            if not body:
-                continue
-            for m in call_re.finditer(body):
-                raw = m.group("url") or ""
-                if not raw:
-                    var = m.group("var") or ""
-                    if not var:
-                        continue
-                    raw = const_map.get(var, "")
+
+            urls_in_handler: set[str] = set()
+            if body:
+                for m in call_re.finditer(body):
+                    raw = m.group("url") or ""
                     if not raw:
-                        continue
-                canonical = normalize_url(_normalize_template(raw), strip_patterns)
-                if not canonical:
-                    continue
-                # 트리거 라벨 포맷: [event] label-or-handler
-                # label 이 있으면 우선 (버튼 텍스트), 없으면 handler 이름 사용.
-                tag_text = label or handler or "<inline>"
-                trigger_label = f"[{event_type}] {tag_text}"
+                        var = m.group("var") or ""
+                        if not var:
+                            continue
+                        raw = const_map.get(var, "")
+                        if not raw:
+                            continue
+                    canonical = normalize_url(_normalize_template(raw), strip_patterns)
+                    if canonical:
+                        urls_in_handler.add(canonical)
+
+            # Fallback: handler body 못 찾았거나 (saga.js import 케이스) /
+            # body 에 axios 없고 dispatch/props 만 있는 경우 → folder /
+            # app-slug scope 의 saga URL 들에 귀속.
+            indirect = False
+            if not urls_in_handler and (not body or _is_indirect_handoff(body)):
+                folder_urls = folder_to_urls.get(folder, set())
+                if folder_urls:
+                    urls_in_handler = set(folder_urls)
+                    indirect = True
+                else:
+                    slug = _extract_app_slug(fp)
+                    if slug:
+                        slug_urls = slug_to_urls.get(slug.lower(), set())
+                        if slug_urls:
+                            urls_in_handler = set(slug_urls)
+                            indirect = True
+
+            if not urls_in_handler:
+                continue
+
+            event_marker = f"{event_type}+saga" if indirect else event_type
+            tag_text = label or handler or "<inline>"
+            trigger_label = f"[{event_marker}] {tag_text}"
+            for canonical in urls_in_handler:
                 triggers.setdefault(canonical, set()).add(trigger_label)
 
     return {k: sorted(v) for k, v in triggers.items()}
