@@ -19,6 +19,13 @@ from collections import defaultdict
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from oracle_embeddings.legacy_react_api_scanner import (
+    _MAX_FILE_BYTES,
+    _SAGA_CALL_INDIRECT_RE,
+    _SAGA_CALL_LITERAL_RE,
+    _SAGA_INDIRECT_SKIP_NAMES,
+    _SKIP_FILE_INFIX,
+    _build_call_regex,
+    _DEFAULT_API_METHODS,
     _extract_app_slug,
     _is_indirect_handoff,
     _locate_handler_body,
@@ -27,6 +34,7 @@ from oracle_embeddings.legacy_react_api_scanner import (
     collect_event_handlers,
     extract_button_triggers,
 )
+from oracle_embeddings.legacy_util import normalize_url
 from oracle_embeddings.mybatis_parser import _read_file_safe
 
 
@@ -46,14 +54,116 @@ def _classify(body: str) -> str:
     return "F"
 
 
+def _probe_single_file(fp: str) -> int:
+    """단일 파일 정밀 진단 — 왜 build_api_url_index 가 이 파일에서 URL 을
+    못 잡는지 확인용. 파일 size / skip 사유 / regex 매칭 카운트 emit.
+    """
+    fp = fp.strip().rstrip()
+    if not os.path.isfile(fp):
+        print(f"[X] 파일 없음: {fp}")
+        return 2
+
+    size = os.path.getsize(fp)
+    fname = os.path.basename(fp).lower()
+    print(f"file: {os.path.basename(fp)}")
+    print(f"size: {size} bytes ({size // 1024} KB)")
+
+    reasons = []
+    if size > _MAX_FILE_BYTES:
+        reasons.append(f"SIZE > {_MAX_FILE_BYTES // 1000}KB → 스캔 제외")
+    if any(s in fname for s in _SKIP_FILE_INFIX):
+        reasons.append(f"파일명에 {_SKIP_FILE_INFIX} 중 하나 포함 → 스캔 제외")
+    ext = os.path.splitext(fname)[1]
+    valid_ext = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".vue", ".html"}
+    if ext not in valid_ext:
+        reasons.append(f"확장자 {ext} 가 EXTENSIONS 에 없음 → 스캔 제외")
+    if reasons:
+        print("[X] 스캔 제외 사유:")
+        for r in reasons:
+            print(f"  - {r}")
+        return 0
+
+    try:
+        content = _read_file_safe(fp)
+    except Exception as e:
+        print(f"[X] 읽기 실패: {e}")
+        return 2
+
+    # 직접 axios 호출
+    methods = list(_DEFAULT_API_METHODS)
+    call_re = _build_call_regex(methods)
+    direct_urls: set[str] = set()
+    if call_re:
+        for m in call_re.finditer(content):
+            raw = m.group("url") or ""
+            if raw:
+                u = normalize_url(raw)
+                if u:
+                    direct_urls.add(u)
+
+    # saga literal call(fn, '/url')
+    saga_literal_urls: set[str] = set()
+    saga_literal_skipped = 0
+    for m in _SAGA_CALL_LITERAL_RE.finditer(content):
+        fn_ref = m.group("fn") or ""
+        leaf = fn_ref.rsplit(".", 1)[-1]
+        raw = m.group("url") or ""
+        if leaf in _SAGA_INDIRECT_SKIP_NAMES:
+            saga_literal_skipped += 1
+            continue
+        if raw:
+            u = normalize_url(raw)
+            if u:
+                saga_literal_urls.add(u)
+
+    # saga indirect call(fn) — leaf names only
+    saga_indirect_leafs: set[str] = set()
+    for m in _SAGA_CALL_INDIRECT_RE.finditer(content):
+        fn = m.group("fn") or ""
+        if fn and fn not in _SAGA_INDIRECT_SKIP_NAMES:
+            saga_indirect_leafs.add(fn)
+
+    print(f"call/apply 사용 횟수: {content.count('call(') + content.count('apply(')}")
+    print(f"직접 axios/fetch URL: {len(direct_urls)}")
+    for u in sorted(direct_urls)[:5]:
+        print(f"  {u}")
+    print(f"saga literal call(fn,'url') URL: {len(saga_literal_urls)} (skipped by leaf={saga_literal_skipped})")
+    for u in sorted(saga_literal_urls)[:5]:
+        print(f"  {u}")
+    print(f"saga indirect call(fn) leaf 후보: {len(saga_indirect_leafs)}")
+    for leaf in sorted(saga_indirect_leafs)[:5]:
+        print(f"  {leaf}")
+
+    total = len(direct_urls) + len(saga_literal_urls)
+    print()
+    print(f"=== 결론: 이 파일에서 추출된 URL {total} 건 ===")
+    if total == 0:
+        print("⚠ URL 0건 — regex 매칭 자체 실패. axios/fetch 메서드 이름이")
+        print("  _DEFAULT_API_METHODS 에 없거나 (custom wrapper) call() 형태가 다름")
+    else:
+        print(f"axios={len(direct_urls)} + saga_literal={len(saga_literal_urls)}")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--frontend-dir", required=True)
+    ap.add_argument("--frontend-dir",
+                    help="프로젝트 frontend 루트 (--probe-file 단독 사용 시 생략 OK)")
     ap.add_argument("--max-samples", type=int, default=3,
                     help="버킷별 샘플 출력 개수 (default 3)")
     ap.add_argument("--target-url",
                     help="특정 URL 만 집중 진단 (선택)")
+    ap.add_argument("--probe-file",
+                    help="단일 saga.js 등의 파일을 정밀 진단 (--frontend-dir 없이 OK)")
     args = ap.parse_args()
+
+    # ── --probe-file 모드 ── 단일 파일 정밀 진단
+    if args.probe_file:
+        return _probe_single_file(args.probe_file)
+
+    if not args.frontend_dir:
+        print("[X] --frontend-dir 또는 --probe-file 중 하나 필요")
+        return 2
 
     fd = args.frontend_dir.strip().rstrip("\\/").rstrip()
     if not os.path.isdir(fd):
