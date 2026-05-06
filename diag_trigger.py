@@ -175,13 +175,24 @@ def main() -> int:
     print(f"L1 api_idx URLs: {len(api_idx)}")
 
     if args.target_url:
-        if args.target_url in api_idx:
-            print(f"  target {args.target_url} → axios 위치: "
-                  f"{len(api_idx[args.target_url])} 파일")
-            for f in api_idx[args.target_url][:args.max_samples]:
+        # api_idx 의 key 는 normalize_url 거쳐 소문자화. 사용자 입력의
+        # 대소문자 / trailing slash 와 무관하게 매칭하기 위해 동일 정규화.
+        target_norm = normalize_url(args.target_url)
+        if target_norm in api_idx:
+            print(f"  target {target_norm} → axios 위치: "
+                  f"{len(api_idx[target_norm])} 파일")
+            for f in api_idx[target_norm][:args.max_samples]:
                 print(f"    {f}")
         else:
-            print(f"  [X] target {args.target_url} api_idx 에 없음")
+            print(f"  [X] target {target_norm} api_idx 에 없음")
+            # 부분 매칭 후보 (마지막 segment 기준) — 오타 / 다른 prefix 식별
+            tail = target_norm.rsplit("/", 1)[-1] if target_norm else ""
+            if tail:
+                cand = [u for u in api_idx if tail in u]
+                if cand:
+                    print(f"  유사 후보 ({min(args.max_samples, len(cand))}):")
+                    for u in cand[:args.max_samples]:
+                        print(f"    {u}")
 
     # L2: trigger map
     trig = extract_button_triggers(fd, api_idx)
