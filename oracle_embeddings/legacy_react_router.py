@@ -111,7 +111,9 @@ def build_component_index(files: list[str]) -> dict:
     return index
 
 
-# `<Route path="/x" element={<X/>} />` or `component={X}`
+# `<Route path="/x" element={<X/>} />` or `component={X}`. component 값은
+# 변수 reference 라 PascalCase 외에 camelCase alias 도 흔함 — `[A-Za-z_]`
+# 로 완화. element 의 JSX 태그는 React 컨벤션상 PascalCase 유지.
 _ROUTE_JSX_RE = re.compile(
     r"""<Route
         \b[^>]*?
@@ -119,7 +121,7 @@ _ROUTE_JSX_RE = re.compile(
         [^>]*?
         (?:
             element\s*=\s*\{\s*<\s*(?P<comp1>[A-Z]\w*)
-          | component\s*=\s*\{\s*(?P<comp2>[A-Z]\w*)\s*\}
+          | component\s*=\s*\{\s*(?P<comp2>[A-Za-z_]\w*)\s*\}
         )
     """,
     re.VERBOSE,
@@ -141,19 +143,20 @@ def _build_route_jsx_re(extra_tags: list[str] | None = None) -> re.Pattern:
             [^>]*?
             (?:
                 element\s*=\s*\{{\s*<\s*(?P<comp1>[A-Z]\w*)
-              | component\s*=\s*\{{\s*(?P<comp2>[A-Z]\w*)\s*\}}
+              | component\s*=\s*\{{\s*(?P<comp2>[A-Za-z_]\w*)\s*\}}
             )
         """,
         re.VERBOSE,
     )
 
-# Object-style route config
+# Object-style route config — component 값은 변수 reference 라 camelCase
+# alias 도 허용 (element JSX 태그만 PascalCase 유지).
 _ROUTE_OBJ_RE = re.compile(
     r"""\{\s*
         path\s*:\s*(?P<quote>["'`])(?P<path>[^"'`]+)(?P=quote)
         [^}]*?
         (?:element\s*:\s*<\s*(?P<comp1>[A-Z]\w*)
-          | component\s*:\s*(?P<comp2>[A-Z]\w*)
+          | component\s*:\s*(?P<comp2>[A-Za-z_]\w*)
         )
     """,
     re.VERBOSE | re.DOTALL,
