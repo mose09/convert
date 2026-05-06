@@ -81,17 +81,41 @@ def main() -> int:
     if entry is None:
         print(f"\n✗ FAIL Layer 1 — menu URL not in url_map. Route extraction or "
               f"normalization mismatch.")
-        # 비슷한 키 찾기 — 실제 substr 으로 matching 후보 노출.
+        # 비슷한 키 찾기 — substr + token overlap 둘 다 시도.
         slug_tail = key.rsplit("/", 1)[-1]
-        candidates = [k for k in url_map if slug_tail in k]
-        if candidates:
-            print(f"  similar keys (substr {slug_tail!r}): {candidates[:10]}")
+        substr_candidates = [k for k in url_map if slug_tail in k]
+        if substr_candidates:
+            print(f"  substr 매칭 ({slug_tail!r}): {substr_candidates[:10]}")
             print(f"  → Route 는 추출됐지만 정규화 결과가 다른 key 로 저장됨.")
             print(f"    (e.g., react_route_prefix prepend / 추가 path segment).")
         else:
-            print(f"  similar keys: none.")
-            print(f"  → Route 가 아예 추출 안 됨. index.js 의 Route regex 미스 또는 "
-                  f"파일이 scan_react_dir 의 skip 디렉토리에 있음.")
+            # token overlap fuzzy: 메뉴 URL 의 alphanumeric token 들과 url_map
+            # key 들을 비교. snake/kebab/camel 차이로 substr 이 안 잡혀도
+            # 핵심 토큰이 겹치면 후보로 등장.
+            import re as _re
+            menu_tokens = set(t.lower() for t in _re.findall(r"[a-z0-9]+", key.lower()) if len(t) > 2)
+            scored = []
+            for k in url_map:
+                k_tokens = set(t.lower() for t in _re.findall(r"[a-z0-9]+", k.lower()) if len(t) > 2)
+                overlap = len(menu_tokens & k_tokens)
+                if overlap > 0:
+                    scored.append((overlap, k))
+            scored.sort(reverse=True)
+            if scored:
+                print(f"  token overlap 후보 (top10):")
+                for ovl, k in scored[:10]:
+                    print(f"    [{ovl}] {k}")
+                print(f"  → 핵심 토큰은 겹치는 key 가 있음. menu URL slug 와")
+                print(f"    Route path slug 형식이 다른 듯 (camel/snake/kebab 차이).")
+            else:
+                print(f"  similar keys: none (substr + token overlap 둘 다 0건).")
+                print(f"  → Route 가 아예 추출 안 됨. index.js 의 Route regex 미스 또는 "
+                      f"파일이 scan_react_dir 의 skip 디렉토리에 있음.")
+        # 항상 url_map sample 5개 출력 — 사용자가 어떤 형식인지 직접 확인
+        sample = list(url_map.keys())[:5]
+        print(f"  url_map sample (총 {len(url_map)}개 중 5개):")
+        for k in sample:
+            print(f"    {k}")
         return 0
 
     print(f"\n✓ PASS Layer 1 — url_map 에 등록됨")
