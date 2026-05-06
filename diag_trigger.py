@@ -145,6 +145,116 @@ def _probe_single_file(fp: str) -> int:
     return 0
 
 
+def _probe_route_file(fp: str) -> int:
+    """단일 React 파일의 Route 추출 진단 — wrapper 감지 / 각 regex 매칭
+    카운트 emit. diag_menu 가 "라우트 0 건" 으로 끊길 때 어느 단계에서
+    빠지는지 좁힘.
+    """
+    fp = fp.strip().rstrip()
+    if not os.path.isfile(fp):
+        print(f"[X] 파일 없음: {fp}")
+        return 2
+
+    from oracle_embeddings.legacy_react_router import (
+        _ROUTE_JSX_RE,
+        _ROUTE_OBJ_RE,
+        _WRAPPER_DECL_RE,
+        _build_route_jsx_re,
+        _extract_render_routes,
+        detect_route_wrapper_components,
+    )
+
+    size = os.path.getsize(fp)
+    fname = os.path.basename(fp).lower()
+    print(f"file: {os.path.basename(fp)}")
+    print(f"size: {size} bytes ({size // 1024} KB)")
+
+    reasons = []
+    if size > _MAX_FILE_BYTES:
+        reasons.append(f"SIZE > {_MAX_FILE_BYTES // 1000}KB → 스캔 제외")
+    if any(s in fname for s in _SKIP_FILE_INFIX):
+        reasons.append(f"파일명에 {_SKIP_FILE_INFIX} 중 하나 포함 → 스캔 제외")
+    ext = os.path.splitext(fname)[1]
+    valid_ext = {".js", ".jsx", ".ts", ".tsx"}
+    if ext not in valid_ext:
+        reasons.append(f"확장자 {ext} 가 EXTENSIONS 에 없음 → 스캔 제외")
+    if reasons:
+        print("[X] 스캔 제외 사유:")
+        for r in reasons:
+            print(f"  - {r}")
+        return 0
+
+    try:
+        content = _read_file_safe(fp)
+    except Exception as e:
+        print(f"[X] 읽기 실패: {e}")
+        return 2
+
+    has_route_tag = "<Route" in content
+    print(f"contains '<Route' tag: {has_route_tag}")
+
+    # PascalCase JSX 사용 (꺽쇠 + 대문자 시작) — 모든 Route wrapper 후보
+    jsx_used: set[str] = set()
+    for m in re.finditer(r"<\s*([A-Z]\w*)\b[^>]*\bpath\s*=", content):
+        jsx_used.add(m.group(1))
+    print(f"path= 속성 가진 PascalCase JSX 사용처: {sorted(jsx_used) or '(none)'}")
+
+    # wrapper 선언 후보 ( _WRAPPER_DECL_RE 만 통과 — 본체 검사 전)
+    decl_candidates: list[str] = []
+    for m in _WRAPPER_DECL_RE.finditer(content):
+        nm = m.group("name")
+        if nm and nm != "Route":
+            decl_candidates.append(nm)
+    print(f"_WRAPPER_DECL_RE 매칭 (component decl 후보): {len(decl_candidates)} → "
+          f"top10={decl_candidates[:10]}")
+
+    wrappers = detect_route_wrapper_components(content)
+    print(f"detect_route_wrapper_components 최종: {sorted(wrappers) or '(none)'}")
+
+    # 사용처와 선언이 같은 파일에 있을 때 매칭 가능 여부 시뮬
+    only_in_usage = jsx_used - wrappers - {"Route"}
+    if only_in_usage:
+        print(f"⚠ 사용은 됐지만 wrapper 로 미감지: {sorted(only_in_usage)}")
+        print("  → 다른 파일에 선언됐거나 (외부 lib), wrapper body 에 <Route 누락")
+
+    # Route extraction 실제 카운트
+    print()
+    print("=== Route extraction 시뮬 ===")
+    # default Route 만
+    default_routes = list(_ROUTE_JSX_RE.finditer(content))
+    print(f"default <Route> JSX: {len(default_routes)} 건")
+    # render={} HOC
+    render_routes = _extract_render_routes(content)
+    print(f"<Route render={{}}> HOC: {len(render_routes)} 건")
+    # object form
+    obj_routes = list(_ROUTE_OBJ_RE.finditer(content))
+    print(f"object form ({{path: ..., component: ...}}): {len(obj_routes)} 건")
+    # wrapper 적용
+    if wrappers:
+        wrapper_re = _build_route_jsx_re(sorted(wrappers))
+        wrapper_routes = list(wrapper_re.finditer(content))
+        print(f"wrapper ({sorted(wrappers)}) 적용 JSX: {len(wrapper_routes)} 건")
+        for m in wrapper_routes[:3]:
+            comp = m.group("comp1") or m.group("comp2")
+            print(f"  path={m.group('path')} component={comp}")
+
+    # Wrapper 가 다른 파일 후보 여부
+    print()
+    print("=== 결론 ===")
+    total = len(default_routes) + len(render_routes) + len(obj_routes)
+    if wrappers:
+        total += len(_build_route_jsx_re(sorted(wrappers)).findall(content))
+    if total == 0 and only_in_usage:
+        print(f"⚠ Route 0 건 — wrapper 후보 {sorted(only_in_usage)} 가 이 파일에서 감지 안 됨")
+        print("  → import 출처 (다른 파일 / 외부 lib) 확인 필요. 같은 파일에 선언됐다면")
+        print("    선언 형태가 _WRAPPER_DECL_RE 매칭 안 되는 형태일 가능성")
+    elif total == 0:
+        print("⚠ Route 0 건 — Route / PropsRouter / object 형 모두 매칭 실패")
+    else:
+        print(f"✓ Route {total} 건 정상 추출")
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--frontend-dir",
@@ -155,11 +265,17 @@ def main() -> int:
                     help="특정 URL 만 집중 진단 (선택)")
     ap.add_argument("--probe-file",
                     help="단일 saga.js 등의 파일을 정밀 진단 (--frontend-dir 없이 OK)")
+    ap.add_argument("--probe-route-file",
+                    help="단일 React 파일의 Route 추출 진단 — wrapper 감지 / regex 매칭 카운트 emit")
     args = ap.parse_args()
 
     # ── --probe-file 모드 ── 단일 파일 정밀 진단
     if args.probe_file:
         return _probe_single_file(args.probe_file)
+
+    # ── --probe-route-file 모드 ── 단일 파일 Route 추출 진단
+    if args.probe_route_file:
+        return _probe_route_file(args.probe_route_file)
 
     if not args.frontend_dir:
         print("[X] --frontend-dir 또는 --probe-file 중 하나 필요")
