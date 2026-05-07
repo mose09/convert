@@ -1658,7 +1658,7 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
         layouts = screen_ext.extract_screen_layouts(
             frontend_dir, handlers_by_url, patterns or {},
             max_screens=int(getattr(args, "screen_max", 200)),
-            use_cache=bool(getattr(args, "biz_cache", True)),
+            use_cache=False,   # 사용자 명시: 항상 새로 분석
             config={},
         )
         if layouts:
