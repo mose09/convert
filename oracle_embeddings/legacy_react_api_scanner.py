@@ -355,6 +355,16 @@ _FN_CALL_LEAF_RE = re.compile(
 )
 
 
+def _is_apps_react_file(rel_path: str) -> bool:
+    """``src/apps/...`` / ``apps/...`` 안의 파일인지 판정. 분석 대상은 사용자
+    프로젝트의 apps/ 화면 컴포넌트만. ``store/`` / ``components/`` /
+    ``lib/`` / sample 페이지 등은 events 처리에서 제외 (단 fn_index 에는
+    포함되어 saga import 핸들러 이름 lookup 가능).
+    """
+    parts = rel_path.replace("\\", "/").split("/")
+    return "apps" in parts
+
+
 def _scan_body_with_chain(body: str,
                             fn_index: dict[str, list[tuple[str, str]]],
                             call_re,
@@ -785,27 +795,19 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
 
     all_files = _scan_dir(frontend_dir)
     const_map = _collect_url_constants(all_files, const_files_hint)
-
-    # folder_to_urls / slug_to_urls — handler body 에서 URL 못 찾을 때
-    # redux+saga indirect handoff fallback 용 (collect_handler_contexts
-    # 와 동일 전략). 같은 폴더 / 같은 app slug 의 saga URL 들에 귀속.
-    folder_to_urls: dict[str, set[str]] = {}
-    slug_to_urls: dict[str, set[str]] = {}
-    for url, files in api_index.items():
-        for f in files:
-            abs_f = os.path.join(frontend_dir, f)
-            folder = os.path.dirname(abs_f)
-            folder_to_urls.setdefault(folder, set()).add(url)
-            slug = _extract_app_slug(abs_f)
-            if slug:
-                slug_to_urls.setdefault(slug.lower(), set()).add(url)
+    # fn_index — handler 가 다른 파일 (saga.js 등) import 인 케이스에서
+    # 이름으로 직접 lookup. collect_handler_contexts 와 동일 전략 (PR #150).
+    fn_index = _collect_function_bodies(all_files)
 
     triggers: dict[str, set[str]] = {}
 
-    # 모든 react file 스캔 — handler 가 다른 파일 (saga.js) 의 함수를
-    # 직접 import 해서 onClick 에 바인딩하는 케이스도 포함하기 위해
-    # files_with_calls 가 아닌 all_files 순회.
+    # apps/ 안 파일만 events 처리 — 사용자 정책 (component 페이지 / sample
+    # 제외). saga.js 등 store/ 폴더 파일은 fn_index 에 포함되어 handler
+    # 이름 lookup 으로 chain follow 가능.
     for fp in all_files:
+        rel = os.path.relpath(fp, frontend_dir)
+        if not _is_apps_react_file(rel):
+            continue
         try:
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
@@ -816,56 +818,39 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         if not events:
             continue
 
-        folder = os.path.dirname(fp)
-
         for ev in events:
             event_type = ev["event"]
             handler = ev["handler"]
             label = ev["label"]
             body = ev["body"]
-            # body 가 inline (useEffect / lifecycle) 이면 그대로, named
-            # handler 이면 _locate_handler_body 로 위치 찾기.
-            if not body and handler:
-                body = _locate_handler_body(content, handler)
+
+            # body 결정: inline body → 그대로, named handler in same file →
+            # _locate_handler_body, 다른 파일 import → fn_index lookup.
+            # collect_handler_contexts 와 동일 정책 (PR #150).
+            bodies_to_scan: list[str] = []
+            if body:
+                bodies_to_scan.append(body)
+            elif handler:
+                same_file_body = _locate_handler_body(content, handler)
+                if same_file_body:
+                    bodies_to_scan.append(same_file_body)
+                else:
+                    for _fp_other, sub_body in fn_index.get(handler) or []:
+                        bodies_to_scan.append(sub_body)
 
             urls_in_handler: set[str] = set()
-            if body:
-                for m in call_re.finditer(body):
-                    raw = m.group("url") or ""
-                    if not raw:
-                        var = m.group("var") or ""
-                        if not var:
-                            continue
-                        raw = const_map.get(var, "")
-                        if not raw:
-                            continue
-                    canonical = normalize_url(_normalize_template(raw), strip_patterns)
-                    if canonical:
-                        urls_in_handler.add(canonical)
-
-            # Fallback: handler body 못 찾았거나 (saga.js import 케이스) /
-            # body 에 axios 없고 dispatch/props 만 있는 경우 → folder /
-            # app-slug scope 의 saga URL 들에 귀속.
-            indirect = False
-            if not urls_in_handler and (not body or _is_indirect_handoff(body)):
-                folder_urls = folder_to_urls.get(folder, set())
-                if folder_urls:
-                    urls_in_handler = set(folder_urls)
-                    indirect = True
-                else:
-                    slug = _extract_app_slug(fp)
-                    if slug:
-                        slug_urls = slug_to_urls.get(slug.lower(), set())
-                        if slug_urls:
-                            urls_in_handler = set(slug_urls)
-                            indirect = True
+            for b in bodies_to_scan:
+                urls_in_handler |= _scan_body_with_chain(
+                    b, fn_index, call_re, const_map, strip_patterns, depth=3,
+                )
 
             if not urls_in_handler:
                 continue
 
-            event_marker = f"{event_type}+saga" if indirect else event_type
+            # +saga marker 제거 (사용자 요청, PR #150 후속). 일반 event_type
+            # 만 사용. fallback / direct 구분 X.
             tag_text = label or handler or "<inline>"
-            trigger_label = f"[{event_marker}] {tag_text}"
+            trigger_label = f"[{event_type}] {tag_text}"
             for canonical in urls_in_handler:
                 triggers.setdefault(canonical, set()).add(trigger_label)
 
@@ -934,10 +919,13 @@ def collect_handler_contexts(
         "useEffect", "didMount", "willMount", "didUpdate", "mount",
     })
 
-    # 모든 react file 스캔. 각 event 마다 정확히 chain follow 만 — fallback
-    # (folder/slug-scope) 제거 완료. 사용자 요청: "실제 이벤트에서 호출하는
-    # url 만 매달아줘". chain follow 못 따라가면 누락이 1:N 노이즈보다 나음.
+    # apps/ 안 파일만 events 처리 (사용자 정책). 그 외 (store/ / components/
+    # / sample 페이지 등) 는 fn_index 에만 포함되어 handler 이름 lookup 시
+    # 참고. 각 event 는 chain follow 만 — fallback (folder/slug-scope) 제거.
     for fp in all_files:
+        rel = os.path.relpath(fp, frontend_dir)
+        if not _is_apps_react_file(rel):
+            continue
         try:
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
@@ -1059,17 +1047,13 @@ def _extract_app_slug(file_path: str) -> str | None:
 
 
 def _locate_handler_body(content: str, handler: str, max_chars: int = 4000) -> str:
-    """Find the declaration of ``handler`` and return a rough body slice.
-
-    Matches ``function handler(...)`` and ``const handler = (...) => ...``
-    style. Slice is capped at ``max_chars`` chars (default 4000 for the
-    trigger-extraction path; Phase B biz extraction passes 8000 to catch
-    longer handlers).
+    """Find the declaration of ``handler`` and return a brace-balanced body
+    slice. Fixed slice 면 다음 함수가 섞여 chain follow 시 false matching.
     """
     start = _locate_handler_start(content, handler)
     if start is None:
         return ""
-    return content[start : start + max_chars]
+    return _slice_function_body(content, start, max_len=max_chars)
 
 
 def _locate_handler_start(content: str, handler: str) -> int | None:
