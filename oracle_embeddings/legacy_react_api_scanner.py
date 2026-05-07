@@ -927,6 +927,19 @@ def collect_handler_contexts(
 
     out: dict[str, list[dict]] = {}
 
+    # Lifecycle event 종류 — 이 handler 의 chain follow URL 들은 lifecycle 만
+    # 호출하는 URL 로 분류되어, 다른 이벤트 (onClick / onChange 등) 의
+    # folder/slug-scope fallback 에서 제외됨. 사용자 보고: componentDidMount
+    # 가 호출하는 init URL 이 onClick search 에 잘못 묶이는 노이즈.
+    _LIFECYCLE_KINDS = frozenset({
+        "componentDidMount", "componentWillMount", "componentDidUpdate",
+        "useEffect", "didMount", "willMount", "didUpdate", "mount",
+    })
+
+    # Pass 1 — 모든 (file, ev, body, chain_urls) 수집 + lifecycle URL 누적
+    pass1: list[tuple[str, str, str, dict, str, str, set[str]]] = []
+    lifecycle_urls: set[str] = set()
+
     # 모든 react file 스캔 (files_with_calls 외에도 click handler 가 다른
     # 파일에 있을 수 있는 redux + saga 케이스 포함).
     for fp in all_files:
@@ -945,7 +958,6 @@ def collect_handler_contexts(
         for ev in events:
             event_type = ev["event"]
             handler = ev["handler"]
-            label = ev["label"]
             body = ev["body"]
             offset = ev["source_offset"]
             if not body and handler:
@@ -957,59 +969,59 @@ def collect_handler_contexts(
                 # body 못 찾아도 (handler 가 다른 파일 import 된 경우)
                 # 아래의 indirect handoff fallback 으로 URL 매핑 가능 —
                 # extract_button_triggers (PR #131) 와 동일 정책.
-            jsx = _locate_enclosing_jsx(content, offset)
-            validation_props = extract_validation_props(jsx)
 
-            urls_in_handler: set[str] = set()
+            chain_urls: set[str] = set()
             if body:
-                # Multi-level call chain follow: handler body 가 axios 직접
-                # 호출 안 하고 ``this.fncDoSearch()`` 처럼 다른 함수만 부르는
-                # 케이스에서 그 함수까지 들어가서 진짜 URL 추출. depth=3 (사용자
-                # 환경에서 4단계 깊은 chain 대응). fn_index 진입 시 1회 build.
-                urls_in_handler = _scan_body_with_chain(
+                chain_urls = _scan_body_with_chain(
                     body, fn_index, call_re, const_map, strip_patterns,
                     depth=3,
                 )
 
-            indirect = False
-            # Fallback — chain follow 결과 0건이면 항상 folder/slug-scope
-            # 시도 (이전엔 _is_indirect_handoff 체크 통과해야만 발동했는데,
-            # ``this.fncOther()`` 같은 단순 함수 호출은 props/dispatch 패턴
-            # 없어서 fallback 못 받아 handler 자체 누락. 사용자 보고: search
-            # trigger 가 안 보이는 회귀). 1:N 노이즈 위험은 있지만 silent
-            # drop 보다는 낫다.
-            #   1) Folder-scope: 같은 폴더 saga URL (apps/X/index.js +
-            #      apps/X/saga.js 처럼 같은 폴더에 모인 케이스)
-            #   2) App-slug: apps/X/ ↔ store/X/ 처럼 분리된 케이스 —
-            #      path segment 의 app slug 로 cross-folder 매칭.
-            if not urls_in_handler:
-                folder_urls = folder_to_urls.get(folder, set())
-                if folder_urls:
-                    urls_in_handler = set(folder_urls)
-                    indirect = True
-                else:
-                    slug = _extract_app_slug(fp)
-                    if slug:
-                        slug_urls = slug_to_urls.get(slug.lower(), set())
-                        if slug_urls:
-                            urls_in_handler = set(slug_urls)
-                            indirect = True
+            if event_type in _LIFECYCLE_KINDS:
+                lifecycle_urls |= chain_urls
 
-            if not urls_in_handler:
-                continue
+            pass1.append((fp, rel, folder, ev, content, body, chain_urls))
 
-            event_marker = f"{event_type}+saga" if indirect else event_type
-            ctx = {
-                "file": rel,
-                "handler": handler or f"<inline:{event_type}>",
-                "event": event_marker,
-                "label": label,
-                "body": body,
-                "jsx_slice": jsx,
-                "validation_props": validation_props,
-            }
-            for u in urls_in_handler:
-                out.setdefault(u, []).append(ctx)
+    # Pass 2 — emit. 일반 이벤트 (lifecycle 아닌) 의 fallback 은 lifecycle
+    # URL 제외하고 매핑.
+    for fp, rel, folder, ev, content, body, chain_urls in pass1:
+        event_type = ev["event"]
+        handler = ev["handler"]
+        label = ev["label"]
+        offset = ev["source_offset"]
+        is_lifecycle = event_type in _LIFECYCLE_KINDS
+        urls_in_handler = set(chain_urls)
+        indirect = False
+        if not urls_in_handler and not is_lifecycle:
+            folder_urls = folder_to_urls.get(folder, set()) - lifecycle_urls
+            if folder_urls:
+                urls_in_handler = folder_urls
+                indirect = True
+            else:
+                slug = _extract_app_slug(fp)
+                if slug:
+                    slug_urls = slug_to_urls.get(slug.lower(), set()) - lifecycle_urls
+                    if slug_urls:
+                        urls_in_handler = slug_urls
+                        indirect = True
+
+        if not urls_in_handler:
+            continue
+
+        jsx = _locate_enclosing_jsx(content, offset)
+        validation_props = extract_validation_props(jsx)
+        event_marker = f"{event_type}+saga" if indirect else event_type
+        ctx = {
+            "file": rel,
+            "handler": handler or f"<inline:{event_type}>",
+            "event": event_marker,
+            "label": label,
+            "body": body,
+            "jsx_slice": jsx,
+            "validation_props": validation_props,
+        }
+        for u in urls_in_handler:
+            out.setdefault(u, []).append(ctx)
 
     return out
 
