@@ -387,22 +387,36 @@ def _esc(s: str) -> str:
     return html.escape(s or "", quote=True)
 
 
+def _render_field_list(fields: List[ScreenField]) -> str:
+    """필드 목록 → 텍스트 bullet 리스트 (사용자 요청 — input mock-form 대신
+    설명 형태). 항목당:
+
+      <strong>라벨</strong>
+        - 사용 컴포넌트: ...
+        - Default: ...
+        - Options: ...
+    """
+    items = []
+    for f in fields:
+        sub = []
+        if f.component:
+            sub.append(f"<li>사용 컴포넌트: {_esc(f.component)}</li>")
+        if f.default:
+            sub.append(f"<li>Default: {_esc(f.default)}</li>")
+        if f.options:
+            sub.append(f"<li>Options: {_esc(f.options)}</li>")
+        sub_html = f"<ul>{''.join(sub)}</ul>" if sub else ""
+        items.append(
+            f"<li><strong>{_esc(f.label or '(no label)')}</strong>{sub_html}</li>"
+        )
+    return f"<ol>{''.join(items)}</ol>" if items else ""
+
+
 def _render_search(fields: List[ScreenField]) -> str:
     if not fields:
         return ""
-    items = []
-    for f in fields:
-        note = ""
-        if f.default:
-            note += f"<span class='note'>default: {_esc(f.default)}</span>"
-        if f.options:
-            note += f"<span class='note'>options: {_esc(f.options)}</span>"
-        items.append(
-            f"<div class='field'><label>{_esc(f.label)}"
-            f" <small>({_esc(f.component or 'Input')})</small></label>"
-            f"<input value='' placeholder='{_esc(f.default)}'> {note}</div>"
-        )
-    return "<section><h2>Search Panel</h2>" + "".join(items) + "</section>"
+    return ("<section><h2>Search Panel — 조회 조건 영역</h2>"
+            + _render_field_list(fields) + "</section>")
 
 
 def _render_table(cols: List[str]) -> str:
@@ -421,14 +435,8 @@ def _render_table(cols: List[str]) -> str:
 def _render_edit(fields: List[ScreenField]) -> str:
     if not fields:
         return ""
-    items = []
-    for f in fields:
-        items.append(
-            f"<div class='field'><label>{_esc(f.label)}"
-            f" <small>({_esc(f.component or 'Input')})</small></label>"
-            f"<input value='{_esc(f.default)}'></div>"
-        )
-    return "<section><h2>Edit Mode</h2>" + "".join(items) + "</section>"
+    return ("<section><h2>Edit Mode — 편집 영역</h2>"
+            + _render_field_list(fields) + "</section>")
 
 
 def _render_tabs(tabs: List[str]) -> str:
