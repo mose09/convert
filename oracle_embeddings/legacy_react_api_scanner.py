@@ -791,35 +791,37 @@ def collect_handler_contexts(
             offset = ev["source_offset"]
             if not body and handler:
                 start = _locate_handler_start(content, handler)
-                if start is None:
-                    continue
-                body = content[start: start + 8000]
-            if not body:
-                continue
+                if start is not None:
+                    body = content[start: start + 8000]
+                # body 못 찾아도 (handler 가 다른 파일 import 된 경우)
+                # 아래의 indirect handoff fallback 으로 URL 매핑 가능 —
+                # extract_button_triggers (PR #131) 와 동일 정책.
             jsx = _locate_enclosing_jsx(content, offset)
             validation_props = extract_validation_props(jsx)
 
             urls_in_handler: set[str] = set()
-            for m in call_re.finditer(body):
-                raw = m.group("url") or ""
-                if not raw:
-                    var = m.group("var") or ""
-                    if not var:
-                        continue
-                    raw = const_map.get(var, "")
+            if body:
+                for m in call_re.finditer(body):
+                    raw = m.group("url") or ""
                     if not raw:
-                        continue
-                canonical = normalize_url(_normalize_template(raw), strip_patterns)
-                if canonical:
-                    urls_in_handler.add(canonical)
+                        var = m.group("var") or ""
+                        if not var:
+                            continue
+                        raw = const_map.get(var, "")
+                        if not raw:
+                            continue
+                    canonical = normalize_url(_normalize_template(raw), strip_patterns)
+                    if canonical:
+                        urls_in_handler.add(canonical)
 
             indirect = False
-            # Indirect handoff (dispatch / props) 면 두 단계 fallback:
+            # Indirect handoff (dispatch / props / imported handler) 면
+            # 두 단계 fallback:
             #   1) Folder-scope: 같은 폴더 saga URL (apps/X/index.js +
             #      apps/X/saga.js 처럼 같은 폴더에 모인 케이스)
             #   2) App-slug: apps/X/ ↔ store/X/ 처럼 분리된 케이스 —
             #      path segment 의 app slug 로 cross-folder 매칭.
-            if not urls_in_handler and _is_indirect_handoff(body):
+            if not urls_in_handler and (not body or _is_indirect_handoff(body)):
                 folder_urls = folder_to_urls.get(folder, set())
                 if folder_urls:
                     urls_in_handler = set(folder_urls)
