@@ -841,7 +841,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             urls_in_handler: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
-                    b, fn_index, call_re, const_map, strip_patterns, depth=3,
+                    b, fn_index, call_re, const_map, strip_patterns, depth=5,
                 )
 
             if not urls_in_handler:
@@ -969,7 +969,7 @@ def collect_handler_contexts(
             urls_in_handler: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
-                    b, fn_index, call_re, const_map, strip_patterns, depth=3,
+                    b, fn_index, call_re, const_map, strip_patterns, depth=5,
                 )
 
             if not urls_in_handler:
