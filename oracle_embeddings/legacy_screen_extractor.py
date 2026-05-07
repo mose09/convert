@@ -595,13 +595,25 @@ def _render_tabs(tabs: List[str]) -> str:
 
 
 def _render_events(events: List[ScreenEvent]) -> str:
+    """Trigger + Event 별로 그룹화 후 한 row 에 backend URL 들을 줄바꿈으로
+    join. 사용자 요청: "트리거 기준으로 한줄에 backend url 여러줄 (한칸에
+    줄바꿈으로 구분 콤마제거)".
+    """
     if not events:
         return ""
-    rows = []
+    # (trigger, event) → ordered unique URLs
+    grouped: dict[tuple[str, str], list[str]] = {}
     for e in events:
+        key = (e.trigger or "<inline>", e.event or "")
+        urls = grouped.setdefault(key, [])
+        if e.backend_url and e.backend_url not in urls:
+            urls.append(e.backend_url)
+    rows = []
+    for (trigger, event), urls in grouped.items():
+        url_html = "<br>".join(f"<code>{_esc(u)}</code>" for u in urls) or "—"
         rows.append(
-            f"<tr><td>{_esc(e.trigger)}</td><td>{_esc(e.event)}</td>"
-            f"<td><code>{_esc(e.backend_url)}</code></td></tr>"
+            f"<tr><td>{_esc(trigger)}</td><td>{_esc(event)}</td>"
+            f"<td>{url_html}</td></tr>"
         )
     return (f"<section class='events'><h2>이벤트 → 백엔드 URL</h2>"
             f"<table><thead><tr><th>Trigger</th><th>Event</th>"
