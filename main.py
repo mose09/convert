@@ -1662,7 +1662,9 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
             config={},
         )
         if layouts:
-            screens_dir = os.path.join(screens_root, "screens")
+            from datetime import datetime as _dt
+            ts = _dt.now().strftime("%H%M%S")
+            screens_dir = os.path.join(screens_root, "screens", ts)
             written = screen_ext.write_screen_html_files(screens_dir, layouts)
             print(f"  screen layout: {len(written)} HTML mockup → {screens_dir}")
 
