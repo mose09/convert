@@ -1638,6 +1638,11 @@ def cmd_analyze_legacy(args):
     # legacy_report._legacy_output_dir 가 base_output 받아 영역+일자 폴더 만든다.
     output_dir = config.get("storage", {}).get("output_dir", "./output")
 
+    def _screens_output_root(base: str) -> str:
+        """legacy_analysis/<YYYYMMDD> 동일 위치에 screens/ 가 떨어지도록."""
+        from datetime import datetime as _dt
+        return os.path.join(base, "legacy_analysis", _dt.now().strftime("%Y%m%d"))
+
     # Path 인자 strip — multi-line CLI 작성 시 trailing newline / 공백
     # 케이스 방어. main.py 의 모든 path argument 동일 정책.
     backends_root = (args.backends_root or "").strip() or None
@@ -1777,6 +1782,10 @@ def cmd_analyze_legacy(args):
             emit_sequence_diagram=emit_sequence_diagram,
             sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
+            extract_screen_layout=getattr(args, "extract_screen_layout", False),
+            render_screenshots=getattr(args, "render_screenshots", False),
+            screen_max=getattr(args, "screen_max", 200),
+            output_dir=_screens_output_root(output_dir),
         )
     else:
         result = analyze_legacy(
@@ -1800,6 +1809,10 @@ def cmd_analyze_legacy(args):
             emit_sequence_diagram=emit_sequence_diagram,
             sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
+            extract_screen_layout=getattr(args, "extract_screen_layout", False),
+            render_screenshots=getattr(args, "render_screenshots", False),
+            screen_max=getattr(args, "screen_max", 200),
+            output_dir=_screens_output_root(output_dir),
         )
 
     print("\n=== Step 3: Writing report ===")
@@ -2080,6 +2093,17 @@ def main():
                                 "join 하지 말고 trigger 별로 row 를 분리. "
                                 "각 row 의 backend chain 동일 복제 — 이벤트 별 "
                                 "백엔드 chain 시각화 (1:1 row).")
+    al_parser.add_argument("--extract-screen-layout", action="store_true",
+                           help="React 화면 파일별로 LLM 분석해 Page Title / "
+                                "Search Panel / DataTable / Edit Mode / Tabs / "
+                                "Events→backend URL 추출 후 정적 HTML mockup 생성. "
+                                "산출물: output/<영역>/<일자>/screens/<file>.html")
+    al_parser.add_argument("--render-screenshots", action="store_true",
+                           help="(스텁, 별도 환경 필요) Playwright 로 진짜 React "
+                                "화면 스크린샷. 사용자 PC 에 React 빌드/실행 + "
+                                "Playwright 셋업 가능할 때만 사용. 현재는 안내 메시지만.")
+    al_parser.add_argument("--screen-max", type=int, default=200,
+                           help="screen layout 최대 분석 화면 수 (default 200)")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
