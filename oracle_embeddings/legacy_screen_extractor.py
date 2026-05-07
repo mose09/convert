@@ -484,12 +484,27 @@ def render_screen_html(layout: ScreenLayout) -> str:
 
 def write_screen_html_files(out_dir: str,
                              layouts: Dict[str, ScreenLayout]) -> Dict[str, str]:
-    """``{file_rel: html_path}`` 반환. 화면별 .html 파일 저장."""
+    """``{file_rel: html_path}`` 반환. 화면별 .html 파일 저장.
+
+    레이아웃: ``out_dir/<top-folder>/<safe_rest>.html``. ``top-folder`` 는
+    file_rel 의 첫 segment (대개 repo / bucket / app slug). 같은 폴더에
+    수백 개 화면이 평탄하게 쌓이지 않도록 1단계 분리.
+    """
     os.makedirs(out_dir, exist_ok=True)
     written: Dict[str, str] = {}
     for rel, layout in layouts.items():
-        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", rel.replace("/", "__"))
-        path = os.path.join(out_dir, safe + ".html")
+        norm = rel.replace("\\", "/")
+        parts = [p for p in norm.split("/") if p]
+        if len(parts) > 1:
+            repo_dir = re.sub(r"[^A-Za-z0-9_.-]+", "_", parts[0]) or "_root"
+            rest = "/".join(parts[1:])
+        else:
+            repo_dir = "_root"
+            rest = parts[0] if parts else "screen"
+        safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", rest.replace("/", "__"))
+        sub = os.path.join(out_dir, repo_dir)
+        os.makedirs(sub, exist_ok=True)
+        path = os.path.join(sub, safe + ".html")
         try:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(render_screen_html(layout))

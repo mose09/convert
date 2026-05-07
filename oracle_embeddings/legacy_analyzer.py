@@ -2410,8 +2410,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 config=biz_config or {},
             )
             if screen_layout_map:
+                from datetime import datetime as _dt
+                ts = _dt.now().strftime("%H%M%S")
                 screens_dir = os.path.join(
-                    output_dir or "output/legacy_analysis", "screens"
+                    output_dir or "output/legacy_analysis", "screens", ts
                 )
                 screen_html_paths = screen_ext.write_screen_html_files(
                     screens_dir, screen_layout_map
