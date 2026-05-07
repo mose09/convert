@@ -598,10 +598,28 @@ def _render_tabs(tabs: List[str]) -> str:
     return f"<section><h2>Tabs</h2><div class='tab-bar'>{''.join(items)}</div></section>"
 
 
+def _event_sort_rank(event: str) -> int:
+    """이벤트 정렬 우선순위 (사용자 요청 — 화면오픈 → onChange → onClick → 그 외).
+
+    낮을수록 먼저 표시.
+    """
+    e = (event or "").lower()
+    if any(s in e for s in ("mount", "useeffect", "didmount", "willmount")):
+        return 0   # 화면 최초 오픈
+    if "didupdate" in e:
+        return 1   # 업데이트
+    if "change" in e:
+        return 2   # onChange / onValueChange
+    if "submit" in e:
+        return 3   # form submit
+    if "click" in e:
+        return 4   # 버튼 클릭
+    return 5       # 그 외 (onBlur, onFocus, onKeyDown, ...)
+
+
 def _render_events(events: List[ScreenEvent]) -> str:
     """Trigger + Event 별로 그룹화 후 한 row 에 backend URL 들을 줄바꿈으로
-    join. 사용자 요청: "트리거 기준으로 한줄에 backend url 여러줄 (한칸에
-    줄바꿈으로 구분 콤마제거)".
+    join. 사용자 요청: 화면오픈 (mount) → onChange → onClick 순으로 정렬.
     """
     if not events:
         return ""
@@ -612,8 +630,15 @@ def _render_events(events: List[ScreenEvent]) -> str:
         urls = grouped.setdefault(key, [])
         if e.backend_url and e.backend_url not in urls:
             urls.append(e.backend_url)
+    # 정렬: event rank → trigger 알파벳
+    sorted_keys = sorted(
+        grouped.keys(),
+        key=lambda k: (_event_sort_rank(k[1]), k[1].lower(), k[0])
+    )
     rows = []
-    for (trigger, event), urls in grouped.items():
+    for key in sorted_keys:
+        trigger, event = key
+        urls = grouped[key]
         url_html = "<br>".join(f"<code>{_esc(u)}</code>" for u in urls) or "—"
         rows.append(
             f"<tr><td>{_esc(trigger)}</td><td>{_esc(event)}</td>"

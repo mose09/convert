@@ -289,6 +289,22 @@ _CLASS_FIELD_FN_RE = re.compile(
 )
 
 
+# ES6 class method: ``  fncSearch(args) { ... }`` (no ``=``, no ``function``).
+# class body 안에서만 의미. 들여쓰기 강제 + reserved keyword (if / for / etc)
+# 제외. ``static`` / ``async`` prefix 도 매칭 — body 는 brace 부터 시작.
+_RESERVED_NEAR_BLOCK = (
+    "if", "for", "while", "switch", "do", "try", "catch", "else",
+    "case", "default", "return", "throw", "function", "class",
+)
+_CLASS_METHOD_RE = re.compile(
+    r"""^\s+
+        (?:static\s+)?(?:async\s+)?
+        (?P<fn>[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
 def _slice_function_body(content: str, start: int, max_len: int = 4000) -> str:
     """함수 선언 시작점에서 매칭 brace 까지 정확히 자르기. brace 못 찾으면
     max_len fallback. 다음 함수의 body 가 섞이지 않도록.
@@ -343,6 +359,15 @@ def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]
         for m in _CLASS_FIELD_FN_RE.finditer(content):
             name = m.group("fn") or ""
             if not name:
+                continue
+            body = _slice_function_body(content, m.start())
+            index.setdefault(name, []).append((fp, body))
+        # ES6 class methods (``  fncX(args) { ... }``) — 사용자 환경에서
+        # 가장 흔한 형태. _FN_DECL_RE / _CLASS_FIELD_FN_RE 둘 다 못 잡음.
+        # reserved keyword (if/for/while 등) 는 후처리로 skip.
+        for m in _CLASS_METHOD_RE.finditer(content):
+            name = m.group("fn") or ""
+            if not name or name in _RESERVED_NEAR_BLOCK:
                 continue
             body = _slice_function_body(content, m.start())
             index.setdefault(name, []).append((fp, body))
