@@ -1746,7 +1746,11 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    extract_program_spec: bool = False,
                    emit_sequence_diagram: bool = False,
                    sequence_diagram_with_frontend: bool = False,
-                   row_per_trigger: bool = False) -> dict:
+                   row_per_trigger: bool = False,
+                   extract_screen_layout: bool = False,
+                   render_screenshots: bool = False,
+                   screen_max: int = 200,
+                   output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
     Parameters
@@ -2380,6 +2384,49 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         biz.enrich_rows_with_endpoint_spec(rows, endpoint_spec_map)
         print(f"  endpoint spec: {len(endpoint_spec_map)} endpoints narrated")
 
+    # Phase C — Screen Layout 추출 + HTML mockup 생성. 옵트인.
+    # 의존: collect_handler_contexts 결과 (frontend handlers_by_url) — Phase B
+    # 와 동일 입력. 단독 실행 가능 (extract_biz 무관).
+    screen_layout_map: dict = {}
+    screen_html_paths: dict = {}
+    if extract_screen_layout and frontend_dir:
+        from .legacy_react_api_scanner import collect_handler_contexts
+        from . import legacy_screen_extractor as screen_ext
+        api_idx = dict(single_api_index) if single_api_index else {}
+        if not api_idx:
+            for app_idx in (api_by_frontend or {}).values():
+                for url, files in (app_idx or {}).items():
+                    api_idx.setdefault(url, []).extend(files or [])
+        if api_idx:
+            handlers_by_url = collect_handler_contexts(
+                frontend_dir, api_idx, patterns or {},
+            )
+            print(f"  screen layout: api_idx={len(api_idx)} URLs, "
+                  f"handlers_by_url={len(handlers_by_url)} URLs")
+            screen_layout_map = screen_ext.extract_screen_layouts(
+                frontend_dir, handlers_by_url, patterns or {},
+                max_screens=screen_max,
+                use_cache=biz_use_cache,
+                config=biz_config or {},
+            )
+            if screen_layout_map:
+                screens_dir = os.path.join(
+                    output_dir or "output/legacy_analysis", "screens"
+                )
+                screen_html_paths = screen_ext.write_screen_html_files(
+                    screens_dir, screen_layout_map
+                )
+                print(f"  screen layout: {len(screen_html_paths)} HTML mockup 저장 → {screens_dir}")
+            if render_screenshots:
+                screen_ext.render_screenshots_via_playwright(
+                    screen_layout_map,
+                    out_dir=os.path.join(
+                        output_dir or "output/legacy_analysis", "screenshots"
+                    ),
+                )
+        else:
+            print("  screen layout: api_idx 비어있음 — skip")
+
     resolved_method_scope = sum(
         1 for r in rows if r.get("resolved_via") == "method-scope"
     )
@@ -2504,7 +2551,11 @@ def analyze_legacy_batch(backends_root: str,
                         extract_program_spec: bool = False,
                         emit_sequence_diagram: bool = False,
                         sequence_diagram_with_frontend: bool = False,
-                        row_per_trigger: bool = False) -> dict:
+                        row_per_trigger: bool = False,
+                        extract_screen_layout: bool = False,
+                        render_screenshots: bool = False,
+                        screen_max: int = 200,
+                        output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
 
@@ -2627,6 +2678,10 @@ def analyze_legacy_batch(backends_root: str,
             emit_sequence_diagram=emit_sequence_diagram,
             sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             row_per_trigger=row_per_trigger,
+            extract_screen_layout=extract_screen_layout,
+            render_screenshots=render_screenshots,
+            screen_max=screen_max,
+            output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream
         # consumers iterate the merged rows directly.
