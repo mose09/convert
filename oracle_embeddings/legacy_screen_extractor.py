@@ -31,8 +31,8 @@ logger = logging.getLogger(__name__)
 SCREEN_SCHEMA_VERSION = "v1"
 
 _DEFAULT_CONFIG = {
-    "llm_max_chars": 6000,
-    "llm_batch_size": 1,    # 화면당 1 호출 (배치 작음)
+    "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
+    "llm_batch_size": 1,       # 화면당 1 호출 (배치 작음)
     "max_screens": 200,
 }
 
@@ -146,12 +146,85 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
 """
 
 
+_RENDER_METHOD_RE = re.compile(r"^\s*render\s*\(\s*\)\s*\{", re.MULTILINE)
+_FUNC_RETURN_JSX_RE = re.compile(r"return\s*\(\s*<", re.MULTILINE)
+_IMPORT_LINE_RE = re.compile(r"^\s*import\s+", re.MULTILINE)
+
+
+def _smart_slice(content: str, max_chars: int) -> str:
+    """대용량 React 파일에서 LLM 분석에 필요한 부분만 추출.
+
+    포함:
+      1. imports 섹션 (라이브러리 imports — 컴포넌트 종류 단서)
+      2. render() 메서드 본문 또는 functional component return JSX
+
+    제외:
+      - styled-components (긴 CSS template literals)
+      - propTypes / defaultProps
+      - render 와 무관한 helper functions
+      - 주석 (regex slice 라 일부 남아있을 수 있음)
+
+    파일이 max_chars 이하면 그대로 반환 (회귀 0).
+    """
+    if len(content) <= max_chars:
+        return content
+
+    parts: list[str] = []
+
+    # 1. imports — 첫 import 부터 마지막 연속 import 라인까지
+    imp_lines = []
+    seen_import = False
+    for line in content.split("\n"):
+        s = line.lstrip()
+        if s.startswith("import "):
+            seen_import = True
+            imp_lines.append(line)
+        elif seen_import and (s.startswith("//") or not s):
+            imp_lines.append(line)
+        elif seen_import:
+            break
+    if imp_lines:
+        parts.append("\n".join(imp_lines))
+        parts.append("\n// ... (styled-components / helpers 생략) ...\n")
+
+    # 2. render() 또는 functional return JSX block (brace walker)
+    m = _RENDER_METHOD_RE.search(content)
+    if m:
+        start = m.start()
+        i = content.index("{", m.start())
+        depth = 0
+        end = len(content)
+        while i < len(content):
+            c = content[i]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+            i += 1
+        parts.append(content[start:end])
+    else:
+        # functional: 첫 'return ( <' 부터 적당한 청크
+        m = _FUNC_RETURN_JSX_RE.search(content)
+        if m:
+            chunk_size = max(2000, max_chars // 2)
+            parts.append(content[m.start(): m.start() + chunk_size])
+
+    result = "\n".join(parts)
+    if len(result) > max_chars:
+        result = result[:max_chars] + "\n... (smart slice truncated)"
+    return result
+
+
 def _build_user_prompt(file_rel: str, file_content: str,
                        url_map: Dict[str, List[str]],
                        max_chars: int) -> str:
-    body = file_content[:max_chars]
+    body = _smart_slice(file_content, max_chars)
     if len(file_content) > max_chars:
-        body += f"\n... (truncated, original {len(file_content)} chars)"
+        body += (f"\n\n// (smart slice 적용: original {len(file_content)} chars "
+                 f"→ {len(body)} chars 만 LLM 전달)")
     url_lines = []
     for handler, urls in sorted(url_map.items()):
         if urls:
