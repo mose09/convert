@@ -97,6 +97,54 @@ _SKIP_FILE_INFIX = (".min.", ".bundle.", ".chunk.", ".compiled.")
 _MAX_FILE_BYTES = 500_000
 
 
+def _strip_comments(content: str) -> str:
+    """JS/JSX 의 ``//`` 및 ``/* */`` 주석 제거. string literal (``'`` / ``"``
+    / `` ` ``) 안의 ``//`` / ``/*`` 는 보존. handler body 안에 주석으로
+    걸린 옛 axios 호출이 정적 매칭에 잡히는 문제 방지.
+
+    완벽한 JSX parser 는 아니지만 (template literal interpolation 안의
+    nested string 등 엣지 케이스는 무시) frontend 분석 정확도 충분.
+    """
+    out: list[str] = []
+    i = 0
+    n = len(content)
+    in_str: str | None = None
+    while i < n:
+        c = content[i]
+        if in_str:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(content[i + 1])
+                i += 2
+                continue
+            if c == in_str:
+                in_str = None
+            i += 1
+            continue
+        if c in ("'", '"', "`"):
+            in_str = c
+            out.append(c)
+            i += 1
+            continue
+        # /* ... */ 다중 라인 주석
+        if c == "/" and i + 1 < n and content[i + 1] == "*":
+            j = content.find("*/", i + 2)
+            if j < 0:
+                break
+            i = j + 2
+            continue
+        # // ... 라인 끝까지
+        if c == "/" and i + 1 < n and content[i + 1] == "/":
+            j = content.find("\n", i + 2)
+            if j < 0:
+                break
+            i = j  # 줄바꿈은 보존 (line offset 유지)
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _should_include_file(name: str, full_path: str) -> bool:
     lname = name.lower()
     if any(s in lname for s in _SKIP_FILE_INFIX):
@@ -200,7 +248,7 @@ def _collect_url_constants(files: list[str], const_files_hint: list[str]) -> dic
     ordered = sorted(files, key=lambda p: (0 if _is_hinted(p) else 1, p))
     for fp in ordered:
         try:
-            content = _read_file_safe(fp, limit=80000)
+            content = _strip_comments(_read_file_safe(fp, limit=80000))
         except Exception:
             continue
         for m in _URL_CONST_RE.finditer(content):
@@ -281,7 +329,7 @@ def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]
     index: dict[str, list[tuple[str, str]]] = {}
     for fp in files:
         try:
-            content = _read_file_safe(fp, limit=80000)
+            content = _strip_comments(_read_file_safe(fp, limit=80000))
         except Exception:
             continue
         for m in _FN_DECL_RE.finditer(content):
@@ -447,7 +495,7 @@ def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
     file_contents: dict[str, str] = {}
     for fp in files:
         try:
-            file_contents[fp] = _read_file_safe(fp)
+            file_contents[fp] = _strip_comments(_read_file_safe(fp))
         except Exception:
             continue
 
@@ -759,7 +807,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     # files_with_calls 가 아닌 all_files 순회.
     for fp in all_files:
         try:
-            content = _read_file_safe(fp)
+            content = _strip_comments(_read_file_safe(fp))
         except Exception:
             continue
 
@@ -883,7 +931,7 @@ def collect_handler_contexts(
     # 파일에 있을 수 있는 redux + saga 케이스 포함).
     for fp in all_files:
         try:
-            content = _read_file_safe(fp)
+            content = _strip_comments(_read_file_safe(fp))
         except Exception:
             continue
 

@@ -413,6 +413,10 @@ def extract_screen_layouts(
         try:
             with open(abs_fp, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
+            # 주석 제거 — LLM 이 주석된 옛 코드를 보고 page_title /
+            # search_panel 등을 잘못 추출하는 케이스 방지.
+            from .legacy_react_api_scanner import _strip_comments
+            content = _strip_comments(content)
         except Exception:
             content = ""
         cache_key = _cache_key(content, url_map)
