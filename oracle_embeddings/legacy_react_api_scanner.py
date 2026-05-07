@@ -914,23 +914,27 @@ def collect_handler_contexts(
 
             urls_in_handler: set[str] = set()
             if body:
-                # Multi-level call chain follow (depth=2): handler body 가 axios
-                # 직접 호출 안 하고 ``this.fncDoSearch()`` 처럼 다른 함수만 부르는
-                # 케이스에서 그 함수까지 들어가서 진짜 URL 추출. fn_index 미리
-                # build (이 함수 진입 직후, all events 공유).
+                # Multi-level call chain follow: handler body 가 axios 직접
+                # 호출 안 하고 ``this.fncDoSearch()`` 처럼 다른 함수만 부르는
+                # 케이스에서 그 함수까지 들어가서 진짜 URL 추출. depth=3 (사용자
+                # 환경에서 4단계 깊은 chain 대응). fn_index 진입 시 1회 build.
                 urls_in_handler = _scan_body_with_chain(
                     body, fn_index, call_re, const_map, strip_patterns,
-                    depth=2,
+                    depth=3,
                 )
 
             indirect = False
-            # Indirect handoff (dispatch / props / imported handler) 면
-            # 두 단계 fallback:
+            # Fallback — chain follow 결과 0건이면 항상 folder/slug-scope
+            # 시도 (이전엔 _is_indirect_handoff 체크 통과해야만 발동했는데,
+            # ``this.fncOther()`` 같은 단순 함수 호출은 props/dispatch 패턴
+            # 없어서 fallback 못 받아 handler 자체 누락. 사용자 보고: search
+            # trigger 가 안 보이는 회귀). 1:N 노이즈 위험은 있지만 silent
+            # drop 보다는 낫다.
             #   1) Folder-scope: 같은 폴더 saga URL (apps/X/index.js +
             #      apps/X/saga.js 처럼 같은 폴더에 모인 케이스)
             #   2) App-slug: apps/X/ ↔ store/X/ 처럼 분리된 케이스 —
             #      path segment 의 app slug 로 cross-folder 매칭.
-            if not urls_in_handler and (not body or _is_indirect_handoff(body)):
+            if not urls_in_handler:
                 folder_urls = folder_to_urls.get(folder, set())
                 if folder_urls:
                     urls_in_handler = set(folder_urls)
