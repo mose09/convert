@@ -564,6 +564,9 @@ python main.py analyze-legacy `
 | `--row-per-trigger` | 같은 endpoint 가 여러 trigger 에서 호출될 때 trigger 별 1 row 로 분리 (이벤트 별 1:1 backend chain). 기본 off — 한 셀에 `;\n` join. |
 | `--sequence-diagram` | Mermaid sequence diagram 생성 (LLM 불필요, parser-only). |
 | `--sequence-diagram-group` | sequence diagram .md 묶음 단위. `main_menu` (default) / `menu_path` / `sub_menu` / `controller_class` / `backend_project` (레포) / `none` (endpoint 별). |
+| **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` (브라우저로 더블클릭) |
+| `--screen-max N` | screen layout 분석 최대 화면 수 cap (기본 200, LLM 비용 통제) |
+| `--render-screenshots` | (스텁) Playwright 로 진짜 React 화면 스크린샷. 사용자 PC 에 React 빌드/실행 + Playwright 셋업 가능할 때만. 현재 follow-up 대기. |
 
 ---
 
@@ -807,7 +810,8 @@ output/legacy_analysis/<YYYYMMDD>/
     ├── Sheet: Business Logic          (opt-in `--extract-biz-logic` Phase A)
     ├── Sheet: Frontend Logic          (opt-in `--extract-biz-logic` Phase B)
     ├── Sheet: Program Specification   (opt-in `--extract-program-spec` Phase II)
-    └── Sheet: Sequence Diagrams       (opt-in `--sequence-diagram`)
+    ├── Sheet: Sequence Diagrams       (opt-in `--sequence-diagram`)
+    └── screens/<file>.html            (opt-in `--extract-screen-layout` Phase C — 별도 폴더)
 ```
 
 `--sequence-diagram` 은 리포트 파일명과 같은 이름의 폴더
@@ -929,6 +933,40 @@ LLM 호출 당 endpoint 10개 배치, 캐시 `output/legacy_analysis/.spec_cache
 재실행 시 변경 없는 endpoint 는 0 cost. LLM endpoint down 시 `fallback`
 source 로 trigger_type + write_targets 는 채워 주고 narrative 필드는
 공백 (노란색 하이라이트).
+
+**Screen Layout — 화면 구조 추출 + HTML mockup (`--extract-screen-layout`, Phase C)**:
+
+각 React 화면 파일을 LLM 으로 분석해 **Page Title / Search Panel / DataTable
+/ Edit Mode / Tabs / 이벤트→백엔드 URL 매핑** 을 구조화 JSON 으로 추출 후
+정적 HTML mockup 으로 렌더. 폐쇄망 외부 의존 0 (인라인 CSS, Bootstrap 미사용).
+
+```powershell
+python main.py analyze-legacy `
+  --backends-root C:\work\backend `
+  --frontends-root C:\work\frontend `
+  --menu-md input\menu.md --menu-only `
+  --extract-biz-logic `
+  --extract-screen-layout `
+  --screen-max 50
+```
+
+**산출물**: `output/legacy_analysis/<YYYYMMDD>/screens/<file>.html` — 화면별
+HTML 한 개. 사용자 PC 에서 브라우저로 더블클릭하면 와이어프레임 형태로:
+- 헤더 (Page Title)
+- Search Panel — 필드 라벨 / 컴포넌트 종류 (DatePicker/Select/Input/...) /
+  default 값 / 옵션
+- Tabs — 탭 이름 리스트
+- DataTable — 컬럼 헤더 + 3 줄 placeholder
+- Edit Mode — 편집 폼 필드들
+- **이벤트 → 백엔드 URL 매핑 표** — 각 버튼/이벤트가 호출하는 endpoint
+  (정적 분석 + LLM 보강 결과)
+
+**LLM 호출**: 화면당 1 회 (`--screen-max` 로 cap). 디스크 캐시
+`output/legacy_analysis/.screen_cache/` — 재실행 시 0 cost. LLM 엔드포인트
+down 시 fallback 으로 events 는 정적 분석 결과만 채움.
+
+**옵션 G — 진짜 스크린샷 (`--render-screenshots`)**: 현재 stub. Playwright
++ React 빌드/실행 환경 갖춰지면 follow-up 에서 활성화.
 
 **Sequence Diagram — Mermaid 시퀀스 다이어그램 자동 생성 (`--sequence-diagram`)**:
 
