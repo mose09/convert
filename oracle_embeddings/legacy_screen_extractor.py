@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v1"
+SCREEN_SCHEMA_VERSION = "v2"   # v1 → v2: events 항상 정적 분석 우선, 캐시 자동 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -125,6 +125,10 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
 파일을 분석해 화면 구조를 JSON 으로 추출하세요. 추측하지 말고 코드에서
 명확히 읽히는 것만 채우세요. 발견 안 된 필드는 빈 배열/문자열로 두세요.
 
+**중요**: events / backend_url 필드는 반환하지 마세요. 이벤트→백엔드 URL
+매핑은 외부 정적 분석 결과를 사용하므로 LLM 응답에서 무시됩니다.
+임의로 URL 을 추측하지 마세요.
+
 반환 schema (JSON):
 {
   "page_title": "string — 화면 상단 제목",
@@ -137,10 +141,6 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
   "tabs": ["탭1", "탭2", ...],
-  "events": [
-    {"trigger": "버튼/요소 라벨", "event": "onClick | onChange | mount",
-     "backend_url": "/api/..."}
-  ],
   "summary": "1-2 줄 화면 설명"
 }
 """
@@ -394,9 +394,11 @@ def extract_screen_layouts(
         if data:
             layout = _parse_layout_dict(rel, data)
             llm_calls += 1
-            # events 비어있으면 fallback 으로 보강
-            if not layout.events:
-                layout.events = _fallback_layout(rel, url_map).events
+            # events 는 항상 정적 분석 결과로 덮어쓰기 — LLM 이 plausible 한
+            # 환각 URL 만들어 진짜 호출 URL 가리는 케이스 차단. handlers_by_url
+            # 는 collect_handler_contexts 가 JSX/saga 정적 분석으로 추출한
+            # ground truth.
+            layout.events = _fallback_layout(rel, url_map).events
         else:
             layout = _fallback_layout(rel, url_map)
             fallback_calls += 1
