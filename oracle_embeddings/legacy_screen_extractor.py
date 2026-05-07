@@ -28,7 +28,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v2"   # v1 → v2: events 항상 정적 분석 우선, 캐시 자동 무효화
+SCREEN_SCHEMA_VERSION = "v3"   # v3: data_table_columns 가 {title,field,width,hide} 객체 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -53,11 +53,19 @@ class ScreenEvent:
 
 
 @dataclass
+class TableColumn:
+    title: str = ""          # 사용자에게 보여지는 컬럼 헤더 (예: "LOT")
+    field: str = ""          # 실제 데이터 키 / dataIndex (예: "lotId")
+    width: str = ""          # 폭 (CSS / px / 숫자). 빈 값이면 hide 후보
+    hide: bool = False       # 명시적 hidden=true / display:none
+
+
+@dataclass
 class ScreenLayout:
     file: str = ""           # React 파일 상대경로
     page_title: str = ""
     search_panel: List[ScreenField] = field(default_factory=list)
-    data_table_columns: List[str] = field(default_factory=list)
+    data_table_columns: List[TableColumn] = field(default_factory=list)
     edit_mode_fields: List[ScreenField] = field(default_factory=list)
     tabs: List[str] = field(default_factory=list)
     events: List[ScreenEvent] = field(default_factory=list)
@@ -92,11 +100,13 @@ def _cache_get(key: str, enabled: bool) -> Optional[ScreenLayout]:
         sp = [ScreenField(**f) for f in data.get("search_panel") or []]
         em = [ScreenField(**f) for f in data.get("edit_mode_fields") or []]
         ev = [ScreenEvent(**e) for e in data.get("events") or []]
+        cols = [TableColumn(**c) if isinstance(c, dict) else TableColumn(title=str(c))
+                for c in (data.get("data_table_columns") or [])]
         return ScreenLayout(
             file=data.get("file", ""),
             page_title=data.get("page_title", ""),
             search_panel=sp,
-            data_table_columns=list(data.get("data_table_columns") or []),
+            data_table_columns=cols,
             edit_mode_fields=em,
             tabs=list(data.get("tabs") or []),
             events=ev,
@@ -129,6 +139,13 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
 매핑은 외부 정적 분석 결과를 사용하므로 LLM 응답에서 무시됩니다.
 임의로 URL 을 추측하지 마세요.
 
+**DataTable 컬럼 추출 규칙**:
+- title (헤더에 표시되는 한글 이름) 과 field (dataIndex / key — 실제 데이터
+  매핑 키, 영문) 둘 다 채우세요.
+- ``width`` 가 명시되지 않은 컬럼, ``hidden: true`` / ``hide: true`` /
+  ``visible: false`` / ``display: none`` 인 컬럼은 ``hide: true`` 로 표시.
+  나머지는 ``hide: false``.
+
 반환 schema (JSON):
 {
   "page_title": "string — 화면 상단 제목",
@@ -136,7 +153,12 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
     {"label": "필드 라벨", "component": "DatePicker | Select | Input | ...",
      "default": "기본값 설명", "options": "옵션/리스트 설명"}
   ],
-  "data_table_columns": ["컬럼1", "컬럼2", ...],
+  "data_table_columns": [
+    {"title": "컬럼 헤더 (사용자에게 보이는 이름, 예: LOT)",
+     "field": "실제 데이터 키 / dataIndex (예: lotId)",
+     "width": "폭 표현 (예: '100', '100px', '20%') — 없으면 빈 문자열",
+     "hide": false}
+  ],
   "edit_mode_fields": [
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
@@ -307,11 +329,23 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                 event=str(e.get("event", "")),
                 backend_url=str(e.get("backend_url", "")),
             ))
+    cols: List[TableColumn] = []
+    for c in data.get("data_table_columns") or []:
+        if isinstance(c, dict):
+            cols.append(TableColumn(
+                title=str(c.get("title", "")),
+                field=str(c.get("field", "")),
+                width=str(c.get("width", "")),
+                hide=bool(c.get("hide", False)),
+            ))
+        else:
+            # 옛 형식 (단순 string) 호환
+            cols.append(TableColumn(title=str(c)))
     return ScreenLayout(
         file=file_rel,
         page_title=str(data.get("page_title", "")),
         search_panel=_fields("search_panel"),
-        data_table_columns=[str(c) for c in (data.get("data_table_columns") or [])],
+        data_table_columns=cols,
         edit_mode_fields=_fields("edit_mode_fields"),
         tabs=[str(t) for t in (data.get("tabs") or [])],
         events=events,
@@ -494,17 +528,53 @@ def _render_search(fields: List[ScreenField]) -> str:
             + _render_field_list(fields) + "</section>")
 
 
-def _render_table(cols: List[str]) -> str:
+def _render_table(cols: List[TableColumn]) -> str:
     if not cols:
         return ""
-    headers = "".join(f"<th>{_esc(c)}</th>" for c in cols)
-    sample = "".join(
-        f"<td class='placeholder'>...</td>" for _ in cols
-    )
-    rows = "".join(f"<tr>{sample}</tr>" for _ in range(3))
-    return (f"<section><h2>DataTable</h2>"
-            f"<table><thead><tr>{headers}</tr></thead>"
-            f"<tbody>{rows}</tbody></table></section>")
+
+    # hide 분류: 명시적 hide=true OR width 빈 값 (사용자 요청).
+    visible = [c for c in cols if (not c.hide) and c.width]
+    hidden = [c for c in cols if c.hide or not c.width]
+
+    out = "<section><h2>DataTable</h2>"
+
+    if visible:
+        title_row = "".join(f"<th>{_esc(c.title or c.field or '?')}</th>" for c in visible)
+        field_row = "".join(
+            f"<td class='field-row'><code>{_esc(c.field) or '<em>(no field)</em>'}</code></td>"
+            for c in visible
+        )
+        sample = "".join("<td class='placeholder'>...</td>" for _ in visible)
+        sample_rows = "".join(f"<tr>{sample}</tr>" for _ in range(3))
+        out += (
+            f"<table><thead><tr>{title_row}</tr></thead>"
+            f"<tbody><tr>{field_row}</tr>{sample_rows}</tbody></table>"
+        )
+
+    if hidden:
+        items = []
+        for c in hidden:
+            label_parts = []
+            if c.title:
+                label_parts.append(_esc(c.title))
+            if c.field:
+                label_parts.append(f"<code>{_esc(c.field)}</code>")
+            note = " ".join(label_parts) or "(unknown)"
+            if c.hide and not c.width:
+                reason = "hide=true, no width"
+            elif c.hide:
+                reason = "hide=true"
+            else:
+                reason = "no width"
+            items.append(f"<li>{note} <small>({reason})</small></li>")
+        out += (
+            "<div class='hidden-cols'><strong>Hide 항목 "
+            f"({len(hidden)}개):</strong><ul>"
+            + "".join(items) + "</ul></div>"
+        )
+
+    out += "</section>"
+    return out
 
 
 def _render_edit(fields: List[ScreenField]) -> str:
