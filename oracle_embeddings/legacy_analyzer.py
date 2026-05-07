@@ -2406,7 +2406,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             screen_layout_map = screen_ext.extract_screen_layouts(
                 frontend_dir, handlers_by_url, patterns or {},
                 max_screens=screen_max,
-                use_cache=biz_use_cache,
+                use_cache=False,   # 사용자 명시: 항상 새로 분석
                 config=biz_config or {},
             )
             if screen_layout_map:
