@@ -1612,6 +1612,79 @@ def cmd_morpheme(args):
     )
 
 
+def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
+                       patterns: dict | None, output_dir: str,
+                       screens_root: str) -> int:
+    """`--frontend-only` 분기. backend 분석 / 메뉴 매칭 / 컨트롤러 체인
+    모두 skip 하고 React frontend 만 스캔. 산출물: handler→URL 매핑 +
+    (옵션) screens/<file>.html.
+    """
+    print("=== Frontend-only 모드 ===")
+    print(f"  frontend dir: {frontend_dir}")
+
+    from oracle_embeddings.legacy_react_api_scanner import (
+        build_api_url_index, collect_handler_contexts, extract_button_triggers,
+    )
+    from oracle_embeddings.legacy_frontend import build_frontend_url_map_multi
+
+    # multi-bucket vs single
+    if is_frontends_root:
+        url_map, fw, by_fe, api_by_fe, trig_by_fe = build_frontend_url_map_multi(
+            frontend_dir, framework=getattr(args, "frontend_framework", None),
+            patterns=patterns,
+        )
+        api_idx: dict[str, list[str]] = {}
+        for app_idx in (api_by_fe or {}).values():
+            for url, files in (app_idx or {}).items():
+                api_idx.setdefault(url, []).extend(files or [])
+        print(f"  multi-bucket: {len(api_by_fe or {})} sub-projects, "
+              f"api_idx={len(api_idx)} URLs, framework={fw}")
+    else:
+        api_idx = build_api_url_index(frontend_dir, patterns=patterns)
+        print(f"  single-bucket: api_idx={len(api_idx)} URLs")
+
+    if not api_idx:
+        print("Warning: backend 호출 0건 — handler 매핑 / screen 분석 모두 skip.")
+        return 0
+
+    handlers_by_url = collect_handler_contexts(frontend_dir, api_idx, patterns or {})
+    print(f"  handler contexts: {len(handlers_by_url)} URLs collected")
+
+    triggers = extract_button_triggers(frontend_dir, api_idx, patterns=patterns)
+    print(f"  trigger map: {len(triggers)} URLs labeled")
+
+    if getattr(args, "extract_screen_layout", False):
+        from oracle_embeddings import legacy_screen_extractor as screen_ext
+        layouts = screen_ext.extract_screen_layouts(
+            frontend_dir, handlers_by_url, patterns or {},
+            max_screens=int(getattr(args, "screen_max", 200)),
+            use_cache=bool(getattr(args, "biz_cache", True)),
+            config={},
+        )
+        if layouts:
+            screens_dir = os.path.join(screens_root, "screens")
+            written = screen_ext.write_screen_html_files(screens_dir, layouts)
+            print(f"  screen layout: {len(written)} HTML mockup → {screens_dir}")
+
+    # Summary 텍스트 dump (CSV/MD 보다 단순하게)
+    os.makedirs(screens_root, exist_ok=True)
+    summary_path = os.path.join(screens_root, "frontend_only_summary.txt")
+    with open(summary_path, "w", encoding="utf-8") as f:
+        f.write(f"Frontend-only summary\n")
+        f.write(f"frontend_dir: {frontend_dir}\n")
+        f.write(f"api_idx URLs: {len(api_idx)}\n")
+        f.write(f"trigger map URLs: {len(triggers)}\n")
+        f.write(f"handler contexts URLs: {len(handlers_by_url)}\n\n")
+        f.write("URL → Triggers\n")
+        for url in sorted(api_idx):
+            labels = triggers.get(url) or []
+            f.write(f"  {url}\n")
+            for lbl in labels[:5]:
+                f.write(f"    {lbl}\n")
+    print(f"  summary: {summary_path}")
+    return 0
+
+
 def cmd_analyze_legacy(args):
     """Analyze AS-IS legacy sources (backend + frontend + DB menu).
 
@@ -1647,19 +1720,26 @@ def cmd_analyze_legacy(args):
     # 케이스 방어. main.py 의 모든 path argument 동일 정책.
     backends_root = (args.backends_root or "").strip() or None
     backend_dir = (args.backend_dir or "").strip() or None
+    frontend_only = bool(getattr(args, "frontend_only", False))
 
-    if not backends_root and not backend_dir:
-        print("Error: either --backend-dir or --backends-root is required.")
-        return
-    if backends_root and backend_dir:
-        print("Error: --backend-dir and --backends-root are mutually exclusive.")
-        return
-    if backends_root and not os.path.isdir(backends_root):
-        print(f"Error: Backends root not found: {backends_root}")
-        return
-    if backend_dir and not os.path.isdir(backend_dir):
-        print(f"Error: Backend dir not found: {backend_dir}")
-        return
+    if not frontend_only:
+        if not backends_root and not backend_dir:
+            print("Error: either --backend-dir or --backends-root is required.")
+            return
+        if backends_root and backend_dir:
+            print("Error: --backend-dir and --backends-root are mutually exclusive.")
+            return
+        if backends_root and not os.path.isdir(backends_root):
+            print(f"Error: Backends root not found: {backends_root}")
+            return
+        if backend_dir and not os.path.isdir(backend_dir):
+            print(f"Error: Backend dir not found: {backend_dir}")
+            return
+    else:
+        if backends_root or backend_dir:
+            print("Note: --frontend-only 사용 — backend 인자 무시됨.")
+            backends_root = None
+            backend_dir = None
     # Resolve frontend dir: --frontends-root takes priority over --frontend-dir
     _fr_root = (getattr(args, "frontends_root", None) or "").strip() or None
     _fr_dir = (getattr(args, "frontend_dir", None) or "").strip() or None
@@ -1758,6 +1838,14 @@ def cmd_analyze_legacy(args):
         print("Error: --extract-program-spec requires --extract-biz-logic "
               "(endpoint narrative 는 Phase A/B 결과를 입력으로 씁니다).")
         return 2
+
+    if frontend_only:
+        if not frontend_dir:
+            print("Error: --frontend-only 는 --frontend-dir 또는 --frontends-root 필요.")
+            return 2
+        return _run_frontend_only(args, frontend_dir, is_frontends_root,
+                                  loaded_patterns, output_dir,
+                                  _screens_output_root(output_dir))
 
     if backends_root:
         result = analyze_legacy_batch(
@@ -1966,7 +2054,10 @@ def main():
     al_parser = subparsers.add_parser(
         "analyze-legacy",
         help="Analyze AS-IS legacy sources (backend + frontend + DB menu)")
-    al_group = al_parser.add_mutually_exclusive_group(required=True)
+    # backend dir/root 는 보통 필수지만 --frontend-only 사용 시엔 둘 다 비워도
+    # OK. argparse 에서 required=True 로 강제하면 frontend-only 에 충돌하므로
+    # cmd_analyze_legacy 안에서 manual validation.
+    al_group = al_parser.add_mutually_exclusive_group(required=False)
     al_group.add_argument("--backend-dir",
                           help="Single backend project root (recursively scans .java "
                                "+ MyBatis XML; target/build/.git 등 자동 제외)")
@@ -2093,6 +2184,11 @@ def main():
                                 "join 하지 말고 trigger 별로 row 를 분리. "
                                 "각 row 의 backend chain 동일 복제 — 이벤트 별 "
                                 "백엔드 chain 시각화 (1:1 row).")
+    al_parser.add_argument("--frontend-only", action="store_true",
+                           help="backend 분석 / 메뉴 매칭 / 컨트롤러 체인 모두 skip 하고 "
+                                "React frontend 만 스캔 (단순 trigger map + 옵션 "
+                                "screen layout). --frontend-dir 또는 --frontends-root 필요. "
+                                "--backend-* 인자는 무시됨.")
     al_parser.add_argument("--extract-screen-layout", action="store_true",
                            help="React 화면 파일별로 LLM 분석해 Page Title / "
                                 "Search Panel / DataTable / Edit Mode / Tabs / "

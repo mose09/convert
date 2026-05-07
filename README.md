@@ -564,6 +564,7 @@ python main.py analyze-legacy `
 | `--row-per-trigger` | 같은 endpoint 가 여러 trigger 에서 호출될 때 trigger 별 1 row 로 분리 (이벤트 별 1:1 backend chain). 기본 off — 한 셀에 `;\n` join. |
 | `--sequence-diagram` | Mermaid sequence diagram 생성 (LLM 불필요, parser-only). |
 | `--sequence-diagram-group` | sequence diagram .md 묶음 단위. `main_menu` (default) / `menu_path` / `sub_menu` / `controller_class` / `backend_project` (레포) / `none` (endpoint 별). |
+| **`--frontend-only`** | **backend / 메뉴 / 컨트롤러 체인 모두 skip — React frontend 만 스캔**. `--frontend-dir` 또는 `--frontends-root` 필요. `--backend-*` 인자 무시. `--extract-screen-layout` 와 함께 쓰면 빠르게 화면 mockup 만 생성. |
 | **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` (브라우저로 더블클릭) |
 | `--screen-max N` | screen layout 분석 최대 화면 수 cap (기본 200, LLM 비용 통제) |
 | `--render-screenshots` | (스텁) Playwright 로 진짜 React 화면 스크린샷. 사용자 PC 에 React 빌드/실행 + Playwright 셋업 가능할 때만. 현재 follow-up 대기. |
@@ -933,6 +934,28 @@ LLM 호출 당 endpoint 10개 배치, 캐시 `output/legacy_analysis/.spec_cache
 재실행 시 변경 없는 endpoint 는 0 cost. LLM endpoint down 시 `fallback`
 source 로 trigger_type + write_targets 는 채워 주고 narrative 필드는
 공백 (노란색 하이라이트).
+
+**Frontend-only 모드 (`--frontend-only`)**:
+
+backend / 메뉴 / 컨트롤러 체인 모두 skip 하고 React frontend 만 스캔.
+프론트만 빠르게 분석하고 싶을 때 (mock backend 같은 거 없이) 사용.
+
+```powershell
+python main.py analyze-legacy `
+  --frontend-only `
+  --frontends-root C:\work\frontend `
+  --skip-menu `
+  --extract-screen-layout `
+  --screen-max 50
+```
+
+**산출물**:
+- `output/legacy_analysis/<YYYYMMDD>/frontend_only_summary.txt` — URL ↔
+  Trigger 매핑 요약
+- `output/legacy_analysis/<YYYYMMDD>/screens/<file>.html` — 화면 mockup
+  (`--extract-screen-layout` 사용 시)
+
+`--backend-*` 인자는 무시됨 (실수로 줘도 경고 후 진행).
 
 **Screen Layout — 화면 구조 추출 + HTML mockup (`--extract-screen-layout`, Phase C)**:
 
