@@ -927,21 +927,16 @@ def collect_handler_contexts(
 
     out: dict[str, list[dict]] = {}
 
-    # Lifecycle event 종류 — 이 handler 의 chain follow URL 들은 lifecycle 만
-    # 호출하는 URL 로 분류되어, 다른 이벤트 (onClick / onChange 등) 의
-    # folder/slug-scope fallback 에서 제외됨. 사용자 보고: componentDidMount
-    # 가 호출하는 init URL 이 onClick search 에 잘못 묶이는 노이즈.
+    # Lifecycle event 종류 — 다른 이벤트와 섞이면 안 되는 케이스 (사용자
+    # 보고). 일반 이벤트의 fallback 에서 lifecycle URL 제외.
     _LIFECYCLE_KINDS = frozenset({
         "componentDidMount", "componentWillMount", "componentDidUpdate",
         "useEffect", "didMount", "willMount", "didUpdate", "mount",
     })
 
-    # Pass 1 — 모든 (file, ev, body, chain_urls) 수집 + lifecycle URL 누적
-    pass1: list[tuple[str, str, str, dict, str, str, set[str]]] = []
-    lifecycle_urls: set[str] = set()
-
-    # 모든 react file 스캔 (files_with_calls 외에도 click handler 가 다른
-    # 파일에 있을 수 있는 redux + saga 케이스 포함).
+    # 모든 react file 스캔. 각 event 마다 정확히 chain follow 만 — fallback
+    # (folder/slug-scope) 제거 완료. 사용자 요청: "실제 이벤트에서 호출하는
+    # url 만 매달아줘". chain follow 못 따라가면 누락이 1:N 노이즈보다 나음.
     for fp in all_files:
         try:
             content = _strip_comments(_read_file_safe(fp))
@@ -953,75 +948,58 @@ def collect_handler_contexts(
             continue
 
         rel = os.path.relpath(fp, frontend_dir)
-        folder = os.path.dirname(fp)
 
         for ev in events:
             event_type = ev["event"]
             handler = ev["handler"]
+            label = ev["label"]
             body = ev["body"]
             offset = ev["source_offset"]
-            if not body and handler:
+
+            # Handler body resolution:
+            #   1) inline body (useEffect / lifecycle / inline arrow): 그대로
+            #   2) named handler in same file: _locate_handler_start +
+            #      brace-balanced slice
+            #   3) handler 가 다른 파일 import (saga.js 등): fn_index 에서
+            #      이름으로 찾아 body 들 모음. 사용자 saga import 패턴
+            #      ``apps/X/index.js`` 의 ``onClick={fncSearch}`` 가
+            #      ``store/X/saga.js`` 의 ``fncSearch`` 함수에 매핑됨.
+            bodies_to_scan: list[str] = []
+            if body:
+                bodies_to_scan.append(body)
+            elif handler:
                 start = _locate_handler_start(content, handler)
                 if start is not None:
-                    # brace-balanced slice — fixed 8000자면 다음 함수가
-                    # 섞여 chain follow 시 false URL matching.
-                    body = _slice_function_body(content, start, max_len=8000)
-                # body 못 찾아도 (handler 가 다른 파일 import 된 경우)
-                # 아래의 indirect handoff fallback 으로 URL 매핑 가능 —
-                # extract_button_triggers (PR #131) 와 동일 정책.
+                    sliced = _slice_function_body(content, start, max_len=8000)
+                    bodies_to_scan.append(sliced)
+                else:
+                    # 다른 파일에 정의된 handler (saga import 등) — fn_index
+                    # 에서 이름으로 직접 찾기. fallback 보다 정확.
+                    for _fp_other, sub_body in fn_index.get(handler) or []:
+                        bodies_to_scan.append(sub_body)
 
-            chain_urls: set[str] = set()
-            if body:
-                chain_urls = _scan_body_with_chain(
-                    body, fn_index, call_re, const_map, strip_patterns,
-                    depth=3,
+            urls_in_handler: set[str] = set()
+            for b in bodies_to_scan:
+                urls_in_handler |= _scan_body_with_chain(
+                    b, fn_index, call_re, const_map, strip_patterns, depth=3,
                 )
 
-            if event_type in _LIFECYCLE_KINDS:
-                lifecycle_urls |= chain_urls
+            if not urls_in_handler:
+                continue
 
-            pass1.append((fp, rel, folder, ev, content, body, chain_urls))
-
-    # Pass 2 — emit. 일반 이벤트 (lifecycle 아닌) 의 fallback 은 lifecycle
-    # URL 제외하고 매핑.
-    for fp, rel, folder, ev, content, body, chain_urls in pass1:
-        event_type = ev["event"]
-        handler = ev["handler"]
-        label = ev["label"]
-        offset = ev["source_offset"]
-        is_lifecycle = event_type in _LIFECYCLE_KINDS
-        urls_in_handler = set(chain_urls)
-        indirect = False
-        if not urls_in_handler and not is_lifecycle:
-            folder_urls = folder_to_urls.get(folder, set()) - lifecycle_urls
-            if folder_urls:
-                urls_in_handler = folder_urls
-                indirect = True
-            else:
-                slug = _extract_app_slug(fp)
-                if slug:
-                    slug_urls = slug_to_urls.get(slug.lower(), set()) - lifecycle_urls
-                    if slug_urls:
-                        urls_in_handler = slug_urls
-                        indirect = True
-
-        if not urls_in_handler:
-            continue
-
-        jsx = _locate_enclosing_jsx(content, offset)
-        validation_props = extract_validation_props(jsx)
-        event_marker = f"{event_type}+saga" if indirect else event_type
-        ctx = {
-            "file": rel,
-            "handler": handler or f"<inline:{event_type}>",
-            "event": event_marker,
-            "label": label,
-            "body": body,
-            "jsx_slice": jsx,
-            "validation_props": validation_props,
-        }
-        for u in urls_in_handler:
-            out.setdefault(u, []).append(ctx)
+            jsx = _locate_enclosing_jsx(content, offset)
+            validation_props = extract_validation_props(jsx)
+            ctx = {
+                "file": rel,
+                "handler": handler or f"<inline:{event_type}>",
+                "event": event_type,
+                "label": label,
+                "body": body or (bodies_to_scan[0] if bodies_to_scan else ""),
+                "jsx_slice": jsx,
+                "validation_props": validation_props,
+            }
+            for u in urls_in_handler:
+                out.setdefault(u, []).append(ctx)
 
     return out
 
