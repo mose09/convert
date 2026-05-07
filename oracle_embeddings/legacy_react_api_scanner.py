@@ -229,6 +229,42 @@ _FN_DECL_RE = re.compile(
 )
 
 
+# Class field arrow function: ``  fncX = (args) => { ... }`` (class body 안).
+# _FN_DECL_RE 의 const/let/var 패턴이 못 잡아서 별도. ``^\s+`` (re.MULTILINE)
+# 으로 줄 시작 들여쓰기 강제 — 좌변이 변수가 아니라 class field 임을 휴리스틱.
+_CLASS_FIELD_FN_RE = re.compile(
+    r"""^\s+
+        (?P<fn>[A-Za-z_$][\w$]*)\s*=\s*
+        (?:async\s*)?(?:\([^)]*\)\s*=>|\w+\s*=>|function\b)
+    """,
+    re.VERBOSE | re.MULTILINE,
+)
+
+
+def _slice_function_body(content: str, start: int, max_len: int = 4000) -> str:
+    """함수 선언 시작점에서 매칭 brace 까지 정확히 자르기. brace 못 찾으면
+    max_len fallback. 다음 함수의 body 가 섞이지 않도록.
+    """
+    # 첫 '{' 찾기 — 시그니처 (function X() / X = () =>) 다음.
+    open_idx = content.find("{", start)
+    if open_idx < 0 or open_idx - start > 300:
+        return content[start : start + max_len]
+    depth = 0
+    j = open_idx
+    n = len(content)
+    while j < n:
+        c = content[j]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                end = min(j + 1, start + max_len)
+                return content[start:end]
+        j += 1
+    return content[start : start + max_len]
+
+
 def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]]]:
     """Return ``{fn_name: [(file_path, body_slice), ...]}`` for API resolution.
 
@@ -237,6 +273,10 @@ def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]
     walks every candidate body since we can't cheaply resolve imports via
     regex. Over-resolution is harmless: resolved bodies that don't contain
     API calls simply produce no URLs.
+
+    Body slice 는 brace-balanced (``_slice_function_body``) 로 다음 함수가
+    섞이지 않게. handler chain follow 정확도 직결 — 단순 ``+4000`` slice 면
+    인접 함수의 axios 가 같이 잡혀 false matching 발생.
     """
     index: dict[str, list[tuple[str, str]]] = {}
     for fp in files:
@@ -248,10 +288,78 @@ def _collect_function_bodies(files: list[str]) -> dict[str, list[tuple[str, str]
             name = m.group("fn_func") or m.group("fn_arrow")
             if not name:
                 continue
-            start = m.start()
-            body = content[start : start + 4000]
+            body = _slice_function_body(content, m.start())
+            index.setdefault(name, []).append((fp, body))
+        # Class field arrow functions (``  fncX = () => {...}``) — saga indirect /
+        # handler chain follow 에서 lookup 가능하도록 추가 인덱스화.
+        for m in _CLASS_FIELD_FN_RE.finditer(content):
+            name = m.group("fn") or ""
+            if not name:
+                continue
+            body = _slice_function_body(content, m.start())
             index.setdefault(name, []).append((fp, body))
     return index
+
+
+# 함수 호출 leaf name 추출 (``this.fncX()`` / ``api.fnX()`` / ``fnX()``)
+_FN_CALL_LEAF_RE = re.compile(
+    r"\b(?:this\s*\.\s*|[A-Za-z_$][\w$]*\s*\.\s*)?(?P<fn>[A-Za-z_$][\w$]*)\s*\("
+)
+
+
+def _scan_body_with_chain(body: str,
+                            fn_index: dict[str, list[tuple[str, str]]],
+                            call_re,
+                            const_map: dict[str, str],
+                            strip_patterns,
+                            depth: int = 2,
+                            seen: set | None = None) -> set[str]:
+    """body 안의 axios URL 직접 매칭 + 호출되는 함수 chain follow 로 URL 수집.
+
+    handler 가 ``onClick={fncSearch}`` 인데 ``fncSearch`` 본체가 다시
+    ``this.fncDoSearch()`` 만 부르고 진짜 ``axios`` 는 ``fncDoSearch`` 안에
+    있는 케이스 대응. 깊이 cap (default 2) 으로 무한 재귀 / 비용 폭주 방지.
+
+    fn_index: ``_collect_function_bodies`` 결과.
+    seen: cycle 방지 ``(file, fn_name)`` 추적.
+    """
+    seen = seen if seen is not None else set()
+    urls: set[str] = set()
+
+    # 1. 직접 axios/fetch URL 매칭
+    for m in call_re.finditer(body):
+        raw = m.group("url") or ""
+        if not raw:
+            var = m.group("var") or ""
+            raw = const_map.get(var, "") if var else ""
+        if not raw:
+            continue
+        canonical = normalize_url(_normalize_template(raw), strip_patterns)
+        if canonical:
+            urls.add(canonical)
+
+    if depth <= 0:
+        return urls
+
+    # 2. 호출 함수 chain follow
+    seen_names: set[str] = set()
+    for m in _FN_CALL_LEAF_RE.finditer(body):
+        fn = m.group("fn") or ""
+        if not fn or fn in _SAGA_INDIRECT_SKIP_NAMES:
+            continue
+        if fn in seen_names:
+            continue
+        seen_names.add(fn)
+        for fp, sub_body in fn_index.get(fn) or []:
+            key = (fp, fn)
+            if key in seen:
+                continue
+            seen.add(key)
+            urls |= _scan_body_with_chain(
+                sub_body, fn_index, call_re, const_map, strip_patterns,
+                depth - 1, seen,
+            )
+    return urls
 
 
 def _scan_body_for_urls(body: str, call_re, const_map: dict[str, str],
@@ -746,6 +854,9 @@ def collect_handler_contexts(
 
     all_files = _scan_dir(frontend_dir)
     const_map = _collect_url_constants(all_files, const_files_hint)
+    # multi-level handler chain follow 용 함수 인덱스 (1 회 build, 모든
+    # event 의 _scan_body_with_chain 가 공유). saga indirect 와 동일 인프라.
+    fn_index = _collect_function_bodies(all_files)
 
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
@@ -792,7 +903,9 @@ def collect_handler_contexts(
             if not body and handler:
                 start = _locate_handler_start(content, handler)
                 if start is not None:
-                    body = content[start: start + 8000]
+                    # brace-balanced slice — fixed 8000자면 다음 함수가
+                    # 섞여 chain follow 시 false URL matching.
+                    body = _slice_function_body(content, start, max_len=8000)
                 # body 못 찾아도 (handler 가 다른 파일 import 된 경우)
                 # 아래의 indirect handoff fallback 으로 URL 매핑 가능 —
                 # extract_button_triggers (PR #131) 와 동일 정책.
@@ -801,18 +914,14 @@ def collect_handler_contexts(
 
             urls_in_handler: set[str] = set()
             if body:
-                for m in call_re.finditer(body):
-                    raw = m.group("url") or ""
-                    if not raw:
-                        var = m.group("var") or ""
-                        if not var:
-                            continue
-                        raw = const_map.get(var, "")
-                        if not raw:
-                            continue
-                    canonical = normalize_url(_normalize_template(raw), strip_patterns)
-                    if canonical:
-                        urls_in_handler.add(canonical)
+                # Multi-level call chain follow (depth=2): handler body 가 axios
+                # 직접 호출 안 하고 ``this.fncDoSearch()`` 처럼 다른 함수만 부르는
+                # 케이스에서 그 함수까지 들어가서 진짜 URL 추출. fn_index 미리
+                # build (이 함수 진입 직후, all events 공유).
+                urls_in_handler = _scan_body_with_chain(
+                    body, fn_index, call_re, const_map, strip_patterns,
+                    depth=2,
+                )
 
             indirect = False
             # Indirect handoff (dispatch / props / imported handler) 면
@@ -856,7 +965,11 @@ def collect_handler_contexts(
 # Indirect handoff (dispatch / props.X / useDispatch) 패턴 — handler body
 # 가 axios 직접 호출 없이 redux 액션 dispatch 만 하는 경우.
 _INDIRECT_HANDOFF_RE = re.compile(
-    r"\bdispatch\s*\(|\bthis\.props\.|\bprops\.\w+\s*\(|\buseDispatch\s*\("
+    # 점 포함 ``this.props.X`` 외에 destructuring (``const {X} = this.props;``)
+    # 도 매칭하도록 ``\bthis\.props\b`` 으로 완화. ``dispatch(...)`` 만 매칭하던
+    # 부분도 ``mapDispatchToProps`` / ``store.dispatch`` 까지 잡도록 word
+    # boundary 로 완화 (false positive 영향은 fallback 동작이라 미미).
+    r"\bdispatch\b|\bthis\.props\b|\bprops\.\w+\s*\(|\buseDispatch\s*\("
 )
 
 
