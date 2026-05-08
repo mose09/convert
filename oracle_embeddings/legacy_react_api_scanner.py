@@ -712,11 +712,29 @@ _ANY_JSX_EVENT_RE = re.compile(
     r"""\bon(?P<event>[A-Z]\w+)\s*=\s*\{\s*
         (?:
             (?:[\w.]+\.)?(?P<name>\w+)
-          | \(?\s*[\w,\s]*\)?\s*=>\s*(?:[\w.]+\.)?(?P<arrow>\w+)\s*\(
+          | \(?\s*[\w,\s]*\)?\s*=>\s*\{?\s*(?:[\w.]+\.)?(?P<arrow>\w+)\s*\(
         )
     """,
     re.VERBOSE,
 )
+
+
+# bind/call/apply prototype method 잡힌 경우 그 앞 segment 가 진짜 handler.
+_PROTOTYPE_METHODS = frozenset({"bind", "call", "apply"})
+
+
+def _resolve_handler_name(content: str, arrow_match_start: int, name: str) -> str:
+    """``...this.fnX.bind(this)()`` 같은 케이스에서 ``arrow`` 가 ``bind`` 로
+    잡혔을 때, arrow 위치 직전의 dotted prefix 마지막 segment 가 진짜 호출
+    함수. ``call`` / ``apply`` 동일.
+    """
+    if name not in _PROTOTYPE_METHODS:
+        return name
+    pre = content[max(0, arrow_match_start - 200):arrow_match_start]
+    m = re.search(r"(?P<real>[A-Za-z_$][\w$]*)\s*\.\s*$", pre)
+    if m:
+        return m.group("real")
+    return name
 
 # useEffect(() => {...}, [deps]) — React Hooks. inline arrow handler.
 _USE_EFFECT_RE = re.compile(r"\buseEffect\s*\(")
@@ -895,6 +913,11 @@ def collect_event_handlers(content: str) -> list[dict]:
     for m in _ANY_JSX_EVENT_RE.finditer(content):
         event_suffix = m.group("event")
         handler = m.group("name") or m.group("arrow") or ""
+        # arrow 매칭 결과가 prototype method (.bind/.call/.apply) 면
+        # 직전 segment 가 진짜 호출 대상 — ``this.fnX.bind(this)()`` 같은
+        # 케이스 fix.
+        if handler in _PROTOTYPE_METHODS and m.group("arrow"):
+            handler = _resolve_handler_name(content, m.start("arrow"), handler)
         label = _extract_event_label(content, m.start(), m.end())
         _emit(f"on{event_suffix}", handler, label, "", m.start())
 
