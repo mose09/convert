@@ -568,7 +568,10 @@ def _collect_popup_imports_per_main(files: list[str], frontend_dir: str,
 
 def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
                                     frontend_dir: str,
-                                    patterns: dict) -> int:
+                                    patterns: dict,
+                                    *,
+                                    max_depth: int = 3,
+                                    token_budget: int = 12000) -> int:
     """AST closure (`legacy_react_closure.build_closure`) 로 메인별 popup_refs
     수집 후 ``popup_set`` 에 union. 추가된 개수 반환.
 
@@ -579,7 +582,8 @@ def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
     try:
         from .legacy_react_closure import build_closure
     except Exception as e:
-        print(f"  closure popup augment: tree-sitter 미설치 — skip ({e})")
+        # 함수 진입 1 회만 로그 — main 마다 N 회 retry 안 함.
+        logger.warning("closure popup augment skip — legacy_react_closure import 실패: %s", e)
         return 0
     added = 0
     for main_rel in sorted(main_files):
@@ -587,10 +591,11 @@ def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
         try:
             closure = build_closure(
                 entry_file=main_abs, repo_root=frontend_dir,
-                patterns=patterns, max_depth=3, token_budget=12000, verbose=False,
+                patterns=patterns, max_depth=max_depth,
+                token_budget=token_budget, verbose=False,
             )
         except Exception as e:
-            print(f"  closure popup augment: {main_rel} build 실패 — skip ({e})")
+            logger.warning("closure popup augment %s build 실패: %s", main_rel, e)
             continue
         for pr in closure.popup_refs or []:
             cf = getattr(pr, "component_file", None)
@@ -1355,6 +1360,8 @@ def collect_handler_contexts(
     strip_patterns=None,
     *,
     closure_popup_augment: bool = False,
+    closure_max_depth: int = 3,
+    closure_token_budget: int = 12000,
 ) -> dict[str, list[dict]]:
     """Phase B biz extraction 전용 수집기.
 
@@ -1400,6 +1407,7 @@ def collect_handler_contexts(
     if closure_popup_augment:
         added = _augment_popup_set_via_closure(
             popup_set, main_files, frontend_dir, patterns or {},
+            max_depth=closure_max_depth, token_budget=closure_token_budget,
         )
         if added:
             print(f"  closure popup augment: +{added} popup files")

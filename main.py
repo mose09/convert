@@ -1650,6 +1650,8 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
     handlers_by_url = collect_handler_contexts(
         frontend_dir, api_idx, patterns or {},
         closure_popup_augment=bool(getattr(args, "closure_popup_augment", False)),
+        closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
+        closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
     )
     print(f"  handler contexts: {len(handlers_by_url)} URLs collected")
 

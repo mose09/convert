@@ -2351,6 +2351,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             handlers_by_url = collect_handler_contexts(
                 frontend_dir, api_idx, patterns or {},
                 closure_popup_augment=closure_popup_augment,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             print(f"  frontend biz: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs collected")
@@ -2406,6 +2408,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             handlers_by_url = collect_handler_contexts(
                 frontend_dir, api_idx, patterns or {},
                 closure_popup_augment=closure_popup_augment,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             print(f"  screen layout: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs")
