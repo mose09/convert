@@ -417,13 +417,20 @@ def _collect_prop_bindings(files: list[str]) -> dict[str, set[str]]:
 
 
 def _is_apps_react_file(rel_path: str) -> bool:
-    """``src/apps/...`` / ``apps/...`` 안의 파일인지 판정. 분석 대상은 사용자
-    프로젝트의 apps/ 화면 컴포넌트만. ``store/`` / ``components/`` /
-    ``lib/`` / sample 페이지 등은 events 처리에서 제외 (단 fn_index 에는
-    포함되어 saga import 핸들러 이름 lookup 가능).
+    """``apps/<X>/.../index.{js,jsx,ts,tsx}`` entry 파일만 events 처리 대상.
+
+    같은 apps/ 폴더 안의 helper / framework 컴포넌트 (예: ``SelectBox.js``,
+    ``BaseTable.jsx``) 는 events 처리에서 제외 — fn_index 에는 그대로 등록
+    되어 chain follow 가능. 사용자 정책: index.js 가 page entry, 나머지는
+    재사용 가능한 컴포넌트라 그 자체 events 는 trigger 가 아님.
     """
-    parts = rel_path.replace("\\", "/").split("/")
-    return "apps" in parts
+    norm = rel_path.replace("\\", "/")
+    parts = norm.split("/")
+    if "apps" not in parts:
+        return False
+    basename = parts[-1] if parts else ""
+    name_no_ext = basename.rsplit(".", 1)[0].lower()
+    return name_no_ext == "index"
 
 
 def _scan_body_with_chain(body: str,
