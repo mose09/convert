@@ -435,6 +435,51 @@ def _is_apps_react_file(rel_path: str) -> bool:
     return name_no_ext == "index"
 
 
+# popup 처럼 별개 화면으로 분석할 sub-component 폴더 이름 키워드 (사용자
+# 환경: ``InstallManagePopup``). 그 외 sub-component (agGrid / SearchPanel
+# 등) 는 메인 화면 (apps/<X>/index.js) 에 통합.
+_POPUP_FOLDER_KEYWORDS = ("popup", "modal", "dialog", "drawer", "window")
+
+
+def _resolve_screen_file(rel_path: str) -> str:
+    """``apps/<X>/<sub>/.../index.*`` 의 sub-component 를 메인 ``apps/<X>/
+    index.*`` 로 redirect — 단 ``<sub>`` 에 popup 키워드 포함 시 별개 화면
+    으로 그대로.
+
+    예시:
+      ``apps/hypm_X/index.js``                    → 그대로 (메인)
+      ``apps/hypm_X/AgGridArea/index.js``         → ``apps/hypm_X/index.js``
+        (sub-area — 메인에 통합)
+      ``apps/hypm_X/InstallManagePopup/index.js`` → 그대로 (popup — 별개)
+    """
+    norm = rel_path.replace("\\", "/")
+    parts = norm.split("/")
+    # apps 위치 찾기
+    try:
+        apps_i = parts.index("apps")
+    except ValueError:
+        return rel_path
+    # apps/<X>/index.* 형태면 메인 — 그대로
+    if apps_i + 2 == len(parts) - 1:  # parts: [..., 'apps', X, 'index.*']
+        return rel_path
+    if apps_i + 2 >= len(parts):
+        return rel_path
+    # apps/<X>/<sub_or_more>/.../index.* — sub-component
+    # 메인 후보: parts[:apps_i+2] + ['index.<ext>']
+    main_app = parts[apps_i + 1]
+    # 중간 폴더 (apps/<X>/<sub_top>/...) 의 첫 sub_top 검사
+    sub_top = parts[apps_i + 2]
+    sub_lower = sub_top.lower()
+    for kw in _POPUP_FOLDER_KEYWORDS:
+        if kw in sub_lower:
+            return rel_path  # popup — 별개 화면 유지
+    # sub-area — 메인 index.* 로 redirect
+    leaf = parts[-1]
+    ext = leaf.rsplit(".", 1)[-1] if "." in leaf else "js"
+    main_path = "/".join(parts[:apps_i + 2] + [f"index.{ext}"])
+    return main_path
+
+
 def _scan_body_with_chain(body: str,
                             fn_index: dict[str, list[tuple[str, str]]],
                             call_re,
@@ -1237,7 +1282,7 @@ def collect_handler_contexts(
         jsx = _locate_enclosing_jsx(content, offset)
         validation_props = extract_validation_props(jsx)
         ctx = {
-            "file": rel,
+            "file": _resolve_screen_file(rel),
             "handler": handler or f"<inline:{event_type}>",
             "event": event_type,
             "label": label,
