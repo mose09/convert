@@ -253,11 +253,26 @@ def _smart_slice(content: str, max_chars: int) -> str:
 
 def _build_user_prompt(file_rel: str, file_content: str,
                        url_map: Dict[str, List[str]],
-                       max_chars: int) -> str:
-    body = _smart_slice(file_content, max_chars)
-    if len(file_content) > max_chars:
-        body += (f"\n\n// (smart slice 적용: original {len(file_content)} chars "
-                 f"→ {len(body)} chars 만 LLM 전달)")
+                       max_chars: int,
+                       *,
+                       closure_markdown: Optional[str] = None) -> str:
+    """LLM 사용자 프롬프트 빌더.
+
+    ``closure_markdown`` 이 주어지면 `_smart_slice(file_content)` 대신
+    closure 직렬화 결과 (entry + import 그래프 BFS 로 묶인 facts) 를
+    소스 섹션으로 사용. ``--closure-llm`` 옵트인 경로.
+    """
+    if closure_markdown is not None:
+        source_section = (
+            "## React closure (import 그래프 BFS + popup 3 신호)\n"
+            f"{closure_markdown}"
+        )
+    else:
+        body = _smart_slice(file_content, max_chars)
+        if len(file_content) > max_chars:
+            body += (f"\n\n// (smart slice 적용: original {len(file_content)} chars "
+                     f"→ {len(body)} chars 만 LLM 전달)")
+        source_section = f"## React 소스\n```jsx\n{body}\n```"
     url_lines = []
     for handler, urls in sorted(url_map.items()):
         if urls:
@@ -267,9 +282,36 @@ def _build_user_prompt(file_rel: str, file_content: str,
         f"파일: {file_rel}\n\n"
         f"## handler ↔ backend URL 매핑 (사전 정적 분석 결과)\n"
         f"{url_block}\n\n"
-        f"## React 소스\n```jsx\n{body}\n```\n\n"
+        f"{source_section}\n\n"
         "위 schema 의 JSON 만 반환하세요. 코드블록/설명 없이 raw JSON 만."
     )
+
+
+def _build_closure_markdown(rel: str, abs_fp: str, frontend_dir: str,
+                            patterns: Dict[str, Any],
+                            max_depth: int, token_budget: int) -> Optional[str]:
+    """Opt-in closure 빌드 + 직렬화. tree-sitter 미설치 시 None."""
+    try:
+        from .legacy_react_closure import build_closure, serialize_for_llm
+    except Exception as e:
+        logger.warning(
+            "closure_llm requested but legacy_react_closure import failed "
+            "(tree-sitter wheel 미설치?): %s — 기존 smart_slice fallback", e
+        )
+        return None
+    try:
+        closure = build_closure(
+            entry_file=abs_fp,
+            repo_root=frontend_dir,
+            patterns=patterns,
+            max_depth=max_depth,
+            token_budget=token_budget,
+            verbose=False,
+        )
+        return serialize_for_llm(closure)
+    except Exception as e:
+        logger.warning("closure build failed for %s: %s", rel, e)
+        return None
 
 
 def _find_flowchart_sample(base_dir: str = "input") -> Optional[str]:
@@ -419,8 +461,16 @@ def extract_screen_layouts(
     max_screens: int = 200,
     use_cache: bool = True,
     config: Optional[Dict[str, Any]] = None,
+    closure_llm: bool = False,
+    closure_max_depth: int = 3,
+    closure_token_budget: int = 12000,
 ) -> Dict[str, ScreenLayout]:
-    """파일별로 한 번씩 LLM 호출 + 캐시. ``{file_rel: ScreenLayout}`` 반환."""
+    """파일별로 한 번씩 LLM 호출 + 캐시. ``{file_rel: ScreenLayout}`` 반환.
+
+    ``closure_llm=True`` (옵트인) 시 LLM input 을 raw JSX + smart_slice 대신
+    AST 기반 closure markdown (import 그래프 BFS + popup 3 신호) 로 보강.
+    tree-sitter 미설치/closure 빌드 실패 시 자동 smart_slice fallback.
+    """
     cfg = dict(_DEFAULT_CONFIG)
     cfg.update((config or {}).get("screen_extraction") or {})
     max_chars = int(cfg.get("llm_max_chars", 6000))
@@ -442,11 +492,17 @@ def extract_screen_layouts(
     cache_hits = 0
     llm_calls = 0
     fallback_calls = 0
+    closure_used = 0
+    closure_failed = 0
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
     sample_image = _find_flowchart_sample()
     if sample_image:
         print(f"  flowchart sample image: {sample_image}")
+
+    if closure_llm:
+        print(f"  closure_llm=ON (max_depth={closure_max_depth}, "
+              f"token_budget={closure_token_budget})")
 
     for rel in files:
         url_map = by_file[rel]
@@ -460,7 +516,21 @@ def extract_screen_layouts(
             content = _strip_comments(content)
         except Exception:
             content = ""
-        cache_key = _cache_key(content, url_map)
+
+        closure_md: Optional[str] = None
+        if closure_llm:
+            closure_md = _build_closure_markdown(
+                rel, abs_fp, frontend_dir, patterns or {},
+                closure_max_depth, closure_token_budget,
+            )
+            if closure_md:
+                closure_used += 1
+            else:
+                closure_failed += 1
+
+        # 캐시 키 — closure markdown 사용 시 raw content 대신 markdown 해시
+        # (다른 입력 → 다른 LLM 결과). closure off 경로는 회귀 0 유지.
+        cache_key = _cache_key(closure_md or content, url_map)
         cached = _cache_get(cache_key, use_cache)
         if cached:
             cached.file = rel
@@ -468,7 +538,10 @@ def extract_screen_layouts(
             cache_hits += 1
             continue
 
-        prompt = _build_user_prompt(rel, content, url_map, max_chars)
+        prompt = _build_user_prompt(
+            rel, content, url_map, max_chars,
+            closure_markdown=closure_md,
+        )
         data = _call_llm_safe(
             prompt, config or {}, label=f"screen:{rel[:40]}",
             image_paths=[sample_image] if sample_image else None,
@@ -487,8 +560,12 @@ def extract_screen_layouts(
         out[rel] = layout
         _cache_put(cache_key, layout, use_cache)
 
+    closure_stats = (
+        f", closure_used={closure_used}, closure_failed={closure_failed}"
+        if closure_llm else ""
+    )
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
-          f"fallback={fallback_calls}, total={len(out)}")
+          f"fallback={fallback_calls}, total={len(out)}{closure_stats}")
     return out
 
 

@@ -1750,6 +1750,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    extract_screen_layout: bool = False,
                    render_screenshots: bool = False,
                    screen_max: int = 200,
+                   closure_llm: bool = False,
+                   closure_max_depth: int = 3,
+                   closure_token_budget: int = 12000,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2408,6 +2411,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 max_screens=screen_max,
                 use_cache=False,   # 사용자 명시: 항상 새로 분석
                 config=biz_config or {},
+                closure_llm=closure_llm,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             if screen_layout_map:
                 from datetime import datetime as _dt
@@ -2557,6 +2563,9 @@ def analyze_legacy_batch(backends_root: str,
                         extract_screen_layout: bool = False,
                         render_screenshots: bool = False,
                         screen_max: int = 200,
+                        closure_llm: bool = False,
+                        closure_max_depth: int = 3,
+                        closure_token_budget: int = 12000,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2683,6 +2692,9 @@ def analyze_legacy_batch(backends_root: str,
             extract_screen_layout=extract_screen_layout,
             render_screenshots=render_screenshots,
             screen_max=screen_max,
+            closure_llm=closure_llm,
+            closure_max_depth=closure_max_depth,
+            closure_token_budget=closure_token_budget,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream
