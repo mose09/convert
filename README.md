@@ -568,6 +568,10 @@ python main.py analyze-legacy `
 | **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` (브라우저로 더블클릭) |
 | `--screen-max N` | screen layout 분석 최대 화면 수 cap (기본 200, LLM 비용 통제) |
 | `--render-screenshots` | (스텁) Playwright 로 진짜 React 화면 스크린샷. 사용자 PC 에 React 빌드/실행 + Playwright 셋업 가능할 때만. 현재 follow-up 대기. |
+| **`--closure-llm`** | (옵트인, tree-sitter 필요) Phase C LLM input 을 raw JSX + smart_slice 대신 **AST closure markdown** (import 그래프 BFS + popup 3 신호 facts box) 으로 보강. 미설치 시 자동 fallback. |
+| `--closure-max-depth N` | closure BFS 깊이 (기본 3). `--closure-llm` / `--closure-popup-augment` 일 때만 사용. |
+| `--closure-token-budget N` | closure 직렬화 토큰 상한 (기본 12000). |
+| **`--closure-popup-augment`** | (옵트인, tree-sitter 필요) AST closure 의 popup_refs 로 popup_set 보강. 메인의 `<Modal>` 안 import 만 보는 기존 휴리스틱이 놓친 popup (`*Dialog` / `*Popup` / `*Layer` suffix 컴포넌트가 `<Modal>` 없이 렌더되는 케이스) 을 잡음. |
 
 ---
 
@@ -990,6 +994,41 @@ down 시 fallback 으로 events 는 정적 분석 결과만 채움.
 
 **옵션 G — 진짜 스크린샷 (`--render-screenshots`)**: 현재 stub. Playwright
 + React 빌드/실행 환경 갖춰지면 follow-up 에서 활성화.
+
+**옵션 H — AST closure 보강 (`--closure-llm` / `--closure-popup-augment`)**:
+
+regex 기반 기본 분석으로 잡히지 않는 케이스를 **tree-sitter AST closure**
+로 보강하는 옵트인 옵션 (PR #171/#172). 두 플래그 독립 사용 가능.
+
+| 플래그 | 효과 |
+|--------|------|
+| `--closure-llm` | Phase C 화면 LLM 분석 시 raw JSX 슬라이스 대신 **import 그래프 BFS + popup 3 신호 (JSX 태그 / open hook / open API) facts box** 를 LLM 에 입력 → 화면 의존성 / popup 흐름을 LLM 이 더 정확히 파악 |
+| `--closure-popup-augment` | popup 검색에 AST 신호 추가 → `<Modal>` 안 import 만 보는 기존 휴리스틱이 놓친 popup (`*Dialog` / `*Popup` / `*Layer` 등 이름 suffix 매칭 컴포넌트가 `<Modal>` 없이 직접 렌더되는 케이스) 을 잡음 |
+
+**필수 조건**: `tree-sitter` + `tree-sitter-javascript` + `tree-sitter-typescript`
+설치 (`requirements.txt` 참고). **미설치 시 자동 skip + warning 로그**, 기존
+regex 분석은 그대로 동작 — 회귀 위험 없음.
+
+```powershell
+# 폐쇄망 wheel install (Windows + Python 3.11 가정)
+pip download tree-sitter tree-sitter-javascript tree-sitter-typescript ^
+  -d .\wheels --platform win_amd64 --python-version 311 --only-binary=:all:
+python -m pip install --no-index --find-links=.\wheels ^
+  tree-sitter tree-sitter-javascript tree-sitter-typescript
+
+# 두 옵션 동시 사용 (LLM input 보강 + popup 보강)
+python main.py analyze-legacy `
+  --backends-root C:\work\backend `
+  --frontends-root C:\work\frontend `
+  --menu-md input\menu.md --menu-only `
+  --extract-screen-layout `
+  --closure-llm `
+  --closure-popup-augment
+```
+
+**조정 옵션**: `--closure-max-depth` (기본 3, BFS 깊이) /
+`--closure-token-budget` (기본 12000, closure 직렬화 토큰 상한). 일반적으로
+기본값으로 충분.
 
 **Sequence Diagram — Mermaid 시퀀스 다이어그램 자동 생성 (`--sequence-diagram`)**:
 
