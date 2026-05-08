@@ -566,6 +566,46 @@ def _collect_popup_imports_per_main(files: list[str], frontend_dir: str,
     return popup_files
 
 
+def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
+                                    frontend_dir: str,
+                                    patterns: dict) -> int:
+    """AST closure (`legacy_react_closure.build_closure`) 로 메인별 popup_refs
+    수집 후 ``popup_set`` 에 union. 추가된 개수 반환.
+
+    tree-sitter 미설치 / 빌드 실패 시 0 반환 + warning 로그 (호출자는 무시).
+    component_file 이 resolve 안된 popup_ref (hook/API 만 보이는 경우) 은
+    file path 없으니 skip — JSX 태그 신호 popup 만 union 가능.
+    """
+    try:
+        from .legacy_react_closure import build_closure
+    except Exception as e:
+        print(f"  closure popup augment: tree-sitter 미설치 — skip ({e})")
+        return 0
+    added = 0
+    for main_rel in sorted(main_files):
+        main_abs = os.path.join(frontend_dir, main_rel)
+        try:
+            closure = build_closure(
+                entry_file=main_abs, repo_root=frontend_dir,
+                patterns=patterns, max_depth=3, token_budget=12000, verbose=False,
+            )
+        except Exception as e:
+            print(f"  closure popup augment: {main_rel} build 실패 — skip ({e})")
+            continue
+        for pr in closure.popup_refs or []:
+            cf = getattr(pr, "component_file", None)
+            if cf is None:
+                continue
+            try:
+                rel = os.path.relpath(str(cf), frontend_dir).replace("\\", "/")
+            except Exception:
+                continue
+            if rel and rel not in popup_set:
+                popup_set.add(rel)
+                added += 1
+    return added
+
+
 def _collect_main_entries(files: list[str], frontend_dir: str) -> set[str]:
     """모든 ``apps/<...>/index.*`` 들 중 메인 entry set 반환.
 
@@ -1313,6 +1353,8 @@ def collect_handler_contexts(
     api_index: dict[str, list[str]],
     patterns: dict | None = None,
     strip_patterns=None,
+    *,
+    closure_popup_augment: bool = False,
 ) -> dict[str, list[dict]]:
     """Phase B biz extraction 전용 수집기.
 
@@ -1320,6 +1362,11 @@ def collect_handler_contexts(
     validation_props}, ...]}``. ``extract_button_triggers`` 와 같은 pass
     를 살짝 확장해 LLM 에 필요한 컨텍스트 (긴 handler body + 앞뒤 JSX
     + pre-annotated JSX validation props) 까지 쌓아서 반환.
+
+    ``closure_popup_augment=True`` (옵트인) 시 AST closure 의 popup_refs
+    (이름 패턴 / hook / open API 3 신호) 로 ``popup_set`` 보강 — 메인의
+    ``<Modal>`` 안 import 만 보는 기존 휴리스틱이 놓친 popup 잡는 용도.
+    tree-sitter 미설치 시 자동 skip.
     """
     if not frontend_dir or not os.path.isdir(frontend_dir) or not api_index:
         return {}
@@ -1350,6 +1397,12 @@ def collect_handler_contexts(
     # popup 인덱스 — 메인 (apps/<...>/index.*) 가 ``<Modal>`` 안에 import 한
     # 컴포넌트의 file_rel set. 폴더명에 popup 키워드 없는 popup 잡기 위함.
     popup_set = _collect_popup_imports_per_main(all_files, frontend_dir, main_files)
+    if closure_popup_augment:
+        added = _augment_popup_set_via_closure(
+            popup_set, main_files, frontend_dir, patterns or {},
+        )
+        if added:
+            print(f"  closure popup augment: +{added} popup files")
 
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
