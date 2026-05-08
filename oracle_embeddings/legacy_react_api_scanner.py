@@ -1022,13 +1022,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 continue
         event_type = ev["event"]
         tag_text = label or handler or "<inline>"
-        # 부모 함수 호출 표시 — this.props.X(...) chain follow 가 도달한
-        # 부모 handler 이름들 (사용자 요청). 형식: [onClick → parent.handleX]
-        parent_suffix = ""
-        if via_props:
-            joined = ", ".join(f"parent.{n}" for n in sorted(via_props))
-            parent_suffix = f" → {joined}"
-        trigger_label = f"[{event_type}{parent_suffix}] {tag_text}"
+        trigger_label = f"[{event_type}] {tag_text}"
         for canonical in urls_in_handler:
             triggers.setdefault(canonical, set()).add(trigger_label)
 
@@ -1189,9 +1183,6 @@ def collect_handler_contexts(
             "body": ev["body"] or (bodies_to_scan[0] if bodies_to_scan else ""),
             "jsx_slice": jsx,
             "validation_props": validation_props,
-            # 사용자 요청: this.props.X(...) chain follow 가 도달한 부모
-            # handler 이름 — 이벤트 표시에 ``onClick → parent.handleX`` 형태.
-            "parent_handlers": sorted(via_props),
         }
         for u in urls_in_handler:
             out.setdefault(u, []).append(ctx)
