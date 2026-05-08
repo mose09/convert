@@ -679,7 +679,8 @@ def _merge_url_section(llm_url: dict | None, fallback: dict) -> dict:
 
 def _call_llm(prompt: str, config: dict, max_retries: int = 2,
               label: str = "patterns",
-              system_prompt: str | None = None) -> dict:
+              system_prompt: str | None = None,
+              image_paths: list[str] | None = None) -> dict:
     """Send prompt to the LLM and parse the JSON response.
 
     Uses ``PATTERN_LLM_*`` env vars first (coding-model recommended),
@@ -689,12 +690,40 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
     비즈니스 로직 추출 같은 다른 용도 모듈은 자체 프롬프트를 주입해서
     재사용 가능 (retry / JSON 추출 / raw dump 인프라는 공유).
 
+    ``image_paths`` 가 주어지면 OpenAI vision 호환 multimodal content 형식
+    (``image_url`` data URL) 으로 user message 구성. None / 빈 리스트면
+    기존 text-only 동작 (회귀 0).
+
     On JSON parse failure the raw response is written to
     ``output/legacy_analysis/pattern_llm_raw_<label>.txt`` so the
     operator can inspect what the model actually returned (truncation,
     prose leakage, invalid syntax, etc.).
     """
     from openai import OpenAI
+    import base64
+
+    def _build_user_content(text: str, paths: list[str] | None):
+        if not paths:
+            return text
+        parts: list[dict] = [{"type": "text", "text": text}]
+        for p in paths:
+            try:
+                with open(p, "rb") as f:
+                    raw = f.read()
+            except Exception as e:
+                logger.warning("이미지 읽기 실패 %s: %s — skip", p, e)
+                continue
+            ext = os.path.splitext(p)[1].lstrip(".").lower() or "png"
+            mime = "image/png" if ext == "png" else f"image/{ext}"
+            b64 = base64.b64encode(raw).decode("ascii")
+            parts.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        # 첨부된 이미지 0건이면 plain text 로 fallback
+        if len(parts) == 1:
+            return text
+        return parts
 
     llm_config = config.get("llm", {})
     # PATTERN_LLM_* > LLM_* > config.yaml
@@ -715,6 +744,11 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
     print(f"  LLM endpoint: {api_base}")
     print(f"  LLM request: {label} (prompt {len(prompt)} chars)")
 
+    user_content = _build_user_content(prompt, image_paths)
+    if image_paths and isinstance(user_content, list):
+        n_imgs = sum(1 for p in user_content if p.get("type") == "image_url")
+        print(f"  LLM vision: {n_imgs} image(s) attached")
+
     last_text = ""
     for attempt in range(max_retries + 1):
         try:
@@ -722,7 +756,7 @@ def _call_llm(prompt: str, config: dict, max_retries: int = 2,
                 model=model,
                 messages=[
                     {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": prompt},
+                    {"role": "user", "content": user_content},
                 ],
                 temperature=0.1,
                 timeout=300,

@@ -142,6 +142,11 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
 매핑은 외부 정적 분석 결과를 사용하므로 LLM 응답에서 무시됩니다.
 임의로 URL 을 추측하지 마세요.
 
+**이미지가 첨부된 경우**: 화면 reference 스크린샷이 함께 제공됩니다.
+그 이미지를 **최우선** 으로 참고해 page_title / search_panel / data_table_columns
+/ tabs / flowchart_mermaid 추출하세요. 이미지에서 보이는 라벨 / 컴포넌트
+종류 / 컬럼명이 코드의 변수명보다 정확합니다.
+
 **DataTable 컬럼 추출 규칙**:
 - title (헤더에 표시되는 한글 이름) 과 field (dataIndex / key — 실제 데이터
   매핑 키, 영문) 둘 다 채우세요.
@@ -265,15 +270,42 @@ def _build_user_prompt(file_rel: str, file_content: str,
     )
 
 
+def _find_reference_image(file_rel: str,
+                           images_dir: str = "input/screen_images") -> Optional[str]:
+    """화면별 reference 이미지 path 찾기 — 사용자가 ``input/screen_images/
+    <folder_name>.{png,jpg,jpeg,webp}`` 에 올린 이미지 우선 사용.
+
+    folder_name = file_rel 의 leaf 디렉토리 (예: ``apps/hypm_pmkit/index.js``
+    → ``hypm_pmkit``). nested 면 부모 폴더 이름도 fallback 으로 시도
+    (``apps/hypm_pmkit/popup/index.js`` → ``popup`` → ``hypm_pmkit``).
+    """
+    rel = file_rel.replace("\\", "/")
+    parts = rel.split("/")
+    candidates: list[str] = []
+    # leaf folder + ancestor (apps 다음) 순으로 후보
+    for i in range(len(parts) - 2, -1, -1):
+        if parts[i] == "apps":
+            break
+        candidates.append(parts[i])
+    for slug in candidates:
+        for ext in ("png", "jpg", "jpeg", "webp"):
+            p = os.path.join(images_dir, f"{slug}.{ext}")
+            if os.path.isfile(p):
+                return p
+    return None
+
+
 def _call_llm_safe(prompt: str, config: Dict[str, Any],
-                   label: str = "screen") -> Optional[Dict[str, Any]]:
+                   label: str = "screen",
+                   image_paths: Optional[list] = None) -> Optional[Dict[str, Any]]:
     try:
         from .legacy_pattern_discovery import _call_llm
     except Exception:
         return None
     try:
         raw = _call_llm(prompt, config or {}, label=label,
-                        system_prompt=_SYSTEM_PROMPT)
+                        system_prompt=_SYSTEM_PROMPT,
+                        image_paths=image_paths)
     except Exception as e:
         logger.warning("screen LLM 호출 실패: %s", e)
         return None
@@ -440,7 +472,13 @@ def extract_screen_layouts(
             continue
 
         prompt = _build_user_prompt(rel, content, url_map, max_chars)
-        data = _call_llm_safe(prompt, config or {}, label=f"screen:{rel[:40]}")
+        ref_image = _find_reference_image(rel)
+        if ref_image:
+            print(f"  screen: reference image found → {ref_image}")
+        data = _call_llm_safe(
+            prompt, config or {}, label=f"screen:{rel[:40]}",
+            image_paths=[ref_image] if ref_image else None,
+        )
         if data:
             layout = _parse_layout_dict(rel, data)
             llm_calls += 1
