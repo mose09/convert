@@ -419,12 +419,17 @@ def _collect_prop_bindings(files: list[str], frontend_dir: str = ""
 
 
 def _is_apps_react_file(rel_path: str) -> bool:
-    """``apps/<X>/.../index.{js,jsx,ts,tsx}`` entry 파일만 events 처리 대상.
+    """``apps/<...>/index.{js,jsx,ts,tsx}`` entry 또는 popup 키워드 폴더
+    안 ``.{js,jsx,ts,tsx}`` 단일 파일. 이외는 helper / framework 컴포넌트.
 
-    같은 apps/ 폴더 안의 helper / framework 컴포넌트 (예: ``SelectBox.js``,
-    ``BaseTable.jsx``) 는 events 처리에서 제외 — fn_index 에는 그대로 등록
-    되어 chain follow 가능. 사용자 정책: index.js 가 page entry, 나머지는
-    재사용 가능한 컴포넌트라 그 자체 events 는 trigger 가 아님.
+    사용자 환경 케이스:
+      * ``apps/X/index.js`` ✓ (메인)
+      * ``apps/X/Y/index.js`` ✓ (메인 — nested apps)
+      * ``apps/X/Body/index.js`` ✓ (sub-area, _resolve_screen_file 가
+        메인으로 redirect)
+      * ``apps/X/components/popup/InstallNousePopUp.js`` ✓ (popup 폴더
+        안 단일 파일)
+      * ``apps/X/SelectBox.js`` ✗ (helper, popup 폴더 밖 + index 아님)
     """
     norm = rel_path.replace("\\", "/")
     parts = norm.split("/")
@@ -432,7 +437,13 @@ def _is_apps_react_file(rel_path: str) -> bool:
         return False
     basename = parts[-1] if parts else ""
     name_no_ext = basename.rsplit(".", 1)[0].lower()
-    return name_no_ext == "index"
+    if name_no_ext == "index":
+        return True
+    # popup 키워드 폴더 안 단일 파일도 entry 인정
+    for p in parts[:-1]:
+        if p.lower() in _POPUP_FOLDER_KEYWORDS:
+            return True
+    return False
 
 
 # popup 처럼 별개 화면으로 분석할 sub-component 폴더 이름 키워드 (사용자
@@ -506,28 +517,35 @@ def _extract_popup_container_components(content: str) -> set[str]:
     return out
 
 
-def _collect_popup_imports_per_main(files: list[str], frontend_dir: str
+def _collect_popup_imports_per_main(files: list[str], frontend_dir: str,
+                                       main_files: set[str] | None = None
                                        ) -> set[str]:
-    """모든 메인 ``apps/<X>/index.*`` 의 imports + popup container children
-    교집합 → popup file_rel set 반환.
+    """모든 메인 ``apps/<...>/index.*`` 의 imports + popup container children
+    교집합 → popup file_rel set 반환. nested 메인 (`apps/X/Y/index.js`) 도 cover.
 
     이걸로 폴더명에 popup 키워드 없는 popup 도 잡음 — 메인이 ``import
     InstallScreen from './InstallScreen'`` + render 안 ``<Modal>
     <InstallScreen/></Modal>`` 패턴.
     """
     popup_files: set[str] = set()
+    main_set = main_files if main_files is not None else set()
     for fp in files:
         rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
         if not _is_apps_react_file(rel):
             continue
-        # apps/<X>/index.* (sub 없음, 메인 entry) 만 검사
-        parts = rel.split("/")
-        try:
-            apps_i = parts.index("apps")
-        except ValueError:
-            continue
-        if apps_i + 2 != len(parts) - 1:
-            continue
+        # 메인 entry 만 검사 — main_files 가 주어지면 그 set, 아니면 옛
+        # fallback (apps/<X>/index.*).
+        if main_files is not None:
+            if rel not in main_set:
+                continue
+        else:
+            parts = rel.split("/")
+            try:
+                apps_i = parts.index("apps")
+            except ValueError:
+                continue
+            if apps_i + 2 != len(parts) - 1:
+                continue
         try:
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
@@ -548,21 +566,56 @@ def _collect_popup_imports_per_main(files: list[str], frontend_dir: str
     return popup_files
 
 
-def _resolve_screen_file(rel_path: str, popup_set: set[str] | None = None) -> str:
-    """``apps/<X>/<sub>/.../index.*`` 의 sub-component 를 메인 ``apps/<X>/
-    index.*`` 로 redirect — 단 popup 인 경우 그대로.
+def _collect_main_entries(files: list[str], frontend_dir: str) -> set[str]:
+    """모든 ``apps/<...>/index.*`` 들 중 메인 entry set 반환.
 
-    Popup 판정 (둘 중 하나 매칭):
-      1. 폴더명에 popup 키워드 (``popup``/``modal``/``dialog``/``drawer``/
-         ``window``) 포함
-      2. ``popup_set`` (메인의 import + popup container 분석 결과) 에 포함
+    메인 = 다른 ``index.*`` 의 ancestor 인 entry. 즉 ``apps/X/Y/index.js``
+    (parent: ``apps/X/Y/``) 가 ``apps/X/Y/Body/index.js`` (parent:
+    ``apps/X/Y/Body/``) 의 prefix → ``apps/X/Y/index.js`` 가 메인, Body 는
+    sub-area.
 
-    예시:
-      ``apps/hypm_X/index.js``                    → 그대로 (메인)
-      ``apps/hypm_X/AgGridArea/index.js``         → ``apps/hypm_X/index.js``
-      ``apps/hypm_X/InstallManagePopup/index.js`` → 그대로 (폴더명 popup)
-      ``apps/hypm_Y/InstallScreen/index.js``      → 그대로 (popup_set 매칭,
-        메인이 <Modal><InstallScreen/></Modal> 로 사용)
+    Sibling 같은 깊이 (``apps/X/Y/index.js`` + ``apps/X/Z/index.js``) 는
+    둘 다 메인 (둘 사이 ancestor 관계 없음).
+    """
+    index_rels: list[str] = []
+    for fp in files:
+        rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
+        if not _is_apps_react_file(rel):
+            continue
+        basename = rel.rsplit("/", 1)[-1]
+        name = basename.rsplit(".", 1)[0].lower()
+        if name == "index":
+            index_rels.append(rel)
+
+    main_set: set[str] = set()
+    for rel in index_rels:
+        rel_parent = os.path.dirname(rel) + "/"
+        is_sub = False
+        for other in index_rels:
+            if other == rel:
+                continue
+            other_parent = os.path.dirname(other) + "/"
+            # rel_parent 가 other_parent 의 strict 하위면 rel 는 sub
+            if rel_parent.startswith(other_parent) and len(other_parent) < len(rel_parent):
+                is_sub = True
+                break
+        if not is_sub:
+            main_set.add(rel)
+    return main_set
+
+
+def _resolve_screen_file(rel_path: str,
+                          popup_set: set[str] | None = None,
+                          main_files: set[str] | None = None) -> str:
+    """``apps/<...>/.../index.*`` sub-component 를 가장 가까운 ancestor 메인
+    으로 redirect. popup 은 그대로 (별개 화면).
+
+    Popup 판정 (셋 중 하나):
+      1. 폴더명 키워드 (path 어느 segment 든) — popup/modal/dialog/drawer/window
+      2. ``popup_set`` (메인 import + Modal children 매칭) 포함
+      3. main_files 에 직접 포함 (메인 entry 자체)
+
+    main_files 가 None 이면 옛 fallback (path depth 3 메인 가정) 사용.
     """
     norm = rel_path.replace("\\", "/")
     parts = norm.split("/")
@@ -570,20 +623,37 @@ def _resolve_screen_file(rel_path: str, popup_set: set[str] | None = None) -> st
         apps_i = parts.index("apps")
     except ValueError:
         return rel_path
-    if apps_i + 2 == len(parts) - 1:  # 메인 entry
-        return rel_path
-    if apps_i + 2 >= len(parts):
-        return rel_path
-    sub_top = parts[apps_i + 2]
-    sub_lower = sub_top.lower()
-    # 휴리스틱 1 — 폴더명 키워드
-    for kw in _POPUP_FOLDER_KEYWORDS:
-        if kw in sub_lower:
+
+    # 1. 메인 entry 자체 — 그대로
+    if main_files is not None and norm in main_files:
+        return norm
+
+    # 2. popup keyword path 안 어느 segment 라도 매칭 — popup 그대로
+    for p in parts[apps_i + 1:-1]:
+        if p.lower() in _POPUP_FOLDER_KEYWORDS:
             return rel_path
-    # 휴리스틱 2 — popup_set (메인 import 기반)
+
+    # 3. popup_set 매칭 — popup 그대로
     if popup_set and norm in popup_set:
         return rel_path
-    # 그 외 sub-area — 메인 index.* 로 redirect
+
+    # 4. sub-area — 가장 가까운 ancestor 메인 으로 redirect
+    if main_files:
+        f_parent = os.path.dirname(norm) + "/"
+        best = ""
+        best_len = -1
+        for m in main_files:
+            m_parent = os.path.dirname(m) + "/"
+            if f_parent.startswith(m_parent) and len(m_parent) > best_len:
+                best = m
+                best_len = len(m_parent)
+        if best:
+            return best
+        return rel_path
+
+    # 5. fallback — main_files 없을 때 옛 동작 (apps/<X>/index.* 가정)
+    if apps_i + 2 == len(parts) - 1:
+        return rel_path
     leaf = parts[-1]
     ext = leaf.rsplit(".", 1)[-1] if "." in leaf else "js"
     main_path = "/".join(parts[:apps_i + 2] + [f"index.{ext}"])
@@ -1274,9 +1344,12 @@ def collect_handler_contexts(
     # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
     # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
     prop_index = _collect_prop_bindings(all_files, frontend_dir)
-    # popup 인덱스 — 메인 ``apps/<X>/index.*`` 가 ``<Modal>`` 안에 import 한
+    # 메인 entry set — sub-component 가 어느 메인으로 redirect 될지 결정.
+    # nested apps (apps/X/Y/index.js) 도 cover.
+    main_files = _collect_main_entries(all_files, frontend_dir)
+    # popup 인덱스 — 메인 (apps/<...>/index.*) 가 ``<Modal>`` 안에 import 한
     # 컴포넌트의 file_rel set. 폴더명에 popup 키워드 없는 popup 잡기 위함.
-    popup_set = _collect_popup_imports_per_main(all_files, frontend_dir)
+    popup_set = _collect_popup_imports_per_main(all_files, frontend_dir, main_files)
 
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
@@ -1398,7 +1471,7 @@ def collect_handler_contexts(
         jsx = _locate_enclosing_jsx(content, offset)
         validation_props = extract_validation_props(jsx)
         ctx = {
-            "file": _resolve_screen_file(rel, popup_set),
+            "file": _resolve_screen_file(rel, popup_set, main_files),
             "handler": handler or f"<inline:{event_type}>",
             "event": event_type,
             "label": label,
