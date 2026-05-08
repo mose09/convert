@@ -440,7 +440,8 @@ def _scan_body_with_chain(body: str,
                             strip_patterns,
                             depth: int = 2,
                             seen: set | None = None,
-                            prop_index: dict[str, set[str]] | None = None) -> set[str]:
+                            prop_index: dict[str, set[str]] | None = None,
+                            via_props: set | None = None) -> set[str]:
     """body 안의 axios URL 직접 매칭 + 호출되는 함수 chain follow 로 URL 수집.
 
     handler 가 ``onClick={fncSearch}`` 인데 ``fncSearch`` 본체가 다시
@@ -485,7 +486,7 @@ def _scan_body_with_chain(body: str,
             seen.add(key)
             urls |= _scan_body_with_chain(
                 sub_body, fn_index, call_re, const_map, strip_patterns,
-                depth - 1, seen, prop_index,
+                depth - 1, seen, prop_index, via_props,
             )
 
     # 3. this.props.X(...) — prop binding chain follow.
@@ -498,6 +499,9 @@ def _scan_body_with_chain(body: str,
                 if handler_name in seen_names:
                     continue
                 seen_names.add(handler_name)
+                # 부모 함수 이름 누적 — caller 가 trigger 표시에 사용.
+                if via_props is not None:
+                    via_props.add(handler_name)
                 for fp, sub_body in fn_index.get(handler_name) or []:
                     key = (fp, handler_name)
                     if key in seen:
@@ -505,7 +509,7 @@ def _scan_body_with_chain(body: str,
                     seen.add(key)
                     urls |= _scan_body_with_chain(
                         sub_body, fn_index, call_re, const_map, strip_patterns,
-                        depth - 1, seen, prop_index,
+                        depth - 1, seen, prop_index, via_props,
                     )
     return urls
 
@@ -977,17 +981,18 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                     for _fp_other, sub_body in fn_index.get(handler) or []:
                         bodies_to_scan.append(sub_body)
             urls_in_handler: set[str] = set()
+            via_props: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
-                    prop_index=prop_index,
+                    prop_index=prop_index, via_props=via_props,
                 )
-            pass1.append((ev, bodies_to_scan, urls_in_handler))
+            pass1.append((ev, bodies_to_scan, urls_in_handler, via_props))
 
     # Pass 2 — chain 중간 helper 함수 식별 (collect_handler_contexts 와 동일)
-    handler_names = {ev["handler"] for ev, _, _ in pass1 if ev.get("handler")}
+    handler_names = {ev["handler"] for ev, _, _, _ in pass1 if ev.get("handler")}
     helpers: set[str] = set()
-    for ev, bodies, _ in pass1:
+    for ev, bodies, _, _ in pass1:
         own = ev.get("handler") or ""
         for body in bodies:
             for m in _FN_CALL_LEAF_RE.finditer(body):
@@ -995,12 +1000,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 if fn and fn != own and fn in handler_names:
                     helpers.add(fn)
 
-    # 같은 handler 의 다른 ctx 가 비어있지 않은 label 채웠으면, 그 handler 의
-    # label="" ctx 는 dedup skip — bare 'onSearchButtonClicked' 같은 trigger
-    # 노이즈 차단. 사용자 보고: 라벨 가진 trigger 옆에 handler 이름 그대로
-    # 별도 trigger 로 또 나오는 케이스.
     handler_labels: dict[str, set[str]] = {}
-    for ev, _b, urls in pass1:
+    for ev, _b, urls, _v in pass1:
         if not urls:
             continue
         h = ev.get("handler") or ""
@@ -1008,7 +1009,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             handler_labels.setdefault(h, set()).add(ev.get("label") or "")
 
     # Pass 3 — emit. helper 는 trigger 에서 제외 + label="" dedup.
-    for ev, _bodies, urls_in_handler in pass1:
+    for ev, _bodies, urls_in_handler, via_props in pass1:
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
@@ -1021,7 +1022,13 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 continue
         event_type = ev["event"]
         tag_text = label or handler or "<inline>"
-        trigger_label = f"[{event_type}] {tag_text}"
+        # 부모 함수 호출 표시 — this.props.X(...) chain follow 가 도달한
+        # 부모 handler 이름들 (사용자 요청). 형식: [onClick → parent.handleX]
+        parent_suffix = ""
+        if via_props:
+            joined = ", ".join(f"parent.{n}" for n in sorted(via_props))
+            parent_suffix = f" → {joined}"
+        trigger_label = f"[{event_type}{parent_suffix}] {tag_text}"
         for canonical in urls_in_handler:
             triggers.setdefault(canonical, set()).add(trigger_label)
 
@@ -1125,12 +1132,13 @@ def collect_handler_contexts(
                         bodies_to_scan.append(sub_body)
 
             urls_in_handler: set[str] = set()
+            via_props: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
-                    prop_index=prop_index,
+                    prop_index=prop_index, via_props=via_props,
                 )
-            pass1.append((fp, rel, content, ev, bodies_to_scan, urls_in_handler))
+            pass1.append((fp, rel, content, ev, bodies_to_scan, urls_in_handler, via_props))
 
     # Pass 2: chain 중간 helper 함수 식별 — 다른 trigger 의 body 안에서
     # 호출되는 handler 이름은 trigger 가 아니라 chain 중간 함수. 사용자
@@ -1138,10 +1146,10 @@ def collect_handler_contexts(
     # body 에서 호출되는 helper 인데 자체도 trigger 로 잡혀 중복.
     # 해당 함수 URL 은 호출자 trigger 들의 chain follow 가 자동으로 묶음.
     handler_names: set[str] = {
-        ev["handler"] for (_fp, _rel, _c, ev, _b, _u) in pass1 if ev.get("handler")
+        ev["handler"] for (_fp, _rel, _c, ev, _b, _u, _v) in pass1 if ev.get("handler")
     }
     helpers: set[str] = set()
-    for (_fp, _rel, _c, ev, bodies, _u) in pass1:
+    for (_fp, _rel, _c, ev, bodies, _u, _v) in pass1:
         own = ev.get("handler") or ""
         for body in bodies:
             for m in _FN_CALL_LEAF_RE.finditer(body):
@@ -1149,10 +1157,8 @@ def collect_handler_contexts(
                 if fn and fn != own and fn in handler_names:
                     helpers.add(fn)
 
-    # 같은 handler 의 다른 ctx 가 비어있지 않은 label 채웠으면 label="" 은
-    # dedup skip (extract_button_triggers 와 동일 정책).
     handler_labels: dict[str, set[str]] = {}
-    for (_fp, _rel, _c, ev, _b, urls) in pass1:
+    for (_fp, _rel, _c, ev, _b, urls, _v) in pass1:
         if not urls:
             continue
         h = ev.get("handler") or ""
@@ -1160,7 +1166,7 @@ def collect_handler_contexts(
             handler_labels.setdefault(h, set()).add(ev.get("label") or "")
 
     # Pass 3: emit. helper 는 trigger 에서 제외 + label="" dedup.
-    for (fp, rel, content, ev, bodies_to_scan, urls_in_handler) in pass1:
+    for (fp, rel, content, ev, bodies_to_scan, urls_in_handler, via_props) in pass1:
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
@@ -1183,6 +1189,9 @@ def collect_handler_contexts(
             "body": ev["body"] or (bodies_to_scan[0] if bodies_to_scan else ""),
             "jsx_slice": jsx,
             "validation_props": validation_props,
+            # 사용자 요청: this.props.X(...) chain follow 가 도달한 부모
+            # handler 이름 — 이벤트 표시에 ``onClick → parent.handleX`` 형태.
+            "parent_handlers": sorted(via_props),
         }
         for u in urls_in_handler:
             out.setdefault(u, []).append(ctx)
