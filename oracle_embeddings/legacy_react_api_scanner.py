@@ -978,6 +978,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             handler = ev["handler"]
             body = ev["body"]
             bodies_to_scan: list[str] = []
+            via_props: set[str] = set()
             if body:
                 bodies_to_scan.append(body)
             elif handler:
@@ -985,10 +986,23 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 if same_file_body:
                     bodies_to_scan.append(same_file_body)
                 else:
-                    for _fp_other, sub_body in fn_index.get(handler) or []:
+                    fn_bodies = fn_index.get(handler) or []
+                    for _fp_other, sub_body in fn_bodies:
                         bodies_to_scan.append(sub_body)
+                    # prop reference fallback — handler 이름이 fn_index 에
+                    # 없으면 prop_index lookup. 자식 popup 의
+                    # ``onClick={this.props.onConfirm}`` 같은 케이스: handler
+                    # 이름 ``onConfirm`` 이 prop name 이라 fn_index 에 없음.
+                    # 부모의 binding ``<Child onConfirm={this.handleSubmit}>``
+                    # 통해 진짜 부모 함수 ``handleSubmit`` body 사용.
+                    if not fn_bodies and prop_index:
+                        for binding_file, parent_handler in prop_index.get(handler) or []:
+                            if binding_file == rel:
+                                continue  # self-binding skip
+                            for _fp, sub_body in fn_index.get(parent_handler) or []:
+                                bodies_to_scan.append(sub_body)
+                                via_props.add(parent_handler)
             urls_in_handler: set[str] = set()
-            via_props: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
@@ -1128,6 +1142,7 @@ def collect_handler_contexts(
             body = ev["body"]
 
             bodies_to_scan: list[str] = []
+            via_props: set[str] = set()
             if body:
                 bodies_to_scan.append(body)
             elif handler:
@@ -1136,11 +1151,19 @@ def collect_handler_contexts(
                     sliced = _slice_function_body(content, start, max_len=8000)
                     bodies_to_scan.append(sliced)
                 else:
-                    for _fp_other, sub_body in fn_index.get(handler) or []:
+                    fn_bodies = fn_index.get(handler) or []
+                    for _fp_other, sub_body in fn_bodies:
                         bodies_to_scan.append(sub_body)
+                    # prop reference fallback — extract_button_triggers 와 동일.
+                    if not fn_bodies and prop_index:
+                        for binding_file, parent_handler in prop_index.get(handler) or []:
+                            if binding_file == rel:
+                                continue
+                            for _fp, sub_body in fn_index.get(parent_handler) or []:
+                                bodies_to_scan.append(sub_body)
+                                via_props.add(parent_handler)
 
             urls_in_handler: set[str] = set()
-            via_props: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
