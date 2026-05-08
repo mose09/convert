@@ -926,15 +926,31 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 if fn and fn != own and fn in handler_names:
                     helpers.add(fn)
 
-    # Pass 3 — emit. helper 는 trigger 에서 제외.
+    # 같은 handler 의 다른 ctx 가 비어있지 않은 label 채웠으면, 그 handler 의
+    # label="" ctx 는 dedup skip — bare 'onSearchButtonClicked' 같은 trigger
+    # 노이즈 차단. 사용자 보고: 라벨 가진 trigger 옆에 handler 이름 그대로
+    # 별도 trigger 로 또 나오는 케이스.
+    handler_labels: dict[str, set[str]] = {}
+    for ev, _b, urls in pass1:
+        if not urls:
+            continue
+        h = ev.get("handler") or ""
+        if h:
+            handler_labels.setdefault(h, set()).add(ev.get("label") or "")
+
+    # Pass 3 — emit. helper 는 trigger 에서 제외 + label="" dedup.
     for ev, _bodies, urls_in_handler in pass1:
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
         if not urls_in_handler:
             continue
+        label = ev.get("label") or ""
+        if handler and not label:
+            other = handler_labels.get(handler, set()) - {""}
+            if other:
+                continue
         event_type = ev["event"]
-        label = ev["label"]
         tag_text = label or handler or "<inline>"
         trigger_label = f"[{event_type}] {tag_text}"
         for canonical in urls_in_handler:
@@ -1060,15 +1076,29 @@ def collect_handler_contexts(
                 if fn and fn != own and fn in handler_names:
                     helpers.add(fn)
 
-    # Pass 3: emit. helper 는 trigger 에서 제외.
+    # 같은 handler 의 다른 ctx 가 비어있지 않은 label 채웠으면 label="" 은
+    # dedup skip (extract_button_triggers 와 동일 정책).
+    handler_labels: dict[str, set[str]] = {}
+    for (_fp, _rel, _c, ev, _b, urls) in pass1:
+        if not urls:
+            continue
+        h = ev.get("handler") or ""
+        if h:
+            handler_labels.setdefault(h, set()).add(ev.get("label") or "")
+
+    # Pass 3: emit. helper 는 trigger 에서 제외 + label="" dedup.
     for (fp, rel, content, ev, bodies_to_scan, urls_in_handler) in pass1:
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
         if not urls_in_handler:
             continue
+        label = ev.get("label") or ""
+        if handler and not label:
+            other = handler_labels.get(handler, set()) - {""}
+            if other:
+                continue
         event_type = ev["event"]
-        label = ev["label"]
         offset = ev["source_offset"]
         jsx = _locate_enclosing_jsx(content, offset)
         validation_props = extract_validation_props(jsx)
