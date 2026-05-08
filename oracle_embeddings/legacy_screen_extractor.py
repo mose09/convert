@@ -70,6 +70,7 @@ class ScreenLayout:
     edit_mode_fields: List[ScreenField] = field(default_factory=list)
     tabs: List[str] = field(default_factory=list)
     events: List[ScreenEvent] = field(default_factory=list)
+    flowchart_mermaid: str = ""   # 사용자 액션 흐름 (Mermaid flowchart TB)
     summary: str = ""
     source: str = "llm"      # "llm" | "fallback"
 
@@ -111,6 +112,7 @@ def _cache_get(key: str, enabled: bool) -> Optional[ScreenLayout]:
             edit_mode_fields=em,
             tabs=list(data.get("tabs") or []),
             events=ev,
+            flowchart_mermaid=data.get("flowchart_mermaid", ""),
             summary=data.get("summary", ""),
             source=data.get("source", "llm"),
         )
@@ -164,6 +166,7 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
   "tabs": ["탭1", "탭2", ...],
+  "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\n중요: 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. 노드명 한글 OK. 코드만 (```mermaid 펜스 X).",
   "summary": "1-2 줄 화면 설명"
 }
 """
@@ -350,6 +353,7 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
         edit_mode_fields=_fields("edit_mode_fields"),
         tabs=[str(t) for t in (data.get("tabs") or [])],
         events=events,
+        flowchart_mermaid=str(data.get("flowchart_mermaid", "")),
         summary=str(data.get("summary", "")),
         source="llm",
     )
@@ -487,16 +491,23 @@ _HTML_TEMPLATE = """<!doctype html>
   .tab.active {{ background: #2c3e50; color: #fff; }}
   .events {{ font-size: 12px; }}
   .events table th {{ background: #fffbe5; }}
+  pre.mermaid {{ background: #f8f9fa; border: 1px solid #e0e0e0;
+                  padding: 12px; font-size: 12px; overflow-x: auto;
+                  font-family: Consolas, "Courier New", monospace; }}
   .meta {{ font-size: 11px; color: #999; margin-top: 16px;
            text-align: right; }}
   .empty {{ color: #aaa; font-style: italic; }}
-</style></head><body>
+</style>
+<script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+<script>if (window.mermaid) {{ mermaid.initialize({{ startOnLoad: true }}); }}</script>
+</head><body>
 <header>{title_html}</header>
 <main>
 {summary_block}
 {search_block}
 {tab_block}
 {table_block}
+{flowchart_block}
 {edit_block}
 {events_block}
 <div class="meta">file: {file_rel} · source: {source}</div>
@@ -658,6 +669,25 @@ def _render_events(events: List[ScreenEvent]) -> str:
             f"<tbody>{''.join(rows)}</tbody></table></section>")
 
 
+def _render_flowchart(mermaid_code: str) -> str:
+    """사용자 액션 흐름 — Mermaid flowchart. <pre class='mermaid'> 안에
+    raw 코드. mermaid.js 가 head 에 로드되어 있으면 자동 렌더.
+    LLM 이 ``flowchart_mermaid`` 빈 값 반환하면 섹션 자체 미생성.
+    """
+    code = (mermaid_code or "").strip()
+    if not code:
+        return ""
+    # ```mermaid 펜스 들어있으면 제거 (LLM 이 가이드 무시한 경우 방어)
+    if code.startswith("```"):
+        code = code.strip("`")
+        first_nl = code.find("\n")
+        if first_nl > 0 and "mermaid" in code[:first_nl].lower():
+            code = code[first_nl + 1:]
+        code = code.rstrip("` \n")
+    return ("<section><h2>화면 흐름 (사용자 액션)</h2>"
+            f"<pre class='mermaid'>{_esc(code)}</pre></section>")
+
+
 def render_screen_html(layout: ScreenLayout) -> str:
     title = layout.page_title or os.path.basename(layout.file) or "Screen"
     summary_block = (f"<section><h2>요약</h2><div>{_esc(layout.summary)}</div></section>"
@@ -669,6 +699,7 @@ def render_screen_html(layout: ScreenLayout) -> str:
         search_block=_render_search(layout.search_panel),
         tab_block=_render_tabs(layout.tabs),
         table_block=_render_table(layout.data_table_columns),
+        flowchart_block=_render_flowchart(layout.flowchart_mermaid),
         edit_block=_render_edit(layout.edit_mode_fields),
         events_block=_render_events(layout.events),
         file_rel=_esc(layout.file),
