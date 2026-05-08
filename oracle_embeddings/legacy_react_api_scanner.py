@@ -380,6 +380,42 @@ _FN_CALL_LEAF_RE = re.compile(
 )
 
 
+# this.props.X(...) — props 통해 부모로부터 받은 함수 호출. prop_index 로
+# 실제 함수 이름 lookup 후 chain follow.
+_PROPS_CALL_RE = re.compile(r"\bthis\s*\.\s*props\s*\.\s*(?P<prop>\w+)\s*\(")
+
+
+# JSX prop binding: ``<X propName={this.handlerName}>`` / ``propName={handlerName}``.
+# prop_index 빌드용. false positive (state.x 등) 는 fn_index lookup 시 자연 skip.
+_PROP_BINDING_RE = re.compile(
+    r"""\b(?P<prop>[a-zA-Z_$][\w$]*)\s*=\s*\{\s*
+        (?:this\s*\.\s*)?(?P<handler>[A-Za-z_$][\w$]*)
+        \s*\}""",
+    re.VERBOSE,
+)
+
+
+def _collect_prop_bindings(files: list[str]) -> dict[str, set[str]]:
+    """JSX 안 ``<X propName={this.handlerName}>`` → ``{prop: {handler}}``.
+
+    부모→자식 prop binding 추적용. 자식이 ``this.props.propName(...)`` 호출
+    하면 부모의 어느 함수와 binding 됐는지 prop_index lookup 후 그 함수
+    body 까지 chain follow.
+    """
+    index: dict[str, set[str]] = {}
+    for fp in files:
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        for m in _PROP_BINDING_RE.finditer(content):
+            prop = m.group("prop")
+            handler = m.group("handler")
+            if prop and handler and prop != handler:
+                index.setdefault(prop, set()).add(handler)
+    return index
+
+
 def _is_apps_react_file(rel_path: str) -> bool:
     """``src/apps/...`` / ``apps/...`` 안의 파일인지 판정. 분석 대상은 사용자
     프로젝트의 apps/ 화면 컴포넌트만. ``store/`` / ``components/`` /
@@ -396,15 +432,17 @@ def _scan_body_with_chain(body: str,
                             const_map: dict[str, str],
                             strip_patterns,
                             depth: int = 2,
-                            seen: set | None = None) -> set[str]:
+                            seen: set | None = None,
+                            prop_index: dict[str, set[str]] | None = None) -> set[str]:
     """body 안의 axios URL 직접 매칭 + 호출되는 함수 chain follow 로 URL 수집.
 
     handler 가 ``onClick={fncSearch}`` 인데 ``fncSearch`` 본체가 다시
     ``this.fncDoSearch()`` 만 부르고 진짜 ``axios`` 는 ``fncDoSearch`` 안에
     있는 케이스 대응. 깊이 cap (default 2) 으로 무한 재귀 / 비용 폭주 방지.
 
-    fn_index: ``_collect_function_bodies`` 결과.
-    seen: cycle 방지 ``(file, fn_name)`` 추적.
+    prop_index: 자식이 ``this.props.X(...)`` 호출하는 경우 부모 JSX 의
+    ``<Child X={this.handlerName}>`` binding 통해 실제 함수 이름 lookup.
+    None 이면 prop binding chain 비활성.
     """
     seen = seen if seen is not None else set()
     urls: set[str] = set()
@@ -440,8 +478,28 @@ def _scan_body_with_chain(body: str,
             seen.add(key)
             urls |= _scan_body_with_chain(
                 sub_body, fn_index, call_re, const_map, strip_patterns,
-                depth - 1, seen,
+                depth - 1, seen, prop_index,
             )
+
+    # 3. this.props.X(...) — prop binding chain follow.
+    if prop_index:
+        for m in _PROPS_CALL_RE.finditer(body):
+            prop = m.group("prop") or ""
+            if not prop or prop in _SAGA_INDIRECT_SKIP_NAMES:
+                continue
+            for handler_name in prop_index.get(prop) or set():
+                if handler_name in seen_names:
+                    continue
+                seen_names.add(handler_name)
+                for fp, sub_body in fn_index.get(handler_name) or []:
+                    key = (fp, handler_name)
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    urls |= _scan_body_with_chain(
+                        sub_body, fn_index, call_re, const_map, strip_patterns,
+                        depth - 1, seen, prop_index,
+                    )
     return urls
 
 
@@ -877,6 +935,9 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     # fn_index — handler 가 다른 파일 (saga.js 등) import 인 케이스에서
     # 이름으로 직접 lookup. collect_handler_contexts 와 동일 전략 (PR #150).
     fn_index = _collect_function_bodies(all_files)
+    # 부모→자식 prop binding (``<Child propX={this.handlerY}>``) 인덱스.
+    # 자식이 ``this.props.X(...)`` 호출 시 chain follow 가 부모 함수까지 도달.
+    prop_index = _collect_prop_bindings(all_files)
 
     triggers: dict[str, set[str]] = {}
 
@@ -912,6 +973,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
+                    prop_index=prop_index,
                 )
             pass1.append((ev, bodies_to_scan, urls_in_handler))
 
@@ -992,6 +1054,9 @@ def collect_handler_contexts(
     # multi-level handler chain follow 용 함수 인덱스 (1 회 build, 모든
     # event 의 _scan_body_with_chain 가 공유). saga indirect 와 동일 인프라.
     fn_index = _collect_function_bodies(all_files)
+    # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
+    # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
+    prop_index = _collect_prop_bindings(all_files)
 
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
@@ -1056,6 +1121,7 @@ def collect_handler_contexts(
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
+                    prop_index=prop_index,
                 )
             pass1.append((fp, rel, content, ev, bodies_to_scan, urls_in_handler))
 
