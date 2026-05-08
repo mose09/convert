@@ -388,7 +388,11 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
 
 def _group_handlers_by_file(handlers_by_url: Dict[str, List[Dict[str, Any]]]
                             ) -> Dict[str, Dict[str, List[str]]]:
-    """``{file: {handler_label: [url, ...]}}`` 으로 변환."""
+    """``{file: {handler_label: [url, ...]}}`` 으로 변환.
+
+    parent_handlers 가 있으면 (다른 파일에서 prop binding 으로 도달한 부모
+    함수) event_marker 에 ``→ parent.handleX`` 추가.
+    """
     out: Dict[str, Dict[str, List[str]]] = {}
     for url, ctx_list in (handlers_by_url or {}).items():
         for ctx in ctx_list or []:
@@ -397,6 +401,9 @@ def _group_handlers_by_file(handlers_by_url: Dict[str, List[Dict[str, Any]]]
                 continue
             handler = ctx.get("handler") or ""
             event_marker = ctx.get("event") or ""
+            parents = ctx.get("parent_handlers") or []
+            if parents:
+                event_marker += " → " + ", ".join(f"parent.{p}" for p in parents)
             label = ctx.get("label") or ""
             tag = label or handler or "<inline>"
             full_handler = f"[{event_marker}] {tag}" if event_marker else tag

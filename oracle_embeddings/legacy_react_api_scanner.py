@@ -395,24 +395,26 @@ _PROP_BINDING_RE = re.compile(
 )
 
 
-def _collect_prop_bindings(files: list[str]) -> dict[str, set[str]]:
-    """JSX 안 ``<X propName={this.handlerName}>`` → ``{prop: {handler}}``.
+def _collect_prop_bindings(files: list[str], frontend_dir: str = ""
+                            ) -> dict[str, list[tuple[str, str]]]:
+    """JSX 안 ``<X propName={this.handlerName}>`` → ``{prop: [(file_rel, handler), ...]}``.
 
-    부모→자식 prop binding 추적용. 자식이 ``this.props.propName(...)`` 호출
-    하면 부모의 어느 함수와 binding 됐는지 prop_index lookup 후 그 함수
-    body 까지 chain follow.
+    부모→자식 prop binding 추적용. **파일 정보** 도 같이 저장하여 chain
+    follow 시 ``current_file != binding_file`` 인 경우만 진짜 부모 호출로
+    인정 (같은 파일 안 self-binding 은 자기 함수라 parent 아님).
     """
-    index: dict[str, set[str]] = {}
+    index: dict[str, list[tuple[str, str]]] = {}
     for fp in files:
         try:
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
             continue
+        rel = os.path.relpath(fp, frontend_dir) if frontend_dir else fp
         for m in _PROP_BINDING_RE.finditer(content):
             prop = m.group("prop")
             handler = m.group("handler")
             if prop and handler and prop != handler:
-                index.setdefault(prop, set()).add(handler)
+                index.setdefault(prop, []).append((rel, handler))
     return index
 
 
@@ -440,8 +442,9 @@ def _scan_body_with_chain(body: str,
                             strip_patterns,
                             depth: int = 2,
                             seen: set | None = None,
-                            prop_index: dict[str, set[str]] | None = None,
-                            via_props: set | None = None) -> set[str]:
+                            prop_index: dict[str, list[tuple[str, str]]] | None = None,
+                            via_props: set | None = None,
+                            current_file: str | None = None) -> set[str]:
     """body 안의 axios URL 직접 매칭 + 호출되는 함수 chain follow 로 URL 수집.
 
     handler 가 ``onClick={fncSearch}`` 인데 ``fncSearch`` 본체가 다시
@@ -486,7 +489,7 @@ def _scan_body_with_chain(body: str,
             seen.add(key)
             urls |= _scan_body_with_chain(
                 sub_body, fn_index, call_re, const_map, strip_patterns,
-                depth - 1, seen, prop_index, via_props,
+                depth - 1, seen, prop_index, via_props, current_file,
             )
 
     # 3. this.props.X(...) — prop binding chain follow.
@@ -495,11 +498,15 @@ def _scan_body_with_chain(body: str,
             prop = m.group("prop") or ""
             if not prop or prop in _SAGA_INDIRECT_SKIP_NAMES:
                 continue
-            for handler_name in prop_index.get(prop) or set():
+            for binding_file, handler_name in prop_index.get(prop) or []:
+                # 같은 파일 안 self-binding (``<button onClick={this.fnX}>`` 같은
+                # native event handler 정의) 은 자기 함수라 parent 아님 — skip.
+                # 다른 파일 (자식이 부모 prop 받는 경우) 만 진짜 prop binding.
+                if current_file and binding_file == current_file:
+                    continue
                 if handler_name in seen_names:
                     continue
                 seen_names.add(handler_name)
-                # 부모 함수 이름 누적 — caller 가 trigger 표시에 사용.
                 if via_props is not None:
                     via_props.add(handler_name)
                 for fp, sub_body in fn_index.get(handler_name) or []:
@@ -509,7 +516,7 @@ def _scan_body_with_chain(body: str,
                     seen.add(key)
                     urls |= _scan_body_with_chain(
                         sub_body, fn_index, call_re, const_map, strip_patterns,
-                        depth - 1, seen, prop_index, via_props,
+                        depth - 1, seen, prop_index, via_props, current_file,
                     )
     return urls
 
@@ -948,7 +955,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     fn_index = _collect_function_bodies(all_files)
     # 부모→자식 prop binding (``<Child propX={this.handlerY}>``) 인덱스.
     # 자식이 ``this.props.X(...)`` 호출 시 chain follow 가 부모 함수까지 도달.
-    prop_index = _collect_prop_bindings(all_files)
+    prop_index = _collect_prop_bindings(all_files, frontend_dir)
 
     triggers: dict[str, set[str]] = {}
 
@@ -986,6 +993,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
                     prop_index=prop_index, via_props=via_props,
+                    current_file=rel,
                 )
             pass1.append((ev, bodies_to_scan, urls_in_handler, via_props))
 
@@ -1022,7 +1030,13 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 continue
         event_type = ev["event"]
         tag_text = label or handler or "<inline>"
-        trigger_label = f"[{event_type}] {tag_text}"
+        # 다른 파일의 진짜 부모 함수 호출만 표시 (같은 파일 self-binding 은
+        # _scan_body_with_chain 단계에서 이미 via_props 에 추가 X).
+        parent_suffix = ""
+        if via_props:
+            joined = ", ".join(f"parent.{n}" for n in sorted(via_props))
+            parent_suffix = f" → {joined}"
+        trigger_label = f"[{event_type}{parent_suffix}] {tag_text}"
         for canonical in urls_in_handler:
             triggers.setdefault(canonical, set()).add(trigger_label)
 
@@ -1064,7 +1078,7 @@ def collect_handler_contexts(
     fn_index = _collect_function_bodies(all_files)
     # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
     # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
-    prop_index = _collect_prop_bindings(all_files)
+    prop_index = _collect_prop_bindings(all_files, frontend_dir)
 
     # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
     # redux + saga 패턴에서 Container/index.js 의 click handler 가
@@ -1131,6 +1145,7 @@ def collect_handler_contexts(
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
                     prop_index=prop_index, via_props=via_props,
+                    current_file=rel,
                 )
             pass1.append((fp, rel, content, ev, bodies_to_scan, urls_in_handler, via_props))
 
@@ -1183,6 +1198,9 @@ def collect_handler_contexts(
             "body": ev["body"] or (bodies_to_scan[0] if bodies_to_scan else ""),
             "jsx_slice": jsx,
             "validation_props": validation_props,
+            # 다른 파일에서 prop binding 으로 도달한 부모 함수 이름들.
+            # 같은 파일 self-binding 은 current_file 필터로 이미 제외됨.
+            "parent_handlers": sorted(via_props),
         }
         for u in urls_in_handler:
             out.setdefault(u, []).append(ctx)
