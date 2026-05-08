@@ -72,6 +72,20 @@ EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_MODEL
 PATTERN_LLM_MODEL=qwen2.5-coder:14b
 ```
 
+### tree-sitter (옵트인, `--closure-llm`)
+
+`analyze-legacy --closure-llm` 으로 React closure 기반 LLM 분석 활성 시
+`tree-sitter` + `tree-sitter-javascript` + `tree-sitter-typescript` 필요.
+**미설치여도 기본 동작 (regex 기반) 그대로 작동** — closure 옵션만 비활성.
+
+폐쇄망 wheel install:
+```powershell
+pip download tree-sitter tree-sitter-javascript tree-sitter-typescript ^
+  -d .\wheels --platform win_amd64 --python-version 311 --only-binary=:all:
+python -m pip install --no-index --find-links=.\wheels ^
+  tree-sitter tree-sitter-javascript tree-sitter-typescript
+```
+
 ### Windows 실행 주의
 - 명령 multi-line 시 `\` 대신 `^` 또는 한 줄로 (PowerShell 의 backtick `` ` `` 도 OK 단 line 끝 공백/탭 없어야 함)
 - `pip` 대신 `python -m pip` / `py -m pip`

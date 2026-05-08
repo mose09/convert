@@ -10,3 +10,15 @@ openai>=1.0.0
 # SQL Migration (migrate-sql / migration-impact / validate-migration)
 sqlglot>=23.0.0
 lxml>=5.0.0
+
+# React closure 분석 (analyze-legacy --closure-llm 옵트인 — Phase C LLM
+# input 을 import 그래프 BFS + popup 3 신호 식별 결과로 보강).
+# 미설치 시 closure 옵션은 안내 메시지만 출력 + 기존 regex 분석 그대로 사용.
+# 폐쇄망 wheel install:
+#   pip download tree-sitter tree-sitter-javascript tree-sitter-typescript \
+#     -d ./wheels --platform win_amd64 --python-version 311 --only-binary=:all:
+#   python -m pip install --no-index --find-links=./wheels \
+#     tree-sitter tree-sitter-javascript tree-sitter-typescript
+tree-sitter>=0.21
+tree-sitter-javascript>=0.21
+tree-sitter-typescript>=0.21
