@@ -718,6 +718,74 @@ def _walk_brace_end(text: str, open_idx: int) -> int:
     return n
 
 
+_LABEL_PROP_RE = re.compile(r"""\b(?:label|placeholder|title)\s*=\s*["']([^"'<>{}]{1,40})["']""")
+_FORM_ITEM_LABEL_RE = re.compile(
+    r"""<Form\.Item\b[^>]*?\blabel\s*=\s*["']([^"'<>{}]{1,40})["']""",
+    re.IGNORECASE,
+)
+
+
+def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
+    """이벤트 핸들러의 인근 라벨 추출 — 사용자 친화적 trigger 표시용.
+
+    우선순위:
+      1. 같은 JSX tag 안의 ``label="..."`` / ``placeholder="..."`` / ``title="..."``
+      2. 같은 tag 의 children 텍스트 (예: ``<Button onClick={X}>조회</Button>``)
+      3. 부모 ``<Form.Item label="...">`` (사용자 케이스: Select self-closing)
+    """
+    # tag 의 시작 ``<`` 와 끝 ``>`` 위치 탐색.
+    head_window_start = max(0, ev_start - 600)
+    head = content[head_window_start:ev_start]
+    tag_open_rel = head.rfind("<")
+    if tag_open_rel < 0:
+        return ""
+    tag_open = head_window_start + tag_open_rel
+    tag_close = content.find(">", ev_end)
+    if tag_close < 0 or tag_close - ev_end > 600:
+        return ""
+    tag_text = content[tag_open:tag_close + 1]
+
+    # 1) 같은 tag 안 label/placeholder/title attr
+    m = _LABEL_PROP_RE.search(tag_text)
+    if m:
+        return m.group(1).strip()
+
+    # 2) 같은 tag children 텍스트
+    next_lt = content.find("<", tag_close + 1)
+    if 0 <= next_lt - tag_close <= 200:
+        inner = content[tag_close + 1:next_lt].strip()
+        if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
+            return inner
+
+    # 3) 부모 Form.Item label — tag_open 이전 800자 안에 마지막 <Form.Item 검색
+    parent_window = content[max(0, tag_open - 800):tag_open]
+    last_form_item = parent_window.rfind("<Form.Item")
+    if last_form_item < 0:
+        last_form_item = parent_window.rfind("<FormItem")
+    if last_form_item >= 0:
+        # 그 Form.Item 이 tag_open 사이에 닫혔는지 (`</Form.Item>` 등) 검사
+        between = parent_window[last_form_item:]
+        if "</Form.Item>" not in between and "</FormItem>" not in between:
+            m = _FORM_ITEM_LABEL_RE.search(between + content[tag_open:tag_open + 1])
+            if m:
+                return m.group(1).strip()
+
+    # 4) 사용자 패턴: ``<span className="search-label">다중권한</span>`` 같이
+    #    같은 부모 div 안의 형제 라벨. handler tag 직전 600자 안에서 가장
+    #    가까운 ``>텍스트<`` 노드 — JSX 텍스트 노드 휴리스틱.
+    nearby = content[max(0, tag_open - 600):tag_open]
+    text_matches = list(re.finditer(r">([^<>{}]{1,40})<", nearby))
+    for m in reversed(text_matches):
+        text = m.group(1).strip()
+        if not text:
+            continue
+        # 의미있는 텍스트만 (영문 + 한글 + 숫자 mix). 공백/숫자/특수문자
+        # 만이면 skip.
+        if re.search(r"[A-Za-z가-힣]", text):
+            return text
+    return ""
+
+
 def collect_event_handlers(content: str) -> list[dict]:
     """파일 안의 모든 backend-호출 가능한 trigger event 수집.
 
@@ -751,21 +819,7 @@ def collect_event_handlers(content: str) -> list[dict]:
     for m in _ANY_JSX_EVENT_RE.finditer(content):
         event_suffix = m.group("event")
         handler = m.group("name") or m.group("arrow") or ""
-        label = ""
-        # 핸들러가 속한 enclosing JSX tag 의 children 을 label 로 시도 — 같은 tag 의
-        # close `>` 와 close `</Tag>` 사이 텍스트를 capture.
-        # 간단히: m.start() 이전 200자 안에 마지막 ``<Tag`` 시작점 찾기.
-        head_window = content[max(0, m.start() - 400):m.start()]
-        tag_open = head_window.rfind("<")
-        if tag_open >= 0:
-            after_tag = m.end()
-            close_idx = content.find(">", after_tag)
-            if 0 <= close_idx < after_tag + 200:
-                next_lt = content.find("<", close_idx + 1)
-                if 0 <= next_lt - close_idx <= 200:
-                    inner = content[close_idx + 1:next_lt].strip()
-                    if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
-                        label = inner
+        label = _extract_event_label(content, m.start(), m.end())
         _emit(f"on{event_suffix}", handler, label, "", m.start())
 
     # 2) useEffect((...) => {...}, [deps])
@@ -826,9 +880,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
 
     triggers: dict[str, set[str]] = {}
 
-    # apps/ 안 파일만 events 처리 — 사용자 정책 (component 페이지 / sample
-    # 제외). saga.js 등 store/ 폴더 파일은 fn_index 에 포함되어 handler
-    # 이름 lookup 으로 chain follow 가능.
+    # Pass 1 — apps/ 안 events + body + chain URL 수집
+    pass1: list[tuple[dict, list[str], set[str]]] = []
     for fp in all_files:
         rel = os.path.relpath(fp, frontend_dir)
         if not _is_apps_react_file(rel):
@@ -838,20 +891,13 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         except Exception:
             continue
 
-        # 모든 backend 호출 트리거 수집 (JSX 이벤트 + lifecycle).
         events = collect_event_handlers(content)
         if not events:
             continue
 
         for ev in events:
-            event_type = ev["event"]
             handler = ev["handler"]
-            label = ev["label"]
             body = ev["body"]
-
-            # body 결정: inline body → 그대로, named handler in same file →
-            # _locate_handler_body, 다른 파일 import → fn_index lookup.
-            # collect_handler_contexts 와 동일 정책 (PR #150).
             bodies_to_scan: list[str] = []
             if body:
                 bodies_to_scan.append(body)
@@ -862,22 +908,37 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
                 else:
                     for _fp_other, sub_body in fn_index.get(handler) or []:
                         bodies_to_scan.append(sub_body)
-
             urls_in_handler: set[str] = set()
             for b in bodies_to_scan:
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
                 )
+            pass1.append((ev, bodies_to_scan, urls_in_handler))
 
-            if not urls_in_handler:
-                continue
+    # Pass 2 — chain 중간 helper 함수 식별 (collect_handler_contexts 와 동일)
+    handler_names = {ev["handler"] for ev, _, _ in pass1 if ev.get("handler")}
+    helpers: set[str] = set()
+    for ev, bodies, _ in pass1:
+        own = ev.get("handler") or ""
+        for body in bodies:
+            for m in _FN_CALL_LEAF_RE.finditer(body):
+                fn = m.group("fn") or ""
+                if fn and fn != own and fn in handler_names:
+                    helpers.add(fn)
 
-            # +saga marker 제거 (사용자 요청, PR #150 후속). 일반 event_type
-            # 만 사용. fallback / direct 구분 X.
-            tag_text = label or handler or "<inline>"
-            trigger_label = f"[{event_type}] {tag_text}"
-            for canonical in urls_in_handler:
-                triggers.setdefault(canonical, set()).add(trigger_label)
+    # Pass 3 — emit. helper 는 trigger 에서 제외.
+    for ev, _bodies, urls_in_handler in pass1:
+        handler = ev["handler"]
+        if handler and handler in helpers:
+            continue
+        if not urls_in_handler:
+            continue
+        event_type = ev["event"]
+        label = ev["label"]
+        tag_text = label or handler or "<inline>"
+        trigger_label = f"[{event_type}] {tag_text}"
+        for canonical in urls_in_handler:
+            triggers.setdefault(canonical, set()).add(trigger_label)
 
     return {k: sorted(v) for k, v in triggers.items()}
 
@@ -944,9 +1005,8 @@ def collect_handler_contexts(
         "useEffect", "didMount", "willMount", "didUpdate", "mount",
     })
 
-    # apps/ 안 파일만 events 처리 (사용자 정책). 그 외 (store/ / components/
-    # / sample 페이지 등) 는 fn_index 에만 포함되어 handler 이름 lookup 시
-    # 참고. 각 event 는 chain follow 만 — fallback (folder/slug-scope) 제거.
+    # Pass 1: apps/ 안 파일에서 모든 events + body + chain URL 수집.
+    pass1: list[tuple[str, str, str, dict, list[str], set[str]]] = []
     for fp in all_files:
         rel = os.path.relpath(fp, frontend_dir)
         if not _is_apps_react_file(rel):
@@ -960,23 +1020,10 @@ def collect_handler_contexts(
         if not events:
             continue
 
-        rel = os.path.relpath(fp, frontend_dir)
-
         for ev in events:
-            event_type = ev["event"]
             handler = ev["handler"]
-            label = ev["label"]
             body = ev["body"]
-            offset = ev["source_offset"]
 
-            # Handler body resolution:
-            #   1) inline body (useEffect / lifecycle / inline arrow): 그대로
-            #   2) named handler in same file: _locate_handler_start +
-            #      brace-balanced slice
-            #   3) handler 가 다른 파일 import (saga.js 등): fn_index 에서
-            #      이름으로 찾아 body 들 모음. 사용자 saga import 패턴
-            #      ``apps/X/index.js`` 의 ``onClick={fncSearch}`` 가
-            #      ``store/X/saga.js`` 의 ``fncSearch`` 함수에 매핑됨.
             bodies_to_scan: list[str] = []
             if body:
                 bodies_to_scan.append(body)
@@ -986,8 +1033,6 @@ def collect_handler_contexts(
                     sliced = _slice_function_body(content, start, max_len=8000)
                     bodies_to_scan.append(sliced)
                 else:
-                    # 다른 파일에 정의된 handler (saga import 등) — fn_index
-                    # 에서 이름으로 직접 찾기. fallback 보다 정확.
                     for _fp_other, sub_body in fn_index.get(handler) or []:
                         bodies_to_scan.append(sub_body)
 
@@ -996,23 +1041,48 @@ def collect_handler_contexts(
                 urls_in_handler |= _scan_body_with_chain(
                     b, fn_index, call_re, const_map, strip_patterns, depth=5,
                 )
+            pass1.append((fp, rel, content, ev, bodies_to_scan, urls_in_handler))
 
-            if not urls_in_handler:
-                continue
+    # Pass 2: chain 중간 helper 함수 식별 — 다른 trigger 의 body 안에서
+    # 호출되는 handler 이름은 trigger 가 아니라 chain 중간 함수. 사용자
+    # 보고: ``onSearchButtonClicked`` 가 search/라인삭제/복사 버튼들의
+    # body 에서 호출되는 helper 인데 자체도 trigger 로 잡혀 중복.
+    # 해당 함수 URL 은 호출자 trigger 들의 chain follow 가 자동으로 묶음.
+    handler_names: set[str] = {
+        ev["handler"] for (_fp, _rel, _c, ev, _b, _u) in pass1 if ev.get("handler")
+    }
+    helpers: set[str] = set()
+    for (_fp, _rel, _c, ev, bodies, _u) in pass1:
+        own = ev.get("handler") or ""
+        for body in bodies:
+            for m in _FN_CALL_LEAF_RE.finditer(body):
+                fn = m.group("fn") or ""
+                if fn and fn != own and fn in handler_names:
+                    helpers.add(fn)
 
-            jsx = _locate_enclosing_jsx(content, offset)
-            validation_props = extract_validation_props(jsx)
-            ctx = {
-                "file": rel,
-                "handler": handler or f"<inline:{event_type}>",
-                "event": event_type,
-                "label": label,
-                "body": body or (bodies_to_scan[0] if bodies_to_scan else ""),
-                "jsx_slice": jsx,
-                "validation_props": validation_props,
-            }
-            for u in urls_in_handler:
-                out.setdefault(u, []).append(ctx)
+    # Pass 3: emit. helper 는 trigger 에서 제외.
+    for (fp, rel, content, ev, bodies_to_scan, urls_in_handler) in pass1:
+        handler = ev["handler"]
+        if handler and handler in helpers:
+            continue
+        if not urls_in_handler:
+            continue
+        event_type = ev["event"]
+        label = ev["label"]
+        offset = ev["source_offset"]
+        jsx = _locate_enclosing_jsx(content, offset)
+        validation_props = extract_validation_props(jsx)
+        ctx = {
+            "file": rel,
+            "handler": handler or f"<inline:{event_type}>",
+            "event": event_type,
+            "label": label,
+            "body": ev["body"] or (bodies_to_scan[0] if bodies_to_scan else ""),
+            "jsx_slice": jsx,
+            "validation_props": validation_props,
+        }
+        for u in urls_in_handler:
+            out.setdefault(u, []).append(ctx)
 
     return out
 
