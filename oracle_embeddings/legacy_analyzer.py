@@ -1750,6 +1750,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    extract_screen_layout: bool = False,
                    render_screenshots: bool = False,
                    screen_max: int = 200,
+                   closure_llm: bool = False,
+                   closure_max_depth: int = 3,
+                   closure_token_budget: int = 12000,
+                   closure_popup_augment: bool = False,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2346,6 +2350,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         if api_idx:
             handlers_by_url = collect_handler_contexts(
                 frontend_dir, api_idx, patterns or {},
+                closure_popup_augment=closure_popup_augment,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             print(f"  frontend biz: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs collected")
@@ -2400,6 +2407,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         if api_idx:
             handlers_by_url = collect_handler_contexts(
                 frontend_dir, api_idx, patterns or {},
+                closure_popup_augment=closure_popup_augment,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             print(f"  screen layout: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs")
@@ -2408,6 +2418,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 max_screens=screen_max,
                 use_cache=False,   # 사용자 명시: 항상 새로 분석
                 config=biz_config or {},
+                closure_llm=closure_llm,
+                closure_max_depth=closure_max_depth,
+                closure_token_budget=closure_token_budget,
             )
             if screen_layout_map:
                 from datetime import datetime as _dt
@@ -2557,6 +2570,10 @@ def analyze_legacy_batch(backends_root: str,
                         extract_screen_layout: bool = False,
                         render_screenshots: bool = False,
                         screen_max: int = 200,
+                        closure_llm: bool = False,
+                        closure_max_depth: int = 3,
+                        closure_token_budget: int = 12000,
+                        closure_popup_augment: bool = False,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2683,6 +2700,10 @@ def analyze_legacy_batch(backends_root: str,
             extract_screen_layout=extract_screen_layout,
             render_screenshots=render_screenshots,
             screen_max=screen_max,
+            closure_llm=closure_llm,
+            closure_max_depth=closure_max_depth,
+            closure_token_budget=closure_token_budget,
+            closure_popup_augment=closure_popup_augment,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream

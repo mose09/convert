@@ -29,6 +29,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 from typing import Iterable, Iterator, Optional
 
@@ -378,8 +379,15 @@ def load_alias_map(repo_root: str | os.PathLike) -> AliasMap:
     """
     tsconfig.json / jsconfig.json 의 baseUrl + paths 를 읽어 AliasMap 생성.
     JSON5 트레일링 콤마/주석은 단순 strip 으로 보정 (대부분의 실전 프로젝트 호환).
+
+    같은 repo 에 대해 build_closure 가 화면/팝업마다 호출되므로 결과를 캐시.
     """
-    repo = Path(repo_root).resolve()
+    return _load_alias_map_cached(str(Path(repo_root).resolve()))
+
+
+@lru_cache(maxsize=8)
+def _load_alias_map_cached(repo_root_resolved: str) -> AliasMap:
+    repo = Path(repo_root_resolved)
     base_url = repo
     paths: dict[str, list[Path]] = {}
 

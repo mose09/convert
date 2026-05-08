@@ -1647,7 +1647,12 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
         print("Warning: backend 호출 0건 — handler 매핑 / screen 분석 모두 skip.")
         return 0
 
-    handlers_by_url = collect_handler_contexts(frontend_dir, api_idx, patterns or {})
+    handlers_by_url = collect_handler_contexts(
+        frontend_dir, api_idx, patterns or {},
+        closure_popup_augment=bool(getattr(args, "closure_popup_augment", False)),
+        closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
+        closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
+    )
     print(f"  handler contexts: {len(handlers_by_url)} URLs collected")
 
     triggers = extract_button_triggers(frontend_dir, api_idx, patterns=patterns)
@@ -1660,6 +1665,9 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
             max_screens=int(getattr(args, "screen_max", 200)),
             use_cache=False,   # 사용자 명시: 항상 새로 분석
             config={},
+            closure_llm=bool(getattr(args, "closure_llm", False)),
+            closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
+            closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
         )
         if layouts:
             from datetime import datetime as _dt
@@ -1875,6 +1883,10 @@ def cmd_analyze_legacy(args):
             extract_screen_layout=getattr(args, "extract_screen_layout", False),
             render_screenshots=getattr(args, "render_screenshots", False),
             screen_max=getattr(args, "screen_max", 200),
+            closure_llm=getattr(args, "closure_llm", False),
+            closure_max_depth=getattr(args, "closure_max_depth", 3),
+            closure_token_budget=getattr(args, "closure_token_budget", 12000),
+            closure_popup_augment=getattr(args, "closure_popup_augment", False),
             output_dir=_screens_output_root(output_dir),
         )
     else:
@@ -1902,6 +1914,10 @@ def cmd_analyze_legacy(args):
             extract_screen_layout=getattr(args, "extract_screen_layout", False),
             render_screenshots=getattr(args, "render_screenshots", False),
             screen_max=getattr(args, "screen_max", 200),
+            closure_llm=getattr(args, "closure_llm", False),
+            closure_max_depth=getattr(args, "closure_max_depth", 3),
+            closure_token_budget=getattr(args, "closure_token_budget", 12000),
+            closure_popup_augment=getattr(args, "closure_popup_augment", False),
             output_dir=_screens_output_root(output_dir),
         )
 
@@ -2202,6 +2218,22 @@ def main():
                                 "Playwright 셋업 가능할 때만 사용. 현재는 안내 메시지만.")
     al_parser.add_argument("--screen-max", type=int, default=200,
                            help="screen layout 최대 분석 화면 수 (default 200)")
+    al_parser.add_argument("--closure-llm", action="store_true",
+                           help="(옵트인) Phase C LLM input 을 raw JSX + smart_slice "
+                                "대신 AST closure markdown (import 그래프 BFS + "
+                                "popup 3 신호) 으로 보강. tree-sitter wheel 필요 "
+                                "(requirements.txt 참고). 미설치 시 자동 fallback.")
+    al_parser.add_argument("--closure-max-depth", type=int, default=3,
+                           help="closure BFS 깊이 (default 3). --closure-llm 일 때만 사용.")
+    al_parser.add_argument("--closure-token-budget", type=int, default=12000,
+                           help="closure 직렬화 토큰 상한 (default 12000). "
+                                "--closure-llm 일 때만 사용.")
+    al_parser.add_argument("--closure-popup-augment", action="store_true",
+                           help="(옵트인) AST closure 의 popup_refs (이름 패턴 / "
+                                "hook / open API 3 신호) 으로 popup_set 보강. "
+                                "메인의 ``<Modal>`` 안 import 만 보는 기존 휴리스틱이 "
+                                "놓친 popup 잡음. tree-sitter wheel 필요. "
+                                "미설치 시 자동 skip.")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
