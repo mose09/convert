@@ -173,7 +173,7 @@ React 코드 텍스트만 보고 추출.
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
   "tabs": ["탭1", "탭2", ...],
-  "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\n중요: 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. 노드명 한글 OK. 코드만 (```mermaid 펜스 X).",
+  "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\nMermaid v11 호환 규칙: (a) 라벨에 ``()`` / ``[]`` / ``/`` / ``:`` 등 특수문자 들어가면 반드시 double quote 로 감싸기 — 예: Save[\"저장(POST)\"] / Cond{\"조회 N건\"}. (b) 노드 ID 는 영문/숫자/언더스코어만, 예약어 ``end`` / ``class`` / ``subgraph`` / ``style`` 사용 금지. (c) 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. (d) ``%%{init}%%`` 테마 directive 넣지 마. (e) 코드만 (```mermaid 펜스 X).",
   "summary": "1-2 줄 화면 설명"
 }
 """
@@ -608,7 +608,31 @@ _HTML_TEMPLATE = """<!doctype html>
   .empty {{ color: #aaa; font-style: italic; }}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
-<script>if (window.mermaid) {{ mermaid.initialize({{ startOnLoad: true }}); }}</script>
+<script>
+// Mermaid 11.x 는 strict — LLM 생성 코드가 parse 실패하면 raw 텍스트 노출.
+if (window.mermaid) {{
+  mermaid.initialize({{ startOnLoad: false, securityLevel: 'loose' }});
+  window.addEventListener('DOMContentLoaded', async function () {{
+    var blocks = document.querySelectorAll('pre.mermaid');
+    for (var i = 0; i < blocks.length; i++) {{
+      var el = blocks[i];
+      var src = el.textContent;
+      try {{
+        var id = 'm' + i + '_' + Math.random().toString(36).slice(2);
+        var out = await mermaid.render(id, src);
+        el.innerHTML = out.svg;
+      }} catch (e) {{
+        el.innerHTML =
+          '<div style="color:#c0392b;font-weight:600;margin-bottom:6px;">' +
+          'Mermaid parse error (v' + (mermaid.version ? mermaid.version() : '?') +
+          '): ' + (e && e.message ? e.message : e) + '</div>' +
+          '<pre style="background:#fff;color:#333;border:1px dashed #c0392b;padding:8px;">' +
+          src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+      }}
+    }}
+  }});
+}}
+</script>
 </head><body>
 <header>{title_html}</header>
 <main>
@@ -778,21 +802,86 @@ def _render_events(events: List[ScreenEvent]) -> str:
             f"<tbody>{''.join(rows)}</tbody></table></section>")
 
 
-def _render_flowchart(mermaid_code: str) -> str:
-    """사용자 액션 흐름 — Mermaid flowchart. <pre class='mermaid'> 안에
-    raw 코드. mermaid.js 가 head 에 로드되어 있으면 자동 렌더.
-    LLM 이 ``flowchart_mermaid`` 빈 값 반환하면 섹션 자체 미생성.
+_MERMAID_DIRECTIVE_RE = re.compile(r"%%\{.*?\}%%", re.DOTALL)
+# Shape 별 매칭. 안 brackets 허용 (단 같은 종류 brackets nesting 만 차단).
+# [...] 사각 / {...} 마름모 / {{...}} 육각.  Round/circle (...) / ((...)) 는
+# Mermaid 가 inner `()` 자체를 reject 하므로 sanitize 불가 — 그대로 둠.
+_MERMAID_SHAPE_RES = [
+    (re.compile(r"(\b[A-Za-z_][\w\-]*)\{\{([^{}\n]+?)\}\}"), "{{", "}}"),
+    (re.compile(r"(\b[A-Za-z_][\w\-]*)\[([^\[\]\n]+?)\]"), "[", "]"),
+    (re.compile(r"(\b[A-Za-z_][\w\-]*)\{([^{}\n]+?)\}"), "{", "}"),
+]
+# Mermaid 11.x reserved keywords — 노드 ID 로 쓰면 parse 실패.
+_MERMAID_RESERVED_IDS = {"end", "class", "subgraph", "style", "default", "linkStyle"}
+
+
+def _sanitize_mermaid_flowchart(code: str) -> str:
+    """LLM 이 생성한 Mermaid 코드를 11.x parser 친화적으로 정리.
+
+    - ```mermaid 펜스 제거
+    - %%{init: ...}%% 테마 directive 제거 (LLM 이 잘못 inject 하는 경우 방어)
+    - 라벨 안 특수문자 (``()`` / ``/`` / ``:`` 등) 가 있으면 double-quote 로 감쌈
+    - 예약어 노드 ID 충돌 회피 (``end`` → ``endX`` 등)
+    - flowchart directive 누락 시 ``flowchart TB`` 자동 prepend
     """
-    code = (mermaid_code or "").strip()
     if not code:
         return ""
-    # ```mermaid 펜스 들어있으면 제거 (LLM 이 가이드 무시한 경우 방어)
-    if code.startswith("```"):
-        code = code.strip("`")
-        first_nl = code.find("\n")
-        if first_nl > 0 and "mermaid" in code[:first_nl].lower():
-            code = code[first_nl + 1:]
-        code = code.rstrip("` \n")
+    s = code.strip()
+    if s.startswith("```"):
+        s = s.strip("`")
+        first_nl = s.find("\n")
+        if first_nl > 0 and "mermaid" in s[:first_nl].lower():
+            s = s[first_nl + 1:]
+        s = s.rstrip("` \n")
+    s = _MERMAID_DIRECTIVE_RE.sub("", s)
+
+    risky_chars = set("()[]{}:;,/<>")
+
+    def _make_wrap(open_b: str, close_b: str):
+        def _wrap(m: re.Match) -> str:
+            node, label = m.group(1), m.group(2)
+            # 이미 quoted 면 skip (idempotent)
+            stripped = label.strip()
+            if stripped.startswith('"') and stripped.endswith('"'):
+                return m.group(0)
+            if any(c in label for c in risky_chars):
+                safe = label.replace('"', "'")
+                return f'{node}{open_b}"{safe}"{close_b}'
+            return m.group(0)
+        return _wrap
+
+    for pat, open_b, close_b in _MERMAID_SHAPE_RES:
+        s = pat.sub(_make_wrap(open_b, close_b), s)
+
+    # 예약어 노드 ID 치환 — 라벨 시작 / 화살표 양옆 / 줄끝 직전 모두 cover.
+    def _rename_reserved(text: str) -> str:
+        for kw in _MERMAID_RESERVED_IDS:
+            text = re.sub(
+                rf"(?<![\w]){kw}(?=\s*[\[\(\{{]|\s*-->|\s*--|\s*$)",
+                f"{kw}_", text, flags=re.MULTILINE,
+            )
+        return text
+    s = _rename_reserved(s)
+
+    # flowchart 헤더 보장
+    lines = [ln for ln in s.splitlines() if ln.strip()]
+    if not lines:
+        return ""
+    first = lines[0].strip().lower()
+    if not (first.startswith("flowchart") or first.startswith("graph")):
+        lines.insert(0, "flowchart TB")
+    return "\n".join(lines)
+
+
+def _render_flowchart(mermaid_code: str) -> str:
+    """사용자 액션 흐름 — Mermaid flowchart. <pre class='mermaid'> 안에
+    sanitize 한 코드. 페이지 JS 가 mermaid.render() 로 그리며 parse 실패 시
+    raw 코드 + 에러를 그대로 노출 (디버깅용).
+    LLM 이 ``flowchart_mermaid`` 빈 값 반환하면 섹션 자체 미생성.
+    """
+    code = _sanitize_mermaid_flowchart(mermaid_code or "")
+    if not code:
+        return ""
     return ("<section><h2>화면 흐름 (사용자 액션)</h2>"
             f"<pre class='mermaid'>{_esc(code)}</pre></section>")
 
