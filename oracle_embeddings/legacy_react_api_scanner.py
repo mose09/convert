@@ -780,17 +780,24 @@ def _scan_body_with_chain(body: str,
                 if handler_name in seen_names:
                     continue
                 seen_names.add(handler_name)
-                if via_props is not None:
-                    via_props.add(handler_name)
+                # prop chain 이 실제 URL 을 기여한 경우에만 via_props 에 mark.
+                # ``this.props.PopoverClose()`` / ``this.props.handleClose()``
+                # 처럼 UI cleanup 만 하고 URL 무관한 prop call 이 ``parent.X``
+                # 이벤트 마커에 노이즈로 끼는 케이스 방지.
+                local_urls: set[str] = set()
                 for fp, sub_body in fn_index.get(handler_name) or []:
                     key = (fp, handler_name)
                     if key in seen:
                         continue
                     seen.add(key)
-                    urls |= _scan_body_with_chain(
+                    local_urls |= _scan_body_with_chain(
                         sub_body, fn_index, call_re, const_map, strip_patterns,
                         depth - 1, seen, prop_index, via_props, current_file,
                     )
+                if local_urls:
+                    if via_props is not None:
+                        via_props.add(handler_name)
+                    urls |= local_urls
     return urls
 
 
