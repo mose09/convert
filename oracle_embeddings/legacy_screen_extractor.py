@@ -609,26 +609,46 @@ _HTML_TEMPLATE = """<!doctype html>
 </style>
 <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
 <script>
-// Mermaid 11.x 는 strict — LLM 생성 코드가 parse 실패하면 raw 텍스트 노출.
+// Mermaid 11.x 는 strict + parse 실패 시 throw 대신 에러 SVG 를 그려 반환.
+// → suppressErrorRendering: true 로 throw 강제 + parse() 로 사전 검증 → catch
+// 가 raw 텍스트 + 에러 메시지를 노출 (사용자 환경 단방향이라 디버깅 단서 필수).
 if (window.mermaid) {{
-  mermaid.initialize({{ startOnLoad: false, securityLevel: 'loose' }});
+  mermaid.initialize({{
+    startOnLoad: false,
+    securityLevel: 'loose',
+    suppressErrorRendering: true
+  }});
   window.addEventListener('DOMContentLoaded', async function () {{
     var blocks = document.querySelectorAll('pre.mermaid');
+    var ver = (typeof mermaid.version === 'function')
+              ? mermaid.version() : (mermaid.version || '?');
     for (var i = 0; i < blocks.length; i++) {{
       var el = blocks[i];
       var src = el.textContent;
+      var lastErr = null;
       try {{
+        await mermaid.parse(src);   // parse 가 명확한 syntax error throw
         var id = 'm' + i + '_' + Math.random().toString(36).slice(2);
         var out = await mermaid.render(id, src);
+        // render 가 어쩌다 success 하지만 SVG 안에 에러를 그린 케이스 방어 —
+        // SVG 가 'aria-roledescription="error"' 또는 'mermaid-error' 클래스
+        // 포함하면 실패로 간주.
+        if (/aria-roledescription="error"|class="error-/.test(out.svg)) {{
+          throw new Error('mermaid render returned error SVG');
+        }}
         el.innerHTML = out.svg;
+        continue;
       }} catch (e) {{
-        el.innerHTML =
-          '<div style="color:#c0392b;font-weight:600;margin-bottom:6px;">' +
-          'Mermaid parse error (v' + (mermaid.version ? mermaid.version() : '?') +
-          '): ' + (e && e.message ? e.message : e) + '</div>' +
-          '<pre style="background:#fff;color:#333;border:1px dashed #c0392b;padding:8px;">' +
-          src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</pre>';
+        lastErr = e;
       }}
+      var msg = (lastErr && (lastErr.message || lastErr.str)) || String(lastErr);
+      el.innerHTML =
+        '<div style="color:#c0392b;font-weight:600;margin-bottom:6px;">' +
+        'Mermaid parse error (v' + ver + '): ' + msg + '</div>' +
+        '<pre style="background:#fff;color:#333;border:1px dashed #c0392b;' +
+        'padding:8px;white-space:pre-wrap;font-family:Consolas,monospace;">' +
+        src.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') +
+        '</pre>';
     }}
   }});
 }}
