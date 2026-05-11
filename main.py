@@ -1019,7 +1019,8 @@ def cmd_screen_converter(args):
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
     )
-    print(f"  PPTX: {stats['pptx']}")
+    print(f"  PPTX:    {stats['pptx']}")
+    print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
 
 def cmd_migrate_sql(args):
