@@ -130,6 +130,122 @@ def _list_images(folder: Path) -> list[Path]:
                   if p.is_file() and p.suffix.lower() in _IMG_EXTS)
 
 
+# ── 스타일 프로파일 ──────────────────────────────────────────────────
+
+# 템플릿 미제공 또는 추출 실패 시 사용되는 기본값 — 기존 하드코드와 동일.
+_DEFAULT_STYLE: dict[str, str] = {
+    "primary_color": "#1F3A5F",          # 헤더/주요 강조
+    "title_color": "#1F3A5F",
+    "section_label_color": "#444444",
+    "panel_bg": "#F5F7FA",
+    "panel_border": "#CFD6E0",
+    "input_bg": "#FFFFFF",
+    "input_border": "#A0A8B4",
+    "field_label_color": "#333333",
+    "input_placeholder_color": "#999999",
+    "table_header_bg": "#1F3A5F",
+    "table_header_text": "#FFFFFF",
+    "table_row_bg": "#FFFFFF",
+    "button_bg": "#1F3A5F",
+    "button_text": "#FFFFFF",
+    "button_shape": "rounded",           # rounded | square
+    "font_family": "맑은 고딕",
+    "notes_color": "#555555",
+}
+
+_STYLE_SYSTEM_PROMPT = (
+    "당신은 UI 디자인 스타일 추출기입니다. 첨부된 디자인 템플릿 캡처 "
+    "이미지들을 보고 그 시각 스타일 (색·폰트·버튼 모양) 을 JSON 으로만 "
+    "출력합니다. 설명/마크다운/코멘트 없이 JSON 객체 하나만."
+)
+
+_STYLE_PROMPT = """첨부된 템플릿 캡처들의 시각 스타일을 다음 스키마로 추출.
+모든 화면에 일관 적용할 거니까 가장 빈번한/대표적인 값을 선택.
+
+스키마 (모든 색은 "#RRGGBB" 6자리 hex):
+{
+  "primary_color":          "#RRGGBB",   // 강조 (헤더/주요 버튼)
+  "title_color":            "#RRGGBB",   // 페이지 타이틀 글자
+  "section_label_color":    "#RRGGBB",   // "검색 조건" 등 섹션 라벨
+  "panel_bg":               "#RRGGBB",   // 검색/입력 패널 배경
+  "panel_border":           "#RRGGBB",   // 패널 보더
+  "input_bg":               "#RRGGBB",   // 입력 박스 배경
+  "input_border":           "#RRGGBB",   // 입력 박스 보더
+  "field_label_color":      "#RRGGBB",   // 필드 라벨 글자
+  "input_placeholder_color":"#RRGGBB",   // placeholder/타입 힌트 글자
+  "table_header_bg":        "#RRGGBB",   // 표 헤더 배경
+  "table_header_text":      "#RRGGBB",   // 표 헤더 글자
+  "table_row_bg":           "#RRGGBB",   // 표 본문 행 배경
+  "button_bg":              "#RRGGBB",   // 버튼 배경
+  "button_text":            "#RRGGBB",   // 버튼 글자
+  "button_shape":           "rounded|square",  // 버튼 모서리
+  "font_family":            "<폰트명>",  // 본문 폰트 (한글 화면이면 맑은 고딕/나눔고딕 등)
+  "notes_color":            "#RRGGBB"    // 노트/캡션 글자
+}
+
+규칙:
+- 정확한 hex 색을 자신할 수 없으면 가장 가까운 추정치라도 출력.
+- 모르는 키는 생략 가능 (생략된 키는 기본값 사용).
+- JSON 객체 하나만, 설명 없이."""
+
+
+def _parse_hex_color(s, default_rgb: tuple[int, int, int]):
+    """`#RRGGBB` → RGBColor. 파싱 실패 시 default_rgb 로 fallback."""
+    from pptx.dml.color import RGBColor
+    if isinstance(s, str):
+        cleaned = s.strip().lstrip("#")
+        if len(cleaned) == 6:
+            try:
+                r = int(cleaned[0:2], 16)
+                g = int(cleaned[2:4], 16)
+                b = int(cleaned[4:6], 16)
+                return RGBColor(r, g, b)
+            except ValueError:
+                pass
+    return RGBColor(*default_rgb)
+
+
+def _hex_to_rgb_tuple(s: str) -> tuple[int, int, int]:
+    """Default RGB 추출용 헬퍼 (테스트용)."""
+    cleaned = s.lstrip("#")
+    return (int(cleaned[0:2], 16), int(cleaned[2:4], 16), int(cleaned[4:6], 16))
+
+
+def _resolve_style(style: dict | None) -> dict:
+    """사용자 style 과 기본값 병합. 빈/None 이면 전부 기본값."""
+    merged = dict(_DEFAULT_STYLE)
+    if isinstance(style, dict):
+        for k, v in style.items():
+            if v is None:
+                continue
+            if isinstance(v, str) and not v.strip():
+                continue
+            merged[k] = v
+    return merged
+
+
+def extract_style_profile(template_images: list[Path], config: dict) -> dict:
+    """템플릿 캡처들로부터 1회 VLM 호출 → style dict. 실패 시 빈 dict.
+
+    convert() 시작 시 한 번만 호출. 화면별 추출과 분리되어 모든 슬라이드에
+    일관 적용된다.
+    """
+    if not template_images:
+        return {}
+    print("  스타일 프로파일 추출 (템플릿 1회 분석)...")
+    result = _call_llm(
+        prompt=_STYLE_PROMPT,
+        config=config,
+        label="screen_style_profile",
+        system_prompt=_STYLE_SYSTEM_PROMPT,
+        image_paths=[str(t) for t in template_images],
+    )
+    if not isinstance(result, dict):
+        logger.warning("style 응답이 dict 가 아님 — 기본 스타일 사용")
+        return {}
+    return result
+
+
 # ── 소스 매칭 ────────────────────────────────────────────────────────
 
 _SOURCE_EXTS = (".tsx", ".jsx", ".ts", ".js", ".vue")
@@ -370,9 +486,10 @@ def _detect_slide_aspect_inches(template_image: Path | None) -> tuple[float, flo
         return (13.333, 7.5)
 
 
-def _draw_title(slide, text: str, prs, region: dict | None = None) -> None:
+def _draw_title(slide, text: str, prs, region: dict | None = None,
+                style: dict | None = None) -> None:
     from pptx.util import Cm, Pt
-    from pptx.dml.color import RGBColor
+    style = _resolve_style(style)
     sw, _ = _slide_dims_cm(prs)
     default = (0.8, 0.6, sw - 1.6, 1.2)
     x, y, w, h = _resolve_bbox(region, default, prs)
@@ -384,46 +501,54 @@ def _draw_title(slide, text: str, prs, region: dict | None = None) -> None:
     r = p.runs[0]
     r.font.size = Pt(14)
     r.font.bold = True
-    r.font.name = "맑은 고딕"
-    r.font.color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
+    r.font.name = style["font_family"]
+    r.font.color.rgb = _parse_hex_color(style.get("title_color"), (0x1F, 0x3A, 0x5F))
 
 
 def _draw_section_label(slide, text: str, x_cm: float, y_cm: float,
-                        w_cm: float = 6.0) -> None:
+                        style: dict, w_cm: float = 6.0) -> None:
     from pptx.util import Cm, Pt
-    from pptx.dml.color import RGBColor
     tb = slide.shapes.add_textbox(Cm(x_cm), Cm(y_cm), Cm(w_cm), Cm(0.6))
     p = tb.text_frame.paragraphs[0]
     p.text = text
     r = p.runs[0]
     r.font.size = Pt(9)
     r.font.bold = True
-    r.font.name = "맑은 고딕"
-    r.font.color.rgb = RGBColor(0x44, 0x44, 0x44)
+    r.font.name = style["font_family"]
+    r.font.color.rgb = _parse_hex_color(style.get("section_label_color"),
+                                        (0x44, 0x44, 0x44))
 
 
 def _draw_search(slide, fields: list[dict], prs,
                  region: dict | None = None,
-                 fallback_top_cm: float = 2.2) -> float:
+                 fallback_top_cm: float = 2.2,
+                 style: dict | None = None) -> float:
     """검색 패널. region 있으면 bbox 사용, 없으면 fallback_top_cm 기준 스택.
     반환: 다음 섹션이 사용할 누적 높이 (cm). region 사용 시 0.0."""
     from pptx.util import Cm, Pt
     from pptx.enum.shapes import MSO_SHAPE
-    from pptx.dml.color import RGBColor
 
     if not fields:
         return 0.0
 
+    style = _resolve_style(style)
     sw, _ = _slide_dims_cm(prs)
+    panel_bg = _parse_hex_color(style.get("panel_bg"), (0xF5, 0xF7, 0xFA))
+    panel_border = _parse_hex_color(style.get("panel_border"), (0xCF, 0xD6, 0xE0))
+    input_bg = _parse_hex_color(style.get("input_bg"), (0xFF, 0xFF, 0xFF))
+    input_border = _parse_hex_color(style.get("input_border"), (0xA0, 0xA8, 0xB4))
+    field_label_color = _parse_hex_color(style.get("field_label_color"),
+                                         (0x33, 0x33, 0x33))
+    input_placeholder_color = _parse_hex_color(
+        style.get("input_placeholder_color"), (0x99, 0x99, 0x99))
+    font_name = style["font_family"]
 
     if region:
         cols = max(1, int(region.get("cols") or 3))
-        # bbox 가 패널 자체 (label 은 패널 위 약 0.7cm 자리 차지)
         default = (0.8, fallback_top_cm + 0.7, sw - 1.6, 2.0)
         panel_x, panel_y, panel_w, panel_h = _resolve_bbox(region, default, prs)
-        # label 은 패널 위 0.7cm 자리에
         label_y = max(0.0, panel_y - 0.7)
-        _draw_section_label(slide, "검색 조건", panel_x, label_y)
+        _draw_section_label(slide, "검색 조건", panel_x, label_y, style)
         advance = 0.0
     else:
         cols = 3
@@ -432,7 +557,7 @@ def _draw_search(slide, fields: list[dict], prs,
         panel_w = sw - 1.6
         cell_h = 1.0
         panel_h = rows * cell_h + 0.3
-        _draw_section_label(slide, "검색 조건", panel_x, fallback_top_cm)
+        _draw_section_label(slide, "검색 조건", panel_x, fallback_top_cm, style)
         panel_y = fallback_top_cm + 0.7
         advance = panel_h + 0.7
 
@@ -444,8 +569,8 @@ def _draw_search(slide, fields: list[dict], prs,
                                 Cm(panel_x), Cm(panel_y),
                                 Cm(panel_w), Cm(panel_h))
     bg.fill.solid()
-    bg.fill.fore_color.rgb = RGBColor(0xF5, 0xF7, 0xFA)
-    bg.line.color.rgb = RGBColor(0xCF, 0xD6, 0xE0)
+    bg.fill.fore_color.rgb = panel_bg
+    bg.line.color.rgb = panel_border
     bg.line.width = Pt(0.5)
     if bg.has_text_frame:
         bg.text_frame.text = ""
@@ -455,23 +580,21 @@ def _draw_search(slide, fields: list[dict], prs,
         x = panel_x + c_idx * cell_w + 0.2
         y = panel_y + 0.15 + r_idx * cell_h
         usable_w = cell_w - 0.4
-        # label
         lb = slide.shapes.add_textbox(Cm(x), Cm(y),
                                       Cm(usable_w * 0.4), Cm(0.6))
         lp = lb.text_frame.paragraphs[0]
         lp.text = (f.get("label") or "").strip() or "(라벨)"
         lp.runs[0].font.size = Pt(8)
-        lp.runs[0].font.name = "맑은 고딕"
-        lp.runs[0].font.color.rgb = RGBColor(0x33, 0x33, 0x33)
-        # input box
+        lp.runs[0].font.name = font_name
+        lp.runs[0].font.color.rgb = field_label_color
         ib = slide.shapes.add_shape(
             MSO_SHAPE.RECTANGLE,
             Cm(x + usable_w * 0.4 + 0.1), Cm(y + 0.05),
             Cm(usable_w * 0.55), Cm(min(0.55, cell_h - 0.3)),
         )
         ib.fill.solid()
-        ib.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
-        ib.line.color.rgb = RGBColor(0xA0, 0xA8, 0xB4)
+        ib.fill.fore_color.rgb = input_bg
+        ib.line.color.rgb = input_border
         ib.line.width = Pt(0.5)
         tf = ib.text_frame
         tf.margin_left = Cm(0.1)
@@ -479,36 +602,42 @@ def _draw_search(slide, fields: list[dict], prs,
         tp = tf.paragraphs[0]
         tp.text = f"<{(f.get('type') or 'text').strip()}>"
         tp.runs[0].font.size = Pt(7)
-        tp.runs[0].font.name = "맑은 고딕"
-        tp.runs[0].font.color.rgb = RGBColor(0x99, 0x99, 0x99)
+        tp.runs[0].font.name = font_name
+        tp.runs[0].font.color.rgb = input_placeholder_color
 
     return advance
 
 
 def _draw_table(slide, columns: list[str], prs,
                 region: dict | None = None,
-                fallback_top_cm: float = 0.0) -> float:
+                fallback_top_cm: float = 0.0,
+                style: dict | None = None) -> float:
     """표 헤더 + 빈 행 3줄. region 있으면 bbox 사용, 없으면 fallback 스택."""
     from pptx.util import Cm, Pt
-    from pptx.dml.color import RGBColor
 
     if not columns:
         return 0.0
 
+    style = _resolve_style(style)
     sw, _ = _slide_dims_cm(prs)
+    header_bg = _parse_hex_color(style.get("table_header_bg"), (0x1F, 0x3A, 0x5F))
+    header_text = _parse_hex_color(style.get("table_header_text"),
+                                   (0xFF, 0xFF, 0xFF))
+    row_bg = _parse_hex_color(style.get("table_row_bg"), (0xFF, 0xFF, 0xFF))
+    font_name = style["font_family"]
 
     if region:
         default = (0.8, fallback_top_cm + 0.7, sw - 1.6, 5.0)
         tbl_x, tbl_y, tbl_w, tbl_h = _resolve_bbox(region, default, prs)
         label_y = max(0.0, tbl_y - 0.7)
-        _draw_section_label(slide, "조회 결과", tbl_x, label_y)
+        _draw_section_label(slide, "조회 결과", tbl_x, label_y, style)
         advance = 0.0
     else:
         n_rows_default = 4
         tbl_x = 0.8
         tbl_w = sw - 1.6
         tbl_h = 0.7 * n_rows_default
-        _draw_section_label(slide, "조회 결과", tbl_x, fallback_top_cm)
+        _draw_section_label(slide, "조회 결과", tbl_x, fallback_top_cm, style)
         tbl_y = fallback_top_cm + 0.7
         advance = tbl_h + 0.7
 
@@ -524,35 +653,42 @@ def _draw_table(slide, columns: list[str], prs,
         cell = table.cell(0, ci)
         cell.text = str(col)
         cell.fill.solid()
-        cell.fill.fore_color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
+        cell.fill.fore_color.rgb = header_bg
         for p in cell.text_frame.paragraphs:
             for r in p.runs:
                 r.font.size = Pt(9)
                 r.font.bold = True
-                r.font.name = "맑은 고딕"
-                r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+                r.font.name = font_name
+                r.font.color.rgb = header_text
 
     for ri in range(1, n_rows):
         for ci in range(n_cols):
             cell = table.cell(ri, ci)
             cell.text = ""
             cell.fill.solid()
-            cell.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+            cell.fill.fore_color.rgb = row_bg
 
     return advance
 
 
 def _draw_buttons(slide, buttons: list[str], prs,
                   region: dict | None = None,
-                  fallback_top_cm: float = 0.0) -> float:
+                  fallback_top_cm: float = 0.0,
+                  style: dict | None = None) -> float:
     from pptx.util import Cm, Pt
     from pptx.enum.shapes import MSO_SHAPE
-    from pptx.dml.color import RGBColor
 
     if not buttons:
         return 0.0
 
+    style = _resolve_style(style)
     sw, _ = _slide_dims_cm(prs)
+    btn_bg = _parse_hex_color(style.get("button_bg"), (0x1F, 0x3A, 0x5F))
+    btn_text = _parse_hex_color(style.get("button_text"), (0xFF, 0xFF, 0xFF))
+    font_name = style["font_family"]
+    shape_kind = (style.get("button_shape") or "rounded").strip().lower()
+    btn_shape_enum = (MSO_SHAPE.RECTANGLE if shape_kind == "square"
+                      else MSO_SHAPE.ROUNDED_RECTANGLE)
 
     if region:
         default = (sw - 8.0, fallback_top_cm, 7.5, 0.8)
@@ -569,9 +705,8 @@ def _draw_buttons(slide, buttons: list[str], prs,
 
     n = len(buttons)
     gap = 0.25
-    # button width = use bar_h * 3 (가로:세로 ≈ 3:1) but clamp to bar_w
     btn_w = min(2.4, (bar_w - (n - 1) * gap) / max(n, 1))
-    btn_w = max(btn_w, 1.5)  # 최소 가로
+    btn_w = max(btn_w, 1.5)
     btn_h = min(bar_h, 0.9)
     total_w = n * btn_w + (n - 1) * gap
 
@@ -587,12 +722,12 @@ def _draw_buttons(slide, buttons: list[str], prs,
     for i, label in enumerate(buttons):
         x = x0 + i * (btn_w + gap)
         shape = slide.shapes.add_shape(
-            MSO_SHAPE.ROUNDED_RECTANGLE,
+            btn_shape_enum,
             Cm(x), Cm(y0), Cm(btn_w), Cm(btn_h),
         )
         shape.fill.solid()
-        shape.fill.fore_color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
-        shape.line.color.rgb = RGBColor(0x1F, 0x3A, 0x5F)
+        shape.fill.fore_color.rgb = btn_bg
+        shape.line.color.rgb = btn_bg
         tf = shape.text_frame
         p = tf.paragraphs[0]
         from pptx.enum.text import PP_ALIGN
@@ -601,19 +736,20 @@ def _draw_buttons(slide, buttons: list[str], prs,
         r = p.runs[0]
         r.font.size = Pt(9)
         r.font.bold = True
-        r.font.name = "맑은 고딕"
-        r.font.color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        r.font.name = font_name
+        r.font.color.rgb = btn_text
 
     return advance
 
 
 def _draw_notes(slide, text: str, prs,
                 region: dict | None = None,
-                fallback_top_cm: float = 0.0) -> None:
+                fallback_top_cm: float = 0.0,
+                style: dict | None = None) -> None:
     if not text:
         return
     from pptx.util import Cm, Pt
-    from pptx.dml.color import RGBColor
+    style = _resolve_style(style)
     sw, _ = _slide_dims_cm(prs)
     default = (0.8, fallback_top_cm, sw - 1.6, 1.5)
     x, y, w, h = _resolve_bbox(region, default, prs)
@@ -625,12 +761,14 @@ def _draw_notes(slide, text: str, prs,
     r = p.runs[0]
     r.font.size = Pt(7)
     r.font.italic = True
-    r.font.name = "맑은 고딕"
-    r.font.color.rgb = RGBColor(0x55, 0x55, 0x55)
+    r.font.name = style["font_family"]
+    r.font.color.rgb = _parse_hex_color(style.get("notes_color"),
+                                        (0x55, 0x55, 0x55))
 
 
 def render_pptx(layouts: list[tuple[str, dict]], output_path: Path,
-                aspect_hint_image: Path | None = None) -> None:
+                aspect_hint_image: Path | None = None,
+                style: dict | None = None) -> None:
     """layout 리스트 → PPTX. 슬라이드당 1화면.
 
     aspect_hint_image 가 주어지면 그 이미지의 가로:세로 비율로 슬라이드
@@ -651,33 +789,36 @@ def render_pptx(layouts: list[tuple[str, dict]], output_path: Path,
     prs.slide_height = Inches(h_in)
     blank_layout = prs.slide_layouts[6]
 
+    style = _resolve_style(style)
+
     for screen_name, layout in layouts:
         slide = prs.slides.add_slide(blank_layout)
         regions = layout.get("regions") or {}
 
         title = (layout.get("page_title") or "").strip() or screen_name
-        _draw_title(slide, title, prs, region=regions.get("title"))
+        _draw_title(slide, title, prs, region=regions.get("title"),
+                    style=style)
 
         # regions 가 있으면 모두 절대 좌표, 없으면 cursor 스택
         if regions:
             _draw_search(slide, layout.get("search_fields") or [], prs,
-                         region=regions.get("search_panel"))
+                         region=regions.get("search_panel"), style=style)
             _draw_table(slide, layout.get("table_columns") or [], prs,
-                        region=regions.get("table"))
+                        region=regions.get("table"), style=style)
             _draw_buttons(slide, layout.get("buttons") or [], prs,
-                          region=regions.get("buttons"))
+                          region=regions.get("buttons"), style=style)
             _draw_notes(slide, (layout.get("notes") or "").strip(), prs,
-                        region=regions.get("notes"))
+                        region=regions.get("notes"), style=style)
         else:
             cursor = 2.2
             cursor += _draw_search(slide, layout.get("search_fields") or [],
-                                   prs, fallback_top_cm=cursor)
+                                   prs, fallback_top_cm=cursor, style=style)
             cursor += _draw_table(slide, layout.get("table_columns") or [],
-                                  prs, fallback_top_cm=cursor)
+                                  prs, fallback_top_cm=cursor, style=style)
             cursor += _draw_buttons(slide, layout.get("buttons") or [],
-                                    prs, fallback_top_cm=cursor)
+                                    prs, fallback_top_cm=cursor, style=style)
             _draw_notes(slide, (layout.get("notes") or "").strip(),
-                        prs, fallback_top_cm=cursor)
+                        prs, fallback_top_cm=cursor, style=style)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     prs.save(str(output_path))
@@ -740,6 +881,19 @@ def convert(captures_dir: Path, templates_dir: Path,
     if mapping:
         print(f"  수기 매핑 로드: {source_mapping_path} ({len(mapping)} 항목)")
 
+    # 템플릿에서 1회 style profile 추출 → 모든 슬라이드에 일관 적용
+    style_raw = extract_style_profile(tmpl_imgs, config)
+    style = _resolve_style(style_raw)
+    style_path = output_pptx.parent / "style_profile.json"
+    style_path.parent.mkdir(parents=True, exist_ok=True)
+    style_path.write_text(
+        json.dumps({"extracted": style_raw, "resolved": style},
+                   ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    print(f"    스타일 저장: {style_path.name} "
+          f"({len(style_raw)} 키 추출, {len(style)} 키 적용)")
+
     dump_dir = output_pptx.parent / "llm_raw"
 
     layouts: list[tuple[str, dict]] = []
@@ -770,7 +924,8 @@ def convert(captures_dir: Path, templates_dir: Path,
                      source_candidates=candidates)
 
     render_pptx(layouts, output_pptx,
-                aspect_hint_image=tmpl_imgs[0] if tmpl_imgs else None)
+                aspect_hint_image=tmpl_imgs[0] if tmpl_imgs else None,
+                style=style)
 
     return {
         "total": len(asis_imgs),
@@ -779,6 +934,8 @@ def convert(captures_dir: Path, templates_dir: Path,
         "source_matched": matched,
         "source_matched_via_mapping": matched_via_mapping,
         "source_indexed": len(source_index),
+        "style_keys_extracted": len(style_raw),
         "pptx": str(output_pptx),
         "llm_raw_dir": str(dump_dir),
+        "style_profile": str(style_path),
     }

@@ -45,7 +45,7 @@
 | `migration-impact` | SQL Migration 사전 영향분석 | X | X |
 | `migrate-sql` | MyBatis XML 일괄 변환 + 5시트 리포트 | 선택 | X |
 | `validate-migration` | 변환 XML parse-only 검증 (Stage B) | X | O |
-| `screen-converter` | AS-IS 화면 캡처 + DRM 템플릿 캡처 → TO-BE PPTX 도형 (Vision LLM, PoC) | O | X |
+| `screen-converter` | AS-IS 화면 캡처 + DRM 템플릿 캡처 → TO-BE PPTX 도형. 템플릿에서 1회 style profile 추출 (색·폰트·버튼) + 캡처별 layout 추출, `--frontend-dir` 로 React 소스 매칭 (Vision LLM, PoC) | O | X |
 
 각 커맨드 상세 옵션: `python main.py <cmd> --help`. 모듈 / 파이프라인
 구조 / 회귀 mock / 해결된 이슈 표는 archive 참고.

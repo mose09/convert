@@ -1031,6 +1031,9 @@ def cmd_screen_converter(args):
             f"  소스 매칭: {stats['source_matched']}/{stats['total']}장 "
             f"(인덱스 {stats['source_indexed']} 파일{suffix})"
         )
+    if stats.get("style_keys_extracted"):
+        print(f"  스타일:  {stats['style_profile']} "
+              f"({stats['style_keys_extracted']} 키 추출)")
     print(f"  PPTX:    {stats['pptx']}")
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
