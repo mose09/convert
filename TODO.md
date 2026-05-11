@@ -119,6 +119,31 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: 화면변환기 PoC — `screen-converter` (AS-IS 캡처 → TO-BE PPTX)
+
+소스 없는 화면 (외주 모듈/레거시 ASP/JSP) 대상 캡처본 → TO-BE PPTX
+도형 자동 생성. DRM 잠긴 PPT 템플릿은 캡처 이미지로 VLM 에 첨부.
+복잡한 파이프라인 통합/캐시/메뉴매핑 없는 단순 PoC — 동작 확인 후 후속.
+
+- [x] `requirements.txt` 에 `python-pptx>=0.6.23` 추가 (폐쇄망 wheel
+      가이드 주석)
+- [x] `oracle_embeddings/screen_converter.py` 신규 — `extract_layout`
+      (VLM 1회 호출, `legacy_pattern_discovery._call_llm(image_paths=)`
+      재사용) + `render_pptx` (도형/표/버튼 헬퍼) + `convert` 엔트리
+- [x] `main.py` 에 `cmd_screen_converter` + 서브파서 (`--captures-dir`
+      / `--templates-dir` / `--output`) + 디스패처 등록
+- [x] 렌더 smoke test: 2 슬라이드 mock layout → 17/9 shapes 정상
+- [ ] 사용자 PC 에서 실 캡처로 E2E 확인 (AS-IS + 템플릿 캡처)
+- [ ] PR + squash-merge + local cleanup
+
+후속 (PoC 동작 확인 후 분리 작업):
+- 해시 기반 캐시 (vision 호출 비용 절감)
+- 템플릿 스타일 별도 1회 분석 → 색상/폰트 PPTX 반영
+- `analyze-legacy --extract-screen-layout` ScreenLayout JSON 직접 입력
+  모드 (React 소스 보유 화면은 VLM 재호출 불필요)
+- `convert-menu` 산출물 `input/menu.md` 의 메뉴 계층 매칭 (PROGRAM_ID
+  → TO-BE 화면 타이틀)
+
 ### 진행 중: Mermaid 시퀀스 다이어그램 — Phase B (alt/else/loop 블록)
 
 Phase A 위에서 제어 블록 (if/else/switch/for/while/do-while/try-catch-finally)
