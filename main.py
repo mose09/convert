@@ -1731,6 +1731,9 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
             screens_dir = os.path.join(screens_root, "screens", ts)
             written = screen_ext.write_screen_html_files(screens_dir, layouts)
             print(f"  screen layout: {len(written)} HTML mockup → {screens_dir}")
+            if getattr(args, "export_flowchart_pptx", False):
+                pptx_path = os.path.join(screens_dir, "flowcharts.pptx")
+                screen_ext.export_flowchart_pptx(layouts, pptx_path)
 
     # Summary 텍스트 dump (CSV/MD 보다 단순하게)
     os.makedirs(screens_root, exist_ok=True)
@@ -1939,6 +1942,7 @@ def cmd_analyze_legacy(args):
             extract_screen_layout=getattr(args, "extract_screen_layout", False),
             render_screenshots=getattr(args, "render_screenshots", False),
             screen_max=getattr(args, "screen_max", 200),
+            export_flowchart_pptx=getattr(args, "export_flowchart_pptx", False),
             closure_llm=getattr(args, "closure_llm", False),
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
@@ -1970,6 +1974,7 @@ def cmd_analyze_legacy(args):
             extract_screen_layout=getattr(args, "extract_screen_layout", False),
             render_screenshots=getattr(args, "render_screenshots", False),
             screen_max=getattr(args, "screen_max", 200),
+            export_flowchart_pptx=getattr(args, "export_flowchart_pptx", False),
             closure_llm=getattr(args, "closure_llm", False),
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
@@ -2274,6 +2279,13 @@ def main():
                                 "Playwright 셋업 가능할 때만 사용. 현재는 안내 메시지만.")
     al_parser.add_argument("--screen-max", type=int, default=200,
                            help="screen layout 최대 분석 화면 수 (default 200)")
+    al_parser.add_argument("--export-flowchart-pptx", action="store_true",
+                           help="(옵트인) 모든 화면 flowchart 를 1 PPTX 로 export "
+                                "(슬라이드/화면). mermaid → mmdc → SVG+PNG → "
+                                "python-pptx 슬라이드 임베드. PPT 슬라이드에서 "
+                                "도형 우클릭 → '도형으로 변환' 으로 편집 가능한 "
+                                "PPT 도형 생성. 의존: python-pptx + mmdc "
+                                "(미설치 시 skip + 안내).")
     al_parser.add_argument("--closure-llm", action="store_true",
                            help="(옵트인) Phase C LLM input 을 raw JSX + smart_slice "
                                 "대신 AST closure markdown (import 그래프 BFS + "

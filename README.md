@@ -568,7 +568,8 @@ python main.py analyze-legacy `
 | `--sequence-diagram` | Mermaid sequence diagram 생성 (LLM 불필요, parser-only). |
 | `--sequence-diagram-group` | sequence diagram .md 묶음 단위. `main_menu` (default) / `menu_path` / `sub_menu` / `controller_class` / `backend_project` (레포) / `none` (endpoint 별). |
 | **`--frontend-only`** | **backend / 메뉴 / 컨트롤러 체인 모두 skip — React frontend 만 스캔**. `--frontend-dir` 또는 `--frontends-root` 필요. `--backend-*` 인자 무시. `--extract-screen-layout` 와 함께 쓰면 빠르게 화면 mockup 만 생성. |
-| **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` + `<file>.mmd` + `<file>.svg` (flowchart 있는 화면, `mmdc` PATH 있을 때 자동 변환). `.svg` 는 PowerPoint **삽입 → 그림 → SVG → 도형으로 변환** 으로 편집 가능한 도형으로 사용. `mmdc` 미설치 시 `.mmd` 만 emit + 안내 메시지 (`npm i -g @mermaid-js/mermaid-cli`). |
+| **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html`. |
+| **`--export-flowchart-pptx`** | (옵트인, `--extract-screen-layout` 와 함께) 모든 화면 flowchart 를 한 PPTX 로 묶기. 슬라이드/화면. mermaid → `mmdc` → SVG+PNG → `python-pptx` 가 PPT picture 에 **svgBlip extension** 으로 임베드. PowerPoint 슬라이드에서 도형 우클릭 → "도형으로 변환" 으로 mermaid 노드/엣지가 편집 가능한 PPT 도형으로 변환. 산출물: `screens/<ts>/flowcharts.pptx`. 의존: `python-pptx` + `mmdc` (미설치 시 skip + 안내). |
 | `--screen-max N` | screen layout 분석 최대 화면 수 cap (기본 200, LLM 비용 통제) |
 | `--render-screenshots` | (스텁) Playwright 로 진짜 React 화면 스크린샷. 사용자 PC 에 React 빌드/실행 + Playwright 셋업 가능할 때만. 현재 follow-up 대기. |
 | **`--closure-llm`** | (옵트인, tree-sitter 필요) Phase C LLM input 을 raw JSX + smart_slice 대신 **AST closure markdown** (import 그래프 BFS + popup 3 신호 facts box) 으로 보강. 미설치 시 자동 fallback. |

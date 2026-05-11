@@ -1750,6 +1750,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    extract_screen_layout: bool = False,
                    render_screenshots: bool = False,
                    screen_max: int = 200,
+                   export_flowchart_pptx: bool = False,
                    closure_llm: bool = False,
                    closure_max_depth: int = 3,
                    closure_token_budget: int = 12000,
@@ -2433,6 +2434,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     screens_dir, screen_layout_map
                 )
                 print(f"  screen layout: {len(screen_html_paths)} HTML mockup 저장 → {screens_dir}")
+                if export_flowchart_pptx:
+                    pptx_path = os.path.join(screens_dir, "flowcharts.pptx")
+                    screen_ext.export_flowchart_pptx(screen_layout_map, pptx_path)
             if render_screenshots:
                 screen_ext.render_screenshots_via_playwright(
                     screen_layout_map,
@@ -2571,6 +2575,7 @@ def analyze_legacy_batch(backends_root: str,
                         extract_screen_layout: bool = False,
                         render_screenshots: bool = False,
                         screen_max: int = 200,
+                        export_flowchart_pptx: bool = False,
                         closure_llm: bool = False,
                         closure_max_depth: int = 3,
                         closure_token_budget: int = 12000,
@@ -2701,6 +2706,7 @@ def analyze_legacy_batch(backends_root: str,
             extract_screen_layout=extract_screen_layout,
             render_screenshots=render_screenshots,
             screen_max=screen_max,
+            export_flowchart_pptx=export_flowchart_pptx,
             closure_llm=closure_llm,
             closure_max_depth=closure_max_depth,
             closure_token_budget=closure_token_budget,
