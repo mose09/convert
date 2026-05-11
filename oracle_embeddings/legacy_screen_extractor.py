@@ -1054,31 +1054,225 @@ def _find_mmdc_executable() -> Optional[str]:
     return shutil.which("mmdc") or shutil.which("mmdc.cmd")
 
 
-def _render_mmd_to_svg(mmdc_path: str, mmd_path: str,
-                        timeout: int = 30) -> Optional[str]:
-    """mmdc 로 .mmd → .svg 변환. 성공 시 svg 경로 반환, 실패 시 None.
-
-    실패 원인 (timeout / puppeteer 환경 문제 / 잘못된 mermaid 코드 등) 은
-    warning 로그만 남기고 호출자가 계속 진행.
+def _render_mmd_to_format(mmdc_path: str, mmd_path: str, ext: str,
+                           timeout: int = 30, width: int = 1920) -> Optional[str]:
+    """mmdc 로 .mmd → .{ext} 변환 (ext: svg / png / pdf). 성공 시 출력
+    경로, 실패 시 None.
     """
-    svg_path = mmd_path[:-4] + ".svg" if mmd_path.endswith(".mmd") else mmd_path + ".svg"
+    out_path = (mmd_path[:-4] if mmd_path.endswith(".mmd") else mmd_path) + "." + ext
+    cmd = [mmdc_path, "-i", mmd_path, "-o", out_path, "-b", "transparent"]
+    if ext == "png":
+        cmd += ["-w", str(width)]
     try:
         result = subprocess.run(
-            [mmdc_path, "-i", mmd_path, "-o", svg_path,
-             "-b", "transparent"],
-            capture_output=True, text=True, timeout=timeout, check=False,
+            cmd, capture_output=True, text=True, timeout=timeout, check=False,
         )
     except subprocess.TimeoutExpired:
-        logger.warning("mmdc timeout (%ds) for %s", timeout, mmd_path)
+        logger.warning("mmdc timeout (%ds) for %s.%s", timeout, mmd_path, ext)
         return None
     except Exception as e:
-        logger.warning("mmdc 실행 오류 %s: %s", mmd_path, e)
+        logger.warning("mmdc 실행 오류 %s.%s: %s", mmd_path, ext, e)
         return None
-    if result.returncode == 0 and os.path.isfile(svg_path):
-        return svg_path
-    logger.warning("mmdc 변환 실패 %s: rc=%s stderr=%s",
-                   mmd_path, result.returncode, (result.stderr or "")[:200])
+    if result.returncode == 0 and os.path.isfile(out_path):
+        return out_path
+    logger.warning("mmdc 변환 실패 %s → %s: rc=%s stderr=%s",
+                   mmd_path, ext, result.returncode, (result.stderr or "")[:200])
     return None
+
+
+def _render_mmd_to_svg(mmdc_path: str, mmd_path: str,
+                        timeout: int = 30) -> Optional[str]:
+    return _render_mmd_to_format(mmdc_path, mmd_path, "svg", timeout)
+
+
+def _render_mmd_to_png(mmdc_path: str, mmd_path: str,
+                        timeout: int = 30) -> Optional[str]:
+    return _render_mmd_to_format(mmdc_path, mmd_path, "png", timeout)
+
+
+def export_flowchart_pptx(layouts: Dict[str, ScreenLayout],
+                           out_path: str) -> Optional[str]:
+    """모든 화면의 flowchart 를 1 PPTX 로 묶기 — 슬라이드당 1 화면.
+
+    파이프라인: mermaid → mmdc → SVG + PNG → python-pptx 슬라이드 임베드.
+    PowerPoint 의 SVG/PNG 듀얼 임베드 패턴 (svgBlip extension) 으로 vector
+    edit 가능 + raster fallback. 사용자가 슬라이드에서 SVG 우클릭 →
+    "도형으로 변환" 으로 mermaid 노드/엣지가 편집 가능한 PPT 도형으로.
+
+    의존성:
+      - ``python-pptx`` (PyPI). 미설치 시 None 반환 + 안내 로그.
+      - ``mmdc`` (mermaid-cli, PATH). 미설치 시 None 반환.
+
+    반환: 저장된 pptx 경로 (성공) / None (의존성 / 변환 실패).
+    """
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt
+    except ImportError:
+        logger.warning(
+            "python-pptx 미설치 — pptx export skip. `pip install python-pptx`")
+        return None
+    mmdc_path = _find_mmdc_executable()
+    if not mmdc_path:
+        logger.warning(
+            "mmdc 미설치 — pptx export 위한 SVG 변환 불가. "
+            "`npm i -g @mermaid-js/mermaid-cli`")
+        return None
+    relevant = {rel: l for rel, l in layouts.items()
+                if (l.flowchart_mermaid or "").strip()}
+    if not relevant:
+        logger.info("flowchart 있는 화면 0 — pptx export skip")
+        return None
+
+    import tempfile
+    n_ok = 0
+    n_fail = 0
+    os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="flowchart_pptx_") as tmpdir:
+        prs = Presentation()
+        blank_layout = prs.slide_layouts[6]
+        slide_w = prs.slide_width
+        slide_h = prs.slide_height
+        for rel, layout in sorted(relevant.items()):
+            code = _sanitize_mermaid_flowchart(layout.flowchart_mermaid or "")
+            if not code:
+                continue
+            safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", rel.replace("/", "__"))
+            mmd_path = os.path.join(tmpdir, safe + ".mmd")
+            with open(mmd_path, "w", encoding="utf-8") as f:
+                f.write(code + "\n")
+            png_path = _render_mmd_to_png(mmdc_path, mmd_path)
+            svg_path = _render_mmd_to_svg(mmdc_path, mmd_path)
+            if not png_path and not svg_path:
+                n_fail += 1
+                continue
+            slide = prs.slides.add_slide(blank_layout)
+            # 슬라이드 제목 (file_rel 기반)
+            tbox = slide.shapes.add_textbox(
+                Inches(0.3), Inches(0.15),
+                slide_w - Inches(0.6), Inches(0.5),
+            )
+            tf = tbox.text_frame
+            tf.text = layout.page_title or rel
+            tf.paragraphs[0].runs[0].font.size = Pt(18)
+            tf.paragraphs[0].runs[0].font.bold = True
+            # 파일 경로 sub-text
+            sub = slide.shapes.add_textbox(
+                Inches(0.3), Inches(0.6),
+                slide_w - Inches(0.6), Inches(0.3),
+            )
+            sub.text_frame.text = rel
+            sub.text_frame.paragraphs[0].runs[0].font.size = Pt(10)
+            # 이미지 영역
+            img_left = Inches(0.3)
+            img_top = Inches(1.0)
+            img_w = slide_w - Inches(0.6)
+            img_h = slide_h - Inches(1.3)
+            if png_path:
+                pic = slide.shapes.add_picture(
+                    png_path, img_left, img_top, img_w, img_h,
+                )
+                if svg_path:
+                    _attach_svg_to_picture(pic, slide.part, svg_path)
+            elif svg_path:
+                # PNG 변환 실패하면 SVG 만 raw embed — 일부 PPT 버전은 native
+                # 인식 못 함. fallback path 라 큰 위험은 없음.
+                _add_svg_only_picture(slide, slide.part, svg_path,
+                                       img_left, img_top, img_w, img_h)
+            n_ok += 1
+        if not n_ok:
+            return None
+        prs.save(out_path)
+    print(f"  flowchart pptx: {n_ok} 슬라이드 → {out_path}"
+          + (f" ({n_fail} 화면 변환 실패)" if n_fail else ""))
+    return out_path
+
+
+def _attach_svg_to_picture(pic, slide_part, svg_path: str) -> None:
+    """python-pptx Picture 의 PNG blip 옆에 SVG blip extension 추가.
+
+    ECMA-376 + Office svgBlip 패턴: ``<a:blip r:embed="rId_PNG">`` 안에
+    ``<a:extLst>/<a:ext uri="{96DAC541-...}">/<asvg:svgBlip r:embed="rId_SVG"/>``.
+    PowerPoint 2019+/365 가 SVG vector 로 렌더링 + 우클릭 "도형으로 변환"
+    지원. 미지원 버전은 PNG fallback 자동.
+    """
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+        from pptx.oxml.ns import qn
+        from lxml import etree
+    except Exception as e:
+        logger.warning("svgBlip 임베드 skip (의존성): %s", e)
+        return
+    try:
+        with open(svg_path, "rb") as f:
+            svg_bytes = f.read()
+    except Exception as e:
+        logger.warning("SVG 읽기 실패 %s: %s", svg_path, e)
+        return
+    # image part 추가 + relationship 생성
+    package = slide_part.package
+    try:
+        from pptx.parts.image import ImagePart
+    except Exception:
+        return
+    try:
+        partname = package.next_partname("/ppt/media/image%d.svg")
+        image_part = ImagePart(partname, "image/svg+xml", svg_bytes, package)
+        package._add_part(image_part)
+    except Exception as e:
+        logger.warning("SVG image part 생성 실패: %s", e)
+        return
+    rId_svg = slide_part.relate_to(image_part, RT.IMAGE)
+    # blip XML 수정
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    asvg_ns = "http://schemas.microsoft.com/office/drawing/2016/SVG/main"
+    blip = pic._element.find(".//" + qn("a:blip"))
+    if blip is None:
+        return
+    ext_lst = blip.find(qn("a:extLst"))
+    if ext_lst is None:
+        ext_lst = etree.SubElement(blip, qn("a:extLst"))
+    ext = etree.SubElement(ext_lst, qn("a:ext"))
+    ext.set("uri", "{96DAC541-7B7A-43D3-8B79-37D633B846F1}")
+    svg_blip = etree.SubElement(
+        ext, "{%s}svgBlip" % asvg_ns,
+        nsmap={"asvg": asvg_ns},
+    )
+    svg_blip.set("{%s}embed" % r_ns, rId_svg)
+
+
+def _add_svg_only_picture(slide, slide_part, svg_path, left, top, w, h):
+    """PNG 변환 실패 시 SVG 만 image part 로 추가. PPT 버전 따라 미렌더링
+    위험 있으나 fallback path 라 시도만.
+    """
+    try:
+        from pptx.opc.constants import RELATIONSHIP_TYPE as RT
+        from pptx.parts.image import ImagePart
+        from pptx.oxml.ns import qn
+        from lxml import etree
+    except Exception:
+        return
+    with open(svg_path, "rb") as f:
+        svg_bytes = f.read()
+    package = slide_part.package
+    partname = package.next_partname("/ppt/media/image%d.svg")
+    image_part = ImagePart(partname, "image/svg+xml", svg_bytes, package)
+    package._add_part(image_part)
+    rId = slide_part.relate_to(image_part, RT.IMAGE)
+    # 단순 picture XML — PNG 없이 SVG 만 embed
+    a_ns = "http://schemas.openxmlformats.org/drawingml/2006/main"
+    p_ns = "http://schemas.openxmlformats.org/presentationml/2006/main"
+    r_ns = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+    pic_xml = etree.fromstring(
+        f'<p:pic xmlns:p="{p_ns}" xmlns:a="{a_ns}" xmlns:r="{r_ns}">'
+        f'<p:nvPicPr><p:cNvPr id="0" name="svgonly"/><p:cNvPicPr/><p:nvPr/></p:nvPicPr>'
+        f'<p:blipFill><a:blip r:embed="{rId}"/><a:stretch><a:fillRect/></a:stretch></p:blipFill>'
+        f'<p:spPr><a:xfrm><a:off x="{int(left)}" y="{int(top)}"/>'
+        f'<a:ext cx="{int(w)}" cy="{int(h)}"/></a:xfrm>'
+        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr></p:pic>'
+    )
+    slide.shapes._spTree.append(pic_xml)
 
 
 def write_screen_html_files(out_dir: str,
@@ -1088,17 +1282,9 @@ def write_screen_html_files(out_dir: str,
     레이아웃: ``out_dir/<top-folder>/<safe_rest>.html``. ``top-folder`` 는
     file_rel 의 첫 segment (대개 repo / bucket / app slug). 같은 폴더에
     수백 개 화면이 평탄하게 쌓이지 않도록 1단계 분리.
-
-    flowchart 가 있는 화면은 같은 위치에 ``.mmd`` 와 (mmdc 가 PATH 에 있으면)
-    ``.svg`` 도 함께 떨굼 — PPT ``삽입 → 그림 → SVG`` → ``도형으로 변환``
-    으로 편집 가능한 도형 사용 가능. mmdc 미설치 시 ``.mmd`` 만 emit.
     """
     os.makedirs(out_dir, exist_ok=True)
     written: Dict[str, str] = {}
-    n_mmd = 0
-    n_svg = 0
-    n_svg_failed = 0
-    mmdc_path = _find_mmdc_executable()
     for rel, layout in layouts.items():
         norm = rel.replace("\\", "/")
         parts = [p for p in norm.split("/") if p]
@@ -1118,32 +1304,6 @@ def write_screen_html_files(out_dir: str,
             written[rel] = path
         except Exception as e:
             logger.warning("screen html write 실패 %s: %s", path, e)
-            continue
-        # .mmd raw mermaid 코드 — sanitize 된 것 (mmdc 가 그대로 파싱 가능).
-        mmd_code = _sanitize_mermaid_flowchart(layout.flowchart_mermaid or "")
-        if mmd_code:
-            mmd_path = os.path.join(sub, safe + ".mmd")
-            try:
-                with open(mmd_path, "w", encoding="utf-8") as f:
-                    f.write(mmd_code + "\n")
-                n_mmd += 1
-            except Exception as e:
-                logger.warning("screen mmd write 실패 %s: %s", mmd_path, e)
-                continue
-            # mmdc 가 PATH 에 있으면 SVG 도 즉시 변환.
-            if mmdc_path:
-                if _render_mmd_to_svg(mmdc_path, mmd_path):
-                    n_svg += 1
-                else:
-                    n_svg_failed += 1
-    if n_mmd:
-        if mmdc_path:
-            print(f"  screen mermaid: {n_mmd} .mmd / {n_svg} .svg 변환 성공"
-                  + (f" ({n_svg_failed} 실패)" if n_svg_failed else "")
-                  + " — PPT 삽입 → 그림 → SVG → 도형으로 변환 가능.")
-        else:
-            print(f"  screen mermaid: {n_mmd} .mmd 파일 (mmdc 미설치 — `npm i -g "
-                  f"@mermaid-js/mermaid-cli` 후 재실행하면 .svg 자동 생성).")
     return written
 
 
