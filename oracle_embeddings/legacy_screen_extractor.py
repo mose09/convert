@@ -173,7 +173,7 @@ React 코드 텍스트만 보고 추출.
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
   "tabs": ["탭1", "탭2", ...],
-  "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\nMermaid v11 호환 규칙: (a) 라벨에 ``()`` / ``[]`` / ``/`` / ``:`` 등 특수문자 들어가면 반드시 double quote 로 감싸기 — 예: Save[\"저장(POST)\"] / Cond{\"조회 N건\"}. (b) 노드 ID 는 영문/숫자/언더스코어만, 예약어 ``end`` / ``class`` / ``subgraph`` / ``style`` 사용 금지. (c) 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. (d) ``%%{init}%%`` 테마 directive 넣지 마. (e) 코드만 (```mermaid 펜스 X).",
+  "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\nMermaid v11 호환 규칙: (a) 라벨에 ``()`` / ``[]`` / ``/`` / ``:`` / ``=`` 등 특수문자 들어가면 반드시 double quote 로 감싸기. 예: Save[\"저장(POST)\"] / Cond{\"조회 N건\"} / Clear[\"초기화(targetKeys = [])\"]. (b) 노드 ID 는 영문/숫자/언더스코어만 (한글 ID 금지), 예약어 ``end`` / ``class`` / ``subgraph`` / ``style`` 사용 금지. (c) 라벨 안 nested ``[ ]`` / ``( )`` 두 단계 이상 nesting 은 피하고 평탄화 — nested 가 꼭 필요하면 라벨 전체 double quote. (d) 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. (e) ``%%{init}%%`` 테마 directive 넣지 마. (f) 코드만 (```mermaid 펜스 X).",
   "summary": "1-2 줄 화면 설명"
 }
 """
@@ -620,8 +620,23 @@ if (window.mermaid) {{
   }});
   window.addEventListener('DOMContentLoaded', async function () {{
     var blocks = document.querySelectorAll('pre.mermaid');
-    var ver = (typeof mermaid.version === 'function')
-              ? mermaid.version() : (mermaid.version || '?');
+    var ver = '?';
+    try {{
+      if (typeof mermaid.version === 'function') ver = mermaid.version();
+      else if (typeof mermaid.version === 'string') ver = mermaid.version;
+      else if (mermaid.mermaidAPI && mermaid.mermaidAPI.version) {{
+        ver = (typeof mermaid.mermaidAPI.version === 'function')
+              ? mermaid.mermaidAPI.version() : mermaid.mermaidAPI.version;
+      }}
+    }} catch (e) {{}}
+    if (ver === '?') {{
+      // CDN URL 에서 version 추출 시도
+      var scripts = document.querySelectorAll('script[src*="mermaid"]');
+      for (var s = 0; s < scripts.length; s++) {{
+        var mm = scripts[s].src.match(/mermaid[^@]*@?([\\d.]+)/);
+        if (mm) {{ ver = mm[1]; break; }}
+      }}
+    }}
     for (var i = 0; i < blocks.length; i++) {{
       var el = blocks[i];
       var src = el.textContent;
@@ -823,16 +838,84 @@ def _render_events(events: List[ScreenEvent]) -> str:
 
 
 _MERMAID_DIRECTIVE_RE = re.compile(r"%%\{.*?\}%%", re.DOTALL)
-# Shape 별 매칭. 안 brackets 허용 (단 같은 종류 brackets nesting 만 차단).
-# [...] 사각 / {...} 마름모 / {{...}} 육각.  Round/circle (...) / ((...)) 는
-# Mermaid 가 inner `()` 자체를 reject 하므로 sanitize 불가 — 그대로 둠.
-_MERMAID_SHAPE_RES = [
-    (re.compile(r"(\b[A-Za-z_][\w\-]*)\{\{([^{}\n]+?)\}\}"), "{{", "}}"),
-    (re.compile(r"(\b[A-Za-z_][\w\-]*)\[([^\[\]\n]+?)\]"), "[", "]"),
-    (re.compile(r"(\b[A-Za-z_][\w\-]*)\{([^{}\n]+?)\}"), "{", "}"),
-]
+# 노드 시작 — `ID[` / `ID(` / `ID{` 등.  ID 는 영문/숫자/언더스코어/하이픈.
+_MERMAID_NODE_OPEN_RE = re.compile(r"\b([A-Za-z_][\w\-]*)([\[\(\{])")
+# Arrow / link — 라벨 종료 후보 (라벨 검색 범위 boundary).
+_MERMAID_ARROW_RE = re.compile(r"-{2,}>|={2,}>|-\.+->|-{2,}|\.{2,}|\|")
 # Mermaid 11.x reserved keywords — 노드 ID 로 쓰면 parse 실패.
 _MERMAID_RESERVED_IDS = {"end", "class", "subgraph", "style", "default", "linkStyle"}
+# Label 안 risky chars — 있으면 ``"..."`` quote + HTML entity escape.
+_MERMAID_RISKY = set("()[]{}:;,/<>=")
+_HTML_ENTITY_BRACKETS = str.maketrans({
+    "[": "&#91;", "]": "&#93;",
+    "(": "&#40;", ")": "&#41;",
+    "{": "&#123;", "}": "&#125;",
+})
+
+
+def _sanitize_node_labels(text: str) -> str:
+    """nested bracket-aware 라벨 quoting.
+
+    노드 ID 직후 열린 ``[`` / ``(`` / ``{`` 부터 **라인 끝 또는 다음 arrow
+    직전까지의 영역에서 마지막 close bracket** 까지를 라벨로 간주.
+    ``A[ClearSelect(... [])]`` 처럼 라벨 안에 nested brackets 가 있어도
+    boundary 정확히 잡음 (regex lazy 매칭 + inner bracket 차단 문제 해소).
+    라벨에 risky char 있으면 inner brackets 를 HTML entity 로 escape 후
+    ``"..."`` 로 감쌈 — Mermaid v10+ 가 entity 인식.
+    """
+    out: list[str] = []
+    pos = 0
+    n = len(text)
+    while pos < n:
+        m = _MERMAID_NODE_OPEN_RE.search(text, pos)
+        if not m:
+            out.append(text[pos:])
+            break
+        out.append(text[pos:m.start()])
+        node_id = m.group(1)
+        open_ch = m.group(2)
+        open_pos = m.end() - 1
+        # double opener?
+        open_count = 1
+        if open_pos + 1 < n and text[open_pos + 1] == open_ch:
+            open_count = 2
+        close_ch = {"[": "]", "(": ")", "{": "}"}[open_ch]
+        section_start = open_pos + open_count
+        # boundary = 라인 끝 OR 다음 arrow
+        end_of_line = text.find("\n", section_start)
+        if end_of_line == -1:
+            end_of_line = n
+        arrow_m = _MERMAID_ARROW_RE.search(text, section_start, end_of_line)
+        section_end = arrow_m.start() if arrow_m else end_of_line
+        section = text[section_start:section_end]
+        if open_count == 2:
+            cc = close_ch * 2
+            last_idx = section.rfind(cc)
+            if last_idx == -1:
+                out.append(text[m.start():section_start])
+                pos = section_start
+                continue
+            label = section[:last_idx]
+            end_abs = section_start + last_idx + 2
+        else:
+            last_idx = section.rfind(close_ch)
+            if last_idx == -1:
+                out.append(text[m.start():section_start])
+                pos = section_start
+                continue
+            label = section[:last_idx]
+            end_abs = section_start + last_idx + 1
+
+        stripped = label.strip()
+        already_quoted = stripped.startswith('"') and stripped.endswith('"')
+        if already_quoted or not any(c in label for c in _MERMAID_RISKY):
+            out.append(text[m.start():end_abs])
+        else:
+            safe = label.replace('"', "'").translate(_HTML_ENTITY_BRACKETS)
+            out.append(node_id + open_ch * open_count + '"' + safe + '"'
+                       + close_ch * open_count)
+        pos = end_abs
+    return "".join(out)
 
 
 def _sanitize_mermaid_flowchart(code: str) -> str:
@@ -840,8 +923,8 @@ def _sanitize_mermaid_flowchart(code: str) -> str:
 
     - ```mermaid 펜스 제거
     - %%{init: ...}%% 테마 directive 제거 (LLM 이 잘못 inject 하는 경우 방어)
-    - 라벨 안 특수문자 (``()`` / ``/`` / ``:`` 등) 가 있으면 double-quote 로 감쌈
-    - 예약어 노드 ID 충돌 회피 (``end`` → ``endX`` 등)
+    - 노드 라벨 quote + HTML entity escape (nested brackets 대응)
+    - 예약어 노드 ID 충돌 회피 (``end`` → ``end_`` 등)
     - flowchart directive 누락 시 ``flowchart TB`` 자동 prepend
     """
     if not code:
@@ -854,24 +937,7 @@ def _sanitize_mermaid_flowchart(code: str) -> str:
             s = s[first_nl + 1:]
         s = s.rstrip("` \n")
     s = _MERMAID_DIRECTIVE_RE.sub("", s)
-
-    risky_chars = set("()[]{}:;,/<>")
-
-    def _make_wrap(open_b: str, close_b: str):
-        def _wrap(m: re.Match) -> str:
-            node, label = m.group(1), m.group(2)
-            # 이미 quoted 면 skip (idempotent)
-            stripped = label.strip()
-            if stripped.startswith('"') and stripped.endswith('"'):
-                return m.group(0)
-            if any(c in label for c in risky_chars):
-                safe = label.replace('"', "'")
-                return f'{node}{open_b}"{safe}"{close_b}'
-            return m.group(0)
-        return _wrap
-
-    for pat, open_b, close_b in _MERMAID_SHAPE_RES:
-        s = pat.sub(_make_wrap(open_b, close_b), s)
+    s = _sanitize_node_labels(s)
 
     # 예약어 노드 ID 치환 — 라벨 시작 / 화살표 양옆 / 줄끝 직전 모두 cover.
     def _rename_reserved(text: str) -> str:
