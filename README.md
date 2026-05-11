@@ -1414,7 +1414,9 @@ python main.py screen-converter `
 
 **옵션**:
 - `--output <path>` — PPTX 출력 경로 명시 지정 (기본:
-  `output/screen-converter/<YYYYMMDD>/screens.pptx`)
+  `output/screen-converter/<YYYYMMDD>/screens_<HHMMSS>.pptx` —
+  파일명에 시각 stamp 가 들어가서, 이전 결과를 PowerPoint 에 열어둔
+  채 재실행해도 잠금 충돌 없이 새 파일로 저장됨)
 - `--frontend-dir <path>` — (선택) React/Vue 소스 루트. 캡처 파일명에
   매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부. 소스가 있는 화면은
   라벨/컬럼/버튼 텍스트 정확도가 크게 향상 (VLM 이 픽셀에서 한글 읽는

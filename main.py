@@ -1013,8 +1013,10 @@ def cmd_screen_converter(args):
     if args.output:
         output_pptx = _Path(args.output)
     else:
+        from datetime import datetime as _dt
         dated = _build_dated_output_dir(base_output, "screen-converter")
-        output_pptx = _Path(dated) / "screens.pptx"
+        # 파일명에 시각 추가 — 이전 PPTX 가 PowerPoint 에 열려있어도 충돌 없이 새 파일로 저장
+        output_pptx = _Path(dated) / f"screens_{_dt.now().strftime('%H%M%S')}.pptx"
 
     from oracle_embeddings.screen_converter import convert
     stats = convert(captures_dir, templates_dir, output_pptx, config,
