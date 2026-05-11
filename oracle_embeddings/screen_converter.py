@@ -821,7 +821,16 @@ def render_pptx(layouts: list[tuple[str, dict]], output_path: Path,
                         prs, fallback_top_cm=cursor, style=style)
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    prs.save(str(output_path))
+    try:
+        prs.save(str(output_path))
+    except PermissionError as e:
+        raise SystemExit(
+            f"PPTX 저장 실패 — {output_path}\n"
+            f"  원인: 파일이 다른 프로그램(PowerPoint 등)에 열려있어 잠긴 상태.\n"
+            f"  해결: 1) 해당 PowerPoint 창 닫고 재실행, 또는\n"
+            f"        2) --output <다른경로.pptx> 로 다른 파일명 지정.\n"
+            f"  상세: {e}"
+        ) from e
 
 
 # ── 파이프라인 엔트리 ───────────────────────────────────────────────
