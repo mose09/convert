@@ -2410,6 +2410,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 closure_popup_augment=closure_popup_augment,
                 closure_max_depth=closure_max_depth,
                 closure_token_budget=closure_token_budget,
+                include_url_less=True,   # URL 없는 버튼 / popup 호출도 events 시트에
             )
             print(f"  screen layout: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs")
