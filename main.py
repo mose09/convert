@@ -1028,7 +1028,13 @@ def cmd_screen_converter(args):
     )
     if stats.get("source_indexed") or stats.get("source_matched"):
         via_map = stats.get("source_matched_via_mapping", 0)
-        suffix = f", 그 중 매핑 {via_map}장" if via_map else ""
+        closure_n = stats.get("closure_used", 0)
+        extras = []
+        if via_map:
+            extras.append(f"매핑 {via_map}장")
+        if closure_n:
+            extras.append(f"closure 번들 {closure_n}장")
+        suffix = f", 그 중 {', '.join(extras)}" if extras else ""
         print(
             f"  소스 매칭: {stats['source_matched']}/{stats['total']}장 "
             f"(인덱스 {stats['source_indexed']} 파일{suffix})"

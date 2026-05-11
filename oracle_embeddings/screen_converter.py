@@ -390,31 +390,128 @@ def _read_source_snippet(path: Path, max_chars: int = _SOURCE_MAX_CHARS) -> str:
     return text
 
 
+# 화면 단위 closure (entry + import 그래프 BFS) — analyze-legacy 의
+# legacy_react_closure 인프라 재사용. tree-sitter 의존, 미설치 시 미사용.
+_CLOSURE_TOKEN_BUDGET = 20000          # 8000 char single-file 보다 훨씬 큼
+_CLOSURE_MAX_DEPTH = 3                 # build_closure 기본값
+
+# 한 번만 import 시도, 결과 (모듈 또는 None) 를 캐시
+_CLOSURE_IMPORT_TRIED = False
+_CLOSURE_MOD: Any = None
+_CLOSURE_IMPORT_ERR: str | None = None
+
+
+def _load_closure_module():
+    """legacy_react_closure 를 lazy import. tree-sitter 없으면 None 캐시."""
+    global _CLOSURE_IMPORT_TRIED, _CLOSURE_MOD, _CLOSURE_IMPORT_ERR
+    if _CLOSURE_IMPORT_TRIED:
+        return _CLOSURE_MOD
+    _CLOSURE_IMPORT_TRIED = True
+    try:
+        from . import legacy_react_closure as mod
+        _CLOSURE_MOD = mod
+    except Exception as e:  # noqa: BLE001 — tree-sitter 미설치 등
+        _CLOSURE_IMPORT_ERR = f"{type(e).__name__}: {e}"
+        _CLOSURE_MOD = None
+    return _CLOSURE_MOD
+
+
+def _bundle_source_closure(entry_file: Path,
+                           frontend_dir: Path) -> tuple[str, dict] | None:
+    """entry_file 부터 import 그래프 BFS → Markdown 직렬화 + 메타.
+
+    내부적으로 `legacy_react_closure.build_closure` 호출. tree-sitter
+    의존, 미설치/실패 시 None. 반환: (markdown_text, stats_dict).
+    """
+    mod = _load_closure_module()
+    if mod is None:
+        return None
+    try:
+        closure = mod.build_closure(
+            entry_file=str(entry_file),
+            repo_root=str(frontend_dir),
+            patterns=None,
+            max_depth=_CLOSURE_MAX_DEPTH,
+            token_budget=_CLOSURE_TOKEN_BUDGET,
+            verbose=False,
+        )
+        markdown = mod.serialize_for_llm(closure)
+    except Exception as e:  # noqa: BLE001 — closure 실패 시 fallback
+        logger.warning("closure 빌드 실패 (%s): %s — 단일 파일 fallback",
+                       entry_file, e)
+        return None
+    stats = {
+        "entry_name": closure.entry_name,
+        "file_count": len(closure.files),
+        "total_tokens": closure.total_tokens,
+        "truncated": closure.truncated,
+        "api_calls": len(closure.api_calls),
+        "popup_refs": len(closure.popup_refs),
+        "skipped_external": len(closure.skipped_external),
+        "files": [
+            {"rel_path": f.rel_path, "depth": f.depth, "mode": f.mode}
+            for f in closure.files
+        ],
+    }
+    return markdown, stats
+
+
 # ── LLM 추출 ────────────────────────────────────────────────────────
 
 
 def extract_layout(asis_image: Path, template_images: list[Path],
                    config: dict,
-                   source_path: Path | None = None) -> dict:
-    """VLM 1회 호출 → TO-BE 레이아웃 dict.
+                   source_path: Path | None = None,
+                   frontend_dir: Path | None = None
+                   ) -> tuple[dict, dict | None]:
+    """VLM 1회 호출 → (layout dict, source_attachment_meta | None).
 
-    source_path 가 주어지면 그 파일을 읽어 프롬프트 하단에 첨부
-    (`=== React 소스 첨부 (<파일명>) ===` 블록). 모델에게 search/table/
-    button 의 정답으로 사용하도록 안내. 실패 시 빈 dict 반환.
+    source_path 가 주어지면 React 소스를 프롬프트 하단에 첨부:
+    - frontend_dir 동시 주어지고 tree-sitter 설치돼있으면 `build_closure`
+      로 entry+import 그래프 BFS 번들 (여러 파일, ~20K tokens).
+    - 아니면 단일 파일 8000 char fallback.
+
+    반환의 2번째 요소는 진단용 메타 (mode='closure'|'single'|None, file_count
+    등). LLM 응답이 dict 아니면 layout 은 빈 dict.
     """
     prompt = _USER_PROMPT
+    attach_meta: dict | None = None
     if source_path is not None:
-        snippet = _read_source_snippet(source_path)
-        if snippet:
-            rel = source_path.name
+        bundle = (_bundle_source_closure(source_path, frontend_dir)
+                  if frontend_dir is not None else None)
+        if bundle is not None:
+            md, stats = bundle
             prompt = (
                 _USER_PROMPT
-                + f"\n\n=== React 소스 첨부 ({rel}) ===\n"
+                + "\n\n=== React 소스 첨부 (closure bundle, "
+                f"{stats['file_count']} 파일, ~{stats['total_tokens']} tokens) ===\n"
+                + "이 화면의 entry 컴포넌트 + import 로 따라간 자식 컴포넌트"
+                + " 들이 모두 포함되어 있습니다.\n"
                 + "이 소스가 search_fields / table_columns / buttons 의 정답.\n"
                 + "이미지는 regions (위치/크기) 와 page_title 추론에만 사용.\n\n"
-                + snippet
+                + md
             )
-            print(f"    소스 첨부: {rel} ({len(snippet)} chars)")
+            print(f"    소스 첨부 (closure): {stats['file_count']} 파일, "
+                  f"~{stats['total_tokens']} tokens, "
+                  f"entry={stats['entry_name']}"
+                  f"{', truncated' if stats['truncated'] else ''}")
+            attach_meta = {"mode": "closure", **stats}
+        else:
+            snippet = _read_source_snippet(source_path)
+            if snippet:
+                rel = source_path.name
+                prompt = (
+                    _USER_PROMPT
+                    + f"\n\n=== React 소스 첨부 ({rel}, single file) ===\n"
+                    + "이 소스가 search_fields / table_columns / buttons 의 정답.\n"
+                    + "이미지는 regions (위치/크기) 와 page_title 추론에만 사용.\n\n"
+                    + snippet
+                )
+                hint = (f" (closure 미사용: {_CLOSURE_IMPORT_ERR})"
+                        if _CLOSURE_IMPORT_ERR else "")
+                print(f"    소스 첨부 (single): {rel} ({len(snippet)} chars){hint}")
+                attach_meta = {"mode": "single", "chars": len(snippet),
+                               "file": str(source_path)}
 
     image_paths = [str(asis_image)] + [str(t) for t in template_images]
     result = _call_llm(
@@ -426,8 +523,8 @@ def extract_layout(asis_image: Path, template_images: list[Path],
     )
     if not isinstance(result, dict):
         logger.warning("LLM 응답이 dict 가 아님: %s — 빈 레이아웃으로 대체", asis_image.name)
-        return {}
-    return result
+        return {}, attach_meta
+    return result, attach_meta
 
 
 # ── PPTX 렌더 ────────────────────────────────────────────────────────
@@ -839,7 +936,8 @@ def render_pptx(layouts: list[tuple[str, dict]], output_path: Path,
 def _dump_layout(layout: dict, asis_image: Path, template_images: list[Path],
                  dump_dir: Path,
                  matched_source: Path | None = None,
-                 source_candidates: list[tuple[Path, int]] | None = None
+                 source_candidates: list[tuple[Path, int]] | None = None,
+                 source_attachment: dict | None = None
                  ) -> Path:
     """Persist the parsed VLM layout dict for post-hoc inspection.
 
@@ -856,6 +954,7 @@ def _dump_layout(layout: dict, asis_image: Path, template_images: list[Path],
             {"path": str(p), "score": s}
             for p, s in (source_candidates or [])
         ],
+        "source_attachment": source_attachment,
         "layout": layout,
     }
     path = dump_dir / f"{asis_image.stem}.json"
@@ -909,6 +1008,7 @@ def convert(captures_dir: Path, templates_dir: Path,
     fail = 0
     matched = 0
     matched_via_mapping = 0
+    closure_used = 0
     for img in asis_imgs:
         print(f"  → {img.name}")
         source_path, candidates = _match_source(img.stem, source_index,
@@ -923,14 +1023,20 @@ def convert(captures_dir: Path, templates_dir: Path,
             print(f"    소스 매칭 실패 (최고 점수 {top_score}/{_SOURCE_MIN_SCORE}, "
                   f"상위 후보는 llm_raw/{img.stem}.json 의 "
                   f"source_match_candidates 참고)")
-        layout = extract_layout(img, tmpl_imgs, config,
-                                source_path=source_path)
+        layout, attach_meta = extract_layout(
+            img, tmpl_imgs, config,
+            source_path=source_path,
+            frontend_dir=frontend_dir,
+        )
+        if attach_meta and attach_meta.get("mode") == "closure":
+            closure_used += 1
         if not layout:
             fail += 1
         layouts.append((img.stem, layout))
         _dump_layout(layout, img, tmpl_imgs, dump_dir,
                      matched_source=source_path,
-                     source_candidates=candidates)
+                     source_candidates=candidates,
+                     source_attachment=attach_meta)
 
     render_pptx(layouts, output_pptx,
                 aspect_hint_image=tmpl_imgs[0] if tmpl_imgs else None,
@@ -943,6 +1049,7 @@ def convert(captures_dir: Path, templates_dir: Path,
         "source_matched": matched,
         "source_matched_via_mapping": matched_via_mapping,
         "source_indexed": len(source_index),
+        "closure_used": closure_used,
         "style_keys_extracted": len(style_raw),
         "pptx": str(output_pptx),
         "llm_raw_dir": str(dump_dir),
