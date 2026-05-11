@@ -14,10 +14,12 @@
  - 도형 스타일 고정 (검정 선/흰 배경/맑은 고딕). 색상/폰트의 템플릿
    반영은 PoC 동작 확인 후 후속.
 
-모델 선택 우선순위:
- - ``SCREEN_LLM_MODEL`` env > ``PATTERN_LLM_MODEL`` > ``LLM_MODEL``
-   (``_call_llm`` 내부 우선순위). 사용자는 ``.env`` 에
-   ``SCREEN_LLM_MODEL=<vision-capable-id>`` 만 추가하면 된다.
+모델 선택:
+ - ``_call_llm`` 우선순위 (``PATTERN_LLM_MODEL`` > ``LLM_MODEL`` >
+   config.yaml ``llm.model``) 를 그대로 따른다. 화면변환 전용 env 키는
+   두지 않고 기존 키를 공유한다. vision 가능 모델을 쓰려면
+   ``PATTERN_LLM_MODEL`` 또는 ``LLM_MODEL`` 을 Qwen3-VL/2.5-VL 등으로
+   지정해야 한다.
 """
 from __future__ import annotations
 

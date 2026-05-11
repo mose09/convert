@@ -69,10 +69,12 @@ ORACLE_TOBE_DSN / ORACLE_TOBE_USER / ORACLE_TOBE_PASSWORD
 LLM_API_BASE / LLM_API_KEY / LLM_MODEL
 # 임베딩 (erd-rag)
 EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_MODEL
-# 패턴 발견 + biz extraction 전용 (코딩 특화 모델 권장)
+# 패턴 발견 + biz extraction + 화면변환 (vision) 전용
+# - 코딩 특화 모델 권장 (discover-patterns / analyze-legacy --extract-biz-logic)
+# - 화면변환기 (screen-converter) 도 같은 키 사용 — vision 가능 모델을
+#   쓰려면 PATTERN_LLM_MODEL 을 Qwen3-VL/2.5-VL 등으로 지정하거나,
+#   PATTERN_LLM_* 미설정 시 LLM_MODEL 을 vision 모델로 둔다.
 PATTERN_LLM_MODEL=qwen2.5-coder:14b
-# 화면변환기 (screen-converter) 전용 — vision 가능 모델 (Qwen3-VL/2.5-VL 등)
-SCREEN_LLM_MODEL=qwen3-vl:235b
 ```
 
 ### tree-sitter (옵트인, `--closure-llm`)
