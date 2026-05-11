@@ -21,6 +21,8 @@ import json
 import logging
 import os
 import re
+import shutil
+import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -1044,6 +1046,41 @@ def render_screen_html(layout: ScreenLayout) -> str:
     )
 
 
+def _find_mmdc_executable() -> Optional[str]:
+    """``mmdc`` (mermaid-cli) executable 위치 1 회 lookup. PATH 에 없으면 None.
+
+    Windows 면 ``mmdc.cmd`` 도 같이 검색.
+    """
+    return shutil.which("mmdc") or shutil.which("mmdc.cmd")
+
+
+def _render_mmd_to_svg(mmdc_path: str, mmd_path: str,
+                        timeout: int = 30) -> Optional[str]:
+    """mmdc 로 .mmd → .svg 변환. 성공 시 svg 경로 반환, 실패 시 None.
+
+    실패 원인 (timeout / puppeteer 환경 문제 / 잘못된 mermaid 코드 등) 은
+    warning 로그만 남기고 호출자가 계속 진행.
+    """
+    svg_path = mmd_path[:-4] + ".svg" if mmd_path.endswith(".mmd") else mmd_path + ".svg"
+    try:
+        result = subprocess.run(
+            [mmdc_path, "-i", mmd_path, "-o", svg_path,
+             "-b", "transparent"],
+            capture_output=True, text=True, timeout=timeout, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("mmdc timeout (%ds) for %s", timeout, mmd_path)
+        return None
+    except Exception as e:
+        logger.warning("mmdc 실행 오류 %s: %s", mmd_path, e)
+        return None
+    if result.returncode == 0 and os.path.isfile(svg_path):
+        return svg_path
+    logger.warning("mmdc 변환 실패 %s: rc=%s stderr=%s",
+                   mmd_path, result.returncode, (result.stderr or "")[:200])
+    return None
+
+
 def write_screen_html_files(out_dir: str,
                              layouts: Dict[str, ScreenLayout]) -> Dict[str, str]:
     """``{file_rel: html_path}`` 반환. 화면별 .html 파일 저장.
@@ -1052,13 +1089,16 @@ def write_screen_html_files(out_dir: str,
     file_rel 의 첫 segment (대개 repo / bucket / app slug). 같은 폴더에
     수백 개 화면이 평탄하게 쌓이지 않도록 1단계 분리.
 
-    flowchart 가 있는 화면은 같은 위치에 ``.mmd`` 파일도 함께 떨굼 —
-    PowerPoint 편집 도형으로 변환하려는 사용자가 ``mmdc -i X.mmd -o X.svg``
-    로 SVG 일괄 변환 후 PPT ``삽입 → 그림 → SVG`` → ``도형으로 변환`` 가능.
+    flowchart 가 있는 화면은 같은 위치에 ``.mmd`` 와 (mmdc 가 PATH 에 있으면)
+    ``.svg`` 도 함께 떨굼 — PPT ``삽입 → 그림 → SVG`` → ``도형으로 변환``
+    으로 편집 가능한 도형 사용 가능. mmdc 미설치 시 ``.mmd`` 만 emit.
     """
     os.makedirs(out_dir, exist_ok=True)
     written: Dict[str, str] = {}
     n_mmd = 0
+    n_svg = 0
+    n_svg_failed = 0
+    mmdc_path = _find_mmdc_executable()
     for rel, layout in layouts.items():
         norm = rel.replace("\\", "/")
         parts = [p for p in norm.split("/") if p]
@@ -1089,9 +1129,21 @@ def write_screen_html_files(out_dir: str,
                 n_mmd += 1
             except Exception as e:
                 logger.warning("screen mmd write 실패 %s: %s", mmd_path, e)
+                continue
+            # mmdc 가 PATH 에 있으면 SVG 도 즉시 변환.
+            if mmdc_path:
+                if _render_mmd_to_svg(mmdc_path, mmd_path):
+                    n_svg += 1
+                else:
+                    n_svg_failed += 1
     if n_mmd:
-        print(f"  screen mermaid: {n_mmd} .mmd 파일 — `mmdc -i X.mmd -o X.svg` "
-              f"로 SVG 변환 후 PPT 에 삽입하면 편집 가능한 도형으로 쓸 수 있음.")
+        if mmdc_path:
+            print(f"  screen mermaid: {n_mmd} .mmd / {n_svg} .svg 변환 성공"
+                  + (f" ({n_svg_failed} 실패)" if n_svg_failed else "")
+                  + " — PPT 삽입 → 그림 → SVG → 도형으로 변환 가능.")
+        else:
+            print(f"  screen mermaid: {n_mmd} .mmd 파일 (mmdc 미설치 — `npm i -g "
+                  f"@mermaid-js/mermaid-cli` 후 재실행하면 .svg 자동 생성).")
     return written
 
 
