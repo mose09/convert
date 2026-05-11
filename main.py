@@ -1005,6 +1005,7 @@ def cmd_screen_converter(args):
 
     captures_dir = _Path(args.captures_dir)
     templates_dir = _Path(args.templates_dir)
+    frontend_dir = _Path(args.frontend_dir) if args.frontend_dir else None
 
     base_output = config.get("storage", {}).get("output_dir", "./output")
     if args.output:
@@ -1014,11 +1015,17 @@ def cmd_screen_converter(args):
         output_pptx = _Path(dated) / "screens.pptx"
 
     from oracle_embeddings.screen_converter import convert
-    stats = convert(captures_dir, templates_dir, output_pptx, config)
+    stats = convert(captures_dir, templates_dir, output_pptx, config,
+                    frontend_dir=frontend_dir)
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
     )
+    if stats.get("source_indexed"):
+        print(
+            f"  소스 매칭: {stats['source_matched']}/{stats['total']}장 "
+            f"(인덱스 {stats['source_indexed']} 파일)"
+        )
     print(f"  PPTX:    {stats['pptx']}")
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
@@ -2329,6 +2336,10 @@ def main():
                            help="AS-IS 화면 캡처 폴더 (png/jpg, 파일명=화면명)")
     sc_parser.add_argument("--templates-dir", required=True,
                            help="DRM 템플릿 캡처 폴더 (여러 장, VLM 시각 참조용)")
+    sc_parser.add_argument("--frontend-dir",
+                           help="(선택) 프론트엔드 React/Vue 소스 루트. 캡처 파일명에 "
+                                "매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부 — "
+                                "라벨/컬럼/버튼 추출 정확도 향상")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 

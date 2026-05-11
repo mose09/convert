@@ -1415,6 +1415,22 @@ python main.py screen-converter `
 **옵션**:
 - `--output <path>` — PPTX 출력 경로 명시 지정 (기본:
   `output/screen-converter/<YYYYMMDD>/screens.pptx`)
+- `--frontend-dir <path>` — (선택) React/Vue 소스 루트. 캡처 파일명에
+  매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부. 소스가 있는 화면은
+  라벨/컬럼/버튼 텍스트 정확도가 크게 향상 (VLM 이 픽셀에서 한글 읽는
+  대신 JSX `<input label="...">` / `<Column header="...">` / `<Button>`
+  를 그대로 옮김). 이미지는 `regions` (위치/크기) 추론에만 사용.
+
+**소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
+- 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과
+  소스 파일 경로/basename 토큰의 교집합으로 점수화.
+- 전체 stem 이 basename 의 substring → +10 / 토큰이 basename 에 있으면
+  +3 / path 에만 있으면 +1 / `pages/screens/views/routes/` 하위면 +2.
+- `_test.`, `.spec.`, `.stories.`, `.d.ts`, `node_modules/`, `dist/`,
+  `build/`, `.next/`, `__tests__/` 는 인덱스에서 제외.
+- 임계점수 미만이면 매칭 없음으로 처리 → 해당 화면은 이미지 only.
+- 매칭 결과는 `llm_raw/<화면>.json` 의 `matched_source` 필드에 기록 —
+  잘못 매칭됐는지 사전 확인 가능.
 
 **LLM 호출 흐름** (캡처 1장당 1회):
 1. `extract_layout(asis_image, template_images, config)` 가
@@ -1504,10 +1520,12 @@ python main.py analyze-legacy `
   --patterns output\legacy_analysis\patterns.yaml `
   --menu-only
 
-# 9. (선택) 소스 없는 화면은 캡처본으로 TO-BE PPTX 자동 생성 (Vision LLM)
+# 9. (선택) 화면 캡처로 TO-BE PPTX 자동 생성 (Vision LLM)
+#    --frontend-dir 지정 시 React 소스에서 라벨/컬럼/버튼을 정확히 추출
 python main.py screen-converter `
   --captures-dir input\asis_captures `
-  --templates-dir input\template_captures
+  --templates-dir input\template_captures `
+  --frontend-dir C:\workspace\frontend
 ```
 
 ## ERD 렌더링
