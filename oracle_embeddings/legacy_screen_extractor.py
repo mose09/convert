@@ -1051,9 +1051,14 @@ def write_screen_html_files(out_dir: str,
     레이아웃: ``out_dir/<top-folder>/<safe_rest>.html``. ``top-folder`` 는
     file_rel 의 첫 segment (대개 repo / bucket / app slug). 같은 폴더에
     수백 개 화면이 평탄하게 쌓이지 않도록 1단계 분리.
+
+    flowchart 가 있는 화면은 같은 위치에 ``.mmd`` 파일도 함께 떨굼 —
+    PowerPoint 편집 도형으로 변환하려는 사용자가 ``mmdc -i X.mmd -o X.svg``
+    로 SVG 일괄 변환 후 PPT ``삽입 → 그림 → SVG`` → ``도형으로 변환`` 가능.
     """
     os.makedirs(out_dir, exist_ok=True)
     written: Dict[str, str] = {}
+    n_mmd = 0
     for rel, layout in layouts.items():
         norm = rel.replace("\\", "/")
         parts = [p for p in norm.split("/") if p]
@@ -1073,6 +1078,20 @@ def write_screen_html_files(out_dir: str,
             written[rel] = path
         except Exception as e:
             logger.warning("screen html write 실패 %s: %s", path, e)
+            continue
+        # .mmd raw mermaid 코드 — sanitize 된 것 (mmdc 가 그대로 파싱 가능).
+        mmd_code = _sanitize_mermaid_flowchart(layout.flowchart_mermaid or "")
+        if mmd_code:
+            mmd_path = os.path.join(sub, safe + ".mmd")
+            try:
+                with open(mmd_path, "w", encoding="utf-8") as f:
+                    f.write(mmd_code + "\n")
+                n_mmd += 1
+            except Exception as e:
+                logger.warning("screen mmd write 실패 %s: %s", mmd_path, e)
+    if n_mmd:
+        print(f"  screen mermaid: {n_mmd} .mmd 파일 — `mmdc -i X.mmd -o X.svg` "
+              f"로 SVG 변환 후 PPT 에 삽입하면 편집 가능한 도형으로 쓸 수 있음.")
     return written
 
 
