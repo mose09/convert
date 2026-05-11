@@ -418,6 +418,28 @@ def _collect_prop_bindings(files: list[str], frontend_dir: str = ""
     return index
 
 
+def _handler_names_by_file(fn_index: dict[str, list[tuple[str, str]]],
+                            frontend_dir: str) -> dict[str, set[str]]:
+    """``{file_rel: {locally-defined handler names}}``.
+
+    cross-file prop binding 의 같은 handler 이름이 마커 노이즈가 되는 케이스
+    제거용. 같은 이름이 현재 파일에 정의되어 있으면 부모 호출 마킹에서
+    제외 (사용자 보고: ``close={this.PopoverClose}`` 가 같은 파일인데
+    ``parent.PopoverClose`` 로 잡힘 — 다른 파일에 동명 binding 있어서).
+    """
+    out: dict[str, set[str]] = {}
+    if not frontend_dir:
+        return out
+    for name, entries in fn_index.items():
+        for fp, _ in entries:
+            try:
+                rel = os.path.relpath(fp, frontend_dir)
+            except Exception:
+                continue
+            out.setdefault(rel, set()).add(name)
+    return out
+
+
 def _is_apps_react_file(rel_path: str) -> bool:
     """``apps/<...>/index.{js,jsx,ts,tsx}`` entry 또는 popup 키워드 폴더
     안 ``.{js,jsx,ts,tsx}`` 단일 파일. 이외는 helper / framework 컴포넌트.
@@ -1259,6 +1281,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     # 부모→자식 prop binding (``<Child propX={this.handlerY}>``) 인덱스.
     # 자식이 ``this.props.X(...)`` 호출 시 chain follow 가 부모 함수까지 도달.
     prop_index = _collect_prop_bindings(all_files, frontend_dir)
+    # 파일별 로컬 정의 handler 이름 — cross-file binding 같은 이름 noise 필터용.
+    handlers_by_file = _handler_names_by_file(fn_index, frontend_dir)
 
     triggers: dict[str, set[str]] = {}
 
@@ -1349,9 +1373,13 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         tag_text = label or handler or "<inline>"
         # 다른 파일의 진짜 부모 함수 호출만 표시 (같은 파일 self-binding 은
         # _scan_body_with_chain 단계에서 이미 via_props 에 추가 X).
+        # 추가 필터: handler 이름이 현재 파일에 로컬 정의되어 있으면 cross-file
+        # 동명 binding 은 noise → 제외. 사용자 보고: close={this.PopoverClose}
+        # 가 같은 파일인데 parent.PopoverClose 가 잡히는 케이스.
+        via_props_filtered = via_props - handlers_by_file.get(rel, set())
         parent_suffix = ""
-        if via_props:
-            joined = ", ".join(f"parent.{n}" for n in sorted(via_props))
+        if via_props_filtered:
+            joined = ", ".join(f"parent.{n}" for n in sorted(via_props_filtered))
             parent_suffix = f" → {joined}"
         trigger_label = f"[{event_type}{parent_suffix}] {tag_text}"
         for canonical in urls_in_handler:
@@ -1405,6 +1433,8 @@ def collect_handler_contexts(
     # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
     # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
     prop_index = _collect_prop_bindings(all_files, frontend_dir)
+    # 파일별 로컬 정의 handler 이름 — cross-file binding 같은 이름 noise 필터용.
+    handlers_by_file = _handler_names_by_file(fn_index, frontend_dir)
     # 메인 entry set — sub-component 가 어느 메인으로 redirect 될지 결정.
     # nested apps (apps/X/Y/index.js) 도 cover.
     main_files = _collect_main_entries(all_files, frontend_dir)
@@ -1547,8 +1577,10 @@ def collect_handler_contexts(
             "jsx_slice": jsx,
             "validation_props": validation_props,
             # 다른 파일에서 prop binding 으로 도달한 부모 함수 이름들.
-            # 같은 파일 self-binding 은 current_file 필터로 이미 제외됨.
-            "parent_handlers": sorted(via_props),
+            # 같은 파일 self-binding 은 current_file 필터로 이미 제외됨 +
+            # 동명 cross-file binding (같은 이름이 현재 파일에 정의되어 있으면)
+            # 도 noise 로 간주해서 제외 — local 자기-호출이 우선.
+            "parent_handlers": sorted(via_props - handlers_by_file.get(rel, set())),
         }
         for u in urls_in_handler:
             out.setdefault(u, []).append(ctx)
