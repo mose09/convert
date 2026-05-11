@@ -1652,6 +1652,7 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
         closure_popup_augment=bool(getattr(args, "closure_popup_augment", False)),
         closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
         closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
+        include_url_less=bool(getattr(args, "extract_screen_layout", False)),
     )
     print(f"  handler contexts: {len(handlers_by_url)} URLs collected")
 

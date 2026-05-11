@@ -1388,6 +1388,37 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     return {k: sorted(v) for k, v in triggers.items()}
 
 
+_NARRATIVE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"setState\s*\(\s*\{[^}]*\b(visible|open|isOpen|show)\b[^}]*:\s*true",
+                re.DOTALL), "popup 열기"),
+    (re.compile(r"\bset(Visible|Open|Show)\s*\(\s*true\b"), "popup 열기"),
+    (re.compile(r"\bopenModal\s*\(|\bshowModal\s*\(|\.show\s*\(\s*\)"), "popup 열기"),
+    (re.compile(r"\bsetState\s*\("), "상태 갱신"),
+    (re.compile(r"\buseState\s*\(|\bset[A-Z]\w*\s*\("), "상태 갱신"),
+    (re.compile(r"\bdispatch\s*\("), "redux dispatch"),
+    (re.compile(r"\bhistory\.(push|replace|go)\s*\(|\bnavigate\s*\("), "화면 이동"),
+    (re.compile(r"\bwindow\.(open|close)\s*\("), "윈도우 제어"),
+]
+
+
+def _describe_handler_body(body: str) -> str:
+    """handler body 의 사이드이펙트 narrative — URL 호출 없는 버튼 설명용.
+
+    regex 패턴 매칭으로 popup 열기 / 상태 갱신 / dispatch / 화면 이동 등을
+    short 라벨로 요약. 동일 카테고리 중복 제거. URL 무관 이벤트도 events
+    리스트에 의미 있는 정보 함께 표시하기 위함.
+    """
+    if not body:
+        return ""
+    found: list[str] = []
+    for pat, desc in _NARRATIVE_PATTERNS:
+        if desc in found:
+            continue
+        if pat.search(body):
+            found.append(desc)
+    return ", ".join(found)
+
+
 def collect_handler_contexts(
     frontend_dir: str,
     api_index: dict[str, list[str]],
@@ -1397,6 +1428,7 @@ def collect_handler_contexts(
     closure_popup_augment: bool = False,
     closure_max_depth: int = 3,
     closure_token_budget: int = 12000,
+    include_url_less: bool = False,
 ) -> dict[str, list[dict]]:
     """Phase B biz extraction 전용 수집기.
 
@@ -1557,7 +1589,7 @@ def collect_handler_contexts(
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
-        if not urls_in_handler:
+        if not urls_in_handler and not include_url_less:
             continue
         label = ev.get("label") or ""
         if handler and not label:
@@ -1568,12 +1600,13 @@ def collect_handler_contexts(
         offset = ev["source_offset"]
         jsx = _locate_enclosing_jsx(content, offset)
         validation_props = extract_validation_props(jsx)
+        body_for_narrative = ev["body"] or (bodies_to_scan[0] if bodies_to_scan else "")
         ctx = {
             "file": _resolve_screen_file(rel, popup_set, main_files),
             "handler": handler or f"<inline:{event_type}>",
             "event": event_type,
             "label": label,
-            "body": ev["body"] or (bodies_to_scan[0] if bodies_to_scan else ""),
+            "body": body_for_narrative,
             "jsx_slice": jsx,
             "validation_props": validation_props,
             # 다른 파일에서 prop binding 으로 도달한 부모 함수 이름들.
@@ -1581,9 +1614,18 @@ def collect_handler_contexts(
             # 동명 cross-file binding (같은 이름이 현재 파일에 정의되어 있으면)
             # 도 noise 로 간주해서 제외 — local 자기-호출이 우선.
             "parent_handlers": sorted(via_props - handlers_by_file.get(rel, set())),
+            # JSX 출현 순서 (events 시트 정렬 secondary key) + URL 무관
+            # 이벤트 narrative (popup 열기 / 상태 갱신 / dispatch 등).
+            "source_offset": offset,
+            "narrative": _describe_handler_body(body_for_narrative),
         }
-        for u in urls_in_handler:
-            out.setdefault(u, []).append(ctx)
+        if urls_in_handler:
+            for u in urls_in_handler:
+                out.setdefault(u, []).append(ctx)
+        else:
+            # URL 무관 이벤트는 sentinel key "" 로 묶음 — caller 가
+            # ``include_url_less=True`` 으로 옵트인한 경우만 emit.
+            out.setdefault("", []).append(ctx)
 
     return out
 

@@ -51,6 +51,8 @@ class ScreenEvent:
     event: str = ""          # onClick / onChange / componentDidMount ...
     backend_url: str = ""
     parent_handlers: List[str] = field(default_factory=list)  # this.props.X → 부모 함수 이름
+    narrative: str = ""      # URL 무관 사이드이펙트 — "popup 열기 / 상태 갱신" 등
+    source_offset: int = -1  # JSX 출현 순서 (정렬 secondary key, -1 = unknown)
 
 
 @dataclass
@@ -274,7 +276,8 @@ def _build_user_prompt(file_rel: str, file_content: str,
                      f"→ {len(body)} chars 만 LLM 전달)")
         source_section = f"## React 소스\n```jsx\n{body}\n```"
     url_lines = []
-    for handler, urls in sorted(url_map.items()):
+    for handler, entry in sorted(url_map.items()):
+        urls = entry.get("urls") if isinstance(entry, dict) else entry
         if urls:
             url_lines.append(f"  {handler} → {', '.join(sorted(set(urls)))}")
     url_block = "\n".join(url_lines) if url_lines else "  (없음)"
@@ -355,20 +358,36 @@ def _call_llm_safe(prompt: str, config: Dict[str, Any],
 # ── Fallback (LLM 없을 때) — 정적 분석 결과만 가지고 events 만 채움 ──
 
 
-def _fallback_layout(file_rel: str, url_map: Dict[str, List[str]]) -> ScreenLayout:
+def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> ScreenLayout:
     events: List[ScreenEvent] = []
-    for handler, urls in sorted(url_map.items()):
-        for u in sorted(set(urls or [])):
-            # handler 라벨이 [event] label 형태면 분리
-            m = re.match(r"\[(?P<ev>[^\]]+)\]\s*(?P<label>.*)", handler)
-            if m:
+    for handler, entry in url_map.items():
+        # backward-compat: entry 가 plain list 면 기존 동작 유지.
+        if isinstance(entry, list):
+            urls = entry
+            source_offset = -1
+            narrative = ""
+        else:
+            urls = entry.get("urls") or []
+            source_offset = int(entry.get("source_offset", -1))
+            narrative = entry.get("narrative", "")
+        m = re.match(r"\[(?P<ev>[^\]]+)\]\s*(?P<label>.*)", handler)
+        if m:
+            trigger = m.group("label").strip() or handler
+            event_name = m.group("ev").strip()
+        else:
+            trigger, event_name = handler, ""
+        if urls:
+            for u in sorted(set(urls)):
                 events.append(ScreenEvent(
-                    trigger=m.group("label").strip() or handler,
-                    event=m.group("ev").strip(),
-                    backend_url=u,
+                    trigger=trigger, event=event_name, backend_url=u,
+                    narrative=narrative, source_offset=source_offset,
                 ))
-            else:
-                events.append(ScreenEvent(trigger=handler, event="", backend_url=u))
+        else:
+            # URL 무관 이벤트도 1 row — narrative 만 보여줌.
+            events.append(ScreenEvent(
+                trigger=trigger, event=event_name, backend_url="",
+                narrative=narrative, source_offset=source_offset,
+            ))
     return ScreenLayout(
         file=file_rel,
         page_title=os.path.splitext(os.path.basename(file_rel))[0],
@@ -429,13 +448,15 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
 
 
 def _group_handlers_by_file(handlers_by_url: Dict[str, List[Dict[str, Any]]]
-                            ) -> Dict[str, Dict[str, List[str]]]:
-    """``{file: {handler_label: [url, ...]}}`` 으로 변환.
+                            ) -> Dict[str, Dict[str, Dict[str, Any]]]:
+    """``{file: {handler_label: {urls, source_offset, narrative}}}`` 으로 변환.
 
-    parent_handlers 가 있으면 (다른 파일에서 prop binding 으로 도달한 부모
-    함수) event_marker 에 ``→ parent.handleX`` 추가.
+    - parent_handlers 가 있으면 event_marker 에 ``→ parent.handleX`` 추가.
+    - URL 무관 이벤트 (sentinel key ``""``) 도 emit — narrative 만 채워진
+      엔트리로 들어감. ``--extract-screen-layout`` 화면 mockup 의 events
+      테이블에 모든 버튼 표시 (URL 없어도 popup 열기 / 상태 갱신 narrative).
     """
-    out: Dict[str, Dict[str, List[str]]] = {}
+    out: Dict[str, Dict[str, Dict[str, Any]]] = {}
     for url, ctx_list in (handlers_by_url or {}).items():
         for ctx in ctx_list or []:
             f = ctx.get("file") or ""
@@ -449,7 +470,21 @@ def _group_handlers_by_file(handlers_by_url: Dict[str, List[Dict[str, Any]]]
             label = ctx.get("label") or ""
             tag = label or handler or "<inline>"
             full_handler = f"[{event_marker}] {tag}" if event_marker else tag
-            out.setdefault(f, {}).setdefault(full_handler, []).append(url)
+            entry = out.setdefault(f, {}).setdefault(full_handler, {
+                "urls": [],
+                "source_offset": ctx.get("source_offset", -1),
+                "narrative": ctx.get("narrative", ""),
+            })
+            if url and url not in entry["urls"]:
+                entry["urls"].append(url)
+            # source_offset/narrative — 동일 handler 가 여러 url 로 emit 되면
+            # 더 작은 (먼저 등장한) offset 으로 갱신, narrative 는 union.
+            so = ctx.get("source_offset", -1)
+            if so != -1 and (entry["source_offset"] == -1 or so < entry["source_offset"]):
+                entry["source_offset"] = so
+            n = ctx.get("narrative", "")
+            if n and n not in entry["narrative"]:
+                entry["narrative"] = (entry["narrative"] + ", " + n).lstrip(", ")
     return out
 
 
@@ -805,35 +840,53 @@ def _event_sort_rank(event: str) -> int:
 
 
 def _render_events(events: List[ScreenEvent]) -> str:
-    """Trigger + Event 별로 그룹화 후 한 row 에 backend URL 들을 줄바꿈으로
-    join. 사용자 요청: 화면오픈 (mount) → onChange → onClick 순으로 정렬.
+    """Trigger + Event 별로 그룹화 후 한 row 에 backend URL + narrative.
+
+    정렬: lifecycle (mount) → onChange → onClick → 나머지 (rank 우선),
+    같은 rank 안에서는 **JSX 출현 순서** (source_offset) → trigger 라벨.
+    URL 없는 버튼 (popup 호출 / 상태 갱신 등) 도 narrative 열에 표시.
     """
     if not events:
         return ""
-    # (trigger, event) → ordered unique URLs
-    grouped: dict[tuple[str, str], list[str]] = {}
+    # (trigger, event) → {urls, source_offset, narrative}
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
     for e in events:
         key = (e.trigger or "<inline>", e.event or "")
-        urls = grouped.setdefault(key, [])
-        if e.backend_url and e.backend_url not in urls:
-            urls.append(e.backend_url)
-    # 정렬: event rank → trigger 알파벳
-    sorted_keys = sorted(
-        grouped.keys(),
-        key=lambda k: (_event_sort_rank(k[1]), k[1].lower(), k[0])
-    )
+        rec = grouped.setdefault(key, {
+            "urls": [], "source_offset": e.source_offset, "narrative": e.narrative,
+        })
+        if e.backend_url and e.backend_url not in rec["urls"]:
+            rec["urls"].append(e.backend_url)
+        if e.source_offset != -1 and (rec["source_offset"] == -1
+                                      or e.source_offset < rec["source_offset"]):
+            rec["source_offset"] = e.source_offset
+        if e.narrative and e.narrative not in rec["narrative"]:
+            rec["narrative"] = (rec["narrative"] + ", " + e.narrative).lstrip(", ")
+    # 정렬: rank → source_offset (없으면 매우 큼) → trigger
+    def _sort_key(item):
+        (trig, ev), rec = item
+        so = rec["source_offset"]
+        so_key = so if so != -1 else 1_000_000
+        return (_event_sort_rank(ev), so_key, trig)
     rows = []
-    for key in sorted_keys:
-        trigger, event = key
-        urls = grouped[key]
-        url_html = "<br>".join(f"<code>{_esc(u)}</code>" for u in urls) or "—"
-        rows.append(
-            f"<tr><td>{_esc(trigger)}</td><td>{_esc(event)}</td>"
-            f"<td>{url_html}</td></tr>"
-        )
+    has_narrative = any(rec["narrative"] for rec in grouped.values())
+    for (trigger, event), rec in sorted(grouped.items(), key=_sort_key):
+        url_html = "<br>".join(f"<code>{_esc(u)}</code>" for u in rec["urls"]) or "—"
+        narr_html = _esc(rec["narrative"]) or "—"
+        if has_narrative:
+            rows.append(
+                f"<tr><td>{_esc(trigger)}</td><td>{_esc(event)}</td>"
+                f"<td>{url_html}</td><td>{narr_html}</td></tr>"
+            )
+        else:
+            rows.append(
+                f"<tr><td>{_esc(trigger)}</td><td>{_esc(event)}</td>"
+                f"<td>{url_html}</td></tr>"
+            )
+    head_extra = "<th>설명</th>" if has_narrative else ""
     return (f"<section class='events'><h2>이벤트 → 백엔드 URL</h2>"
             f"<table><thead><tr><th>Trigger</th><th>Event</th>"
-            f"<th>Backend URL</th></tr></thead>"
+            f"<th>Backend URL</th>{head_extra}</tr></thead>"
             f"<tbody>{''.join(rows)}</tbody></table></section>")
 
 
