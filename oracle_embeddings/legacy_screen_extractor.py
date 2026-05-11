@@ -1110,13 +1110,17 @@ def export_flowchart_pptx(layouts: Dict[str, ScreenLayout],
         from pptx.util import Inches, Pt
     except ImportError:
         logger.warning(
-            "python-pptx 미설치 — pptx export skip. `pip install python-pptx`")
+            "python-pptx 미설치 — pptx export skip. "
+            "폐쇄망: `python -m pip download python-pptx -d .\\wheels "
+            "--platform win_amd64 --python-version 311 --only-binary=:all:` "
+            "후 `python -m pip install --no-index --find-links=.\\wheels python-pptx`")
         return None
     mmdc_path = _find_mmdc_executable()
     if not mmdc_path:
         logger.warning(
             "mmdc 미설치 — pptx export 위한 SVG 변환 불가. "
-            "`npm i -g @mermaid-js/mermaid-cli`")
+            "사내망에서 npm 가능하면 `npm install -g @mermaid-js/mermaid-cli`, "
+            "안 되면 사내 npm registry 통해 사전 wheel/tarball 설치.")
         return None
     relevant = {rel: l for rel, l in layouts.items()
                 if (l.flowchart_mermaid or "").strip()}
