@@ -1006,6 +1006,8 @@ def cmd_screen_converter(args):
     captures_dir = _Path(args.captures_dir)
     templates_dir = _Path(args.templates_dir)
     frontend_dir = _Path(args.frontend_dir) if args.frontend_dir else None
+    source_mapping_path = (_Path(args.source_mapping)
+                           if args.source_mapping else None)
 
     base_output = config.get("storage", {}).get("output_dir", "./output")
     if args.output:
@@ -1016,15 +1018,18 @@ def cmd_screen_converter(args):
 
     from oracle_embeddings.screen_converter import convert
     stats = convert(captures_dir, templates_dir, output_pptx, config,
-                    frontend_dir=frontend_dir)
+                    frontend_dir=frontend_dir,
+                    source_mapping_path=source_mapping_path)
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
     )
-    if stats.get("source_indexed"):
+    if stats.get("source_indexed") or stats.get("source_matched"):
+        via_map = stats.get("source_matched_via_mapping", 0)
+        suffix = f", 그 중 매핑 {via_map}장" if via_map else ""
         print(
             f"  소스 매칭: {stats['source_matched']}/{stats['total']}장 "
-            f"(인덱스 {stats['source_indexed']} 파일)"
+            f"(인덱스 {stats['source_indexed']} 파일{suffix})"
         )
     print(f"  PPTX:    {stats['pptx']}")
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
@@ -2340,6 +2345,11 @@ def main():
                            help="(선택) 프론트엔드 React/Vue 소스 루트. 캡처 파일명에 "
                                 "매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부 — "
                                 "라벨/컬럼/버튼 추출 정확도 향상")
+    sc_parser.add_argument("--source-mapping",
+                           help="(선택) 캡처 stem → 컴포넌트 경로 수기 매핑 YAML "
+                                "(휴리스틱 매칭이 실패하는 경우용). "
+                                "값이 상대 경로면 --frontend-dir 기준 resolve. "
+                                "예: input/screen_source_mapping.yaml")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
