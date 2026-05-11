@@ -1418,10 +1418,18 @@ python main.py screen-converter `
   파일명에 시각 stamp 가 들어가서, 이전 결과를 PowerPoint 에 열어둔
   채 재실행해도 잠금 충돌 없이 새 파일로 저장됨)
 - `--frontend-dir <path>` — (선택) React/Vue 소스 루트. 캡처 파일명에
-  매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부. 소스가 있는 화면은
-  라벨/컬럼/버튼 텍스트 정확도가 크게 향상 (VLM 이 픽셀에서 한글 읽는
-  대신 JSX `<input label="...">` / `<Column header="...">` / `<Button>`
-  를 그대로 옮김). 이미지는 `regions` (위치/크기) 추론에만 사용.
+  매칭되는 entry 컴포넌트 파일을 찾고, **`legacy_react_closure.build_closure`
+  를 호출해 entry + import 그래프 BFS 로 자식 컴포넌트까지 한 덩어리로
+  번들** 한 뒤 VLM 프롬프트에 Markdown 으로 첨부. 즉 `index.tsx` 의
+  `render()` 안에 `<SearchPanel/>` / `<OrderTable/>` 같이 분리된 자식
+  들도 같이 LLM 에 던져짐 (max_depth=3, token_budget=20K). 라벨/컬럼/
+  버튼 정확도가 크게 향상 (VLM 이 픽셀에서 한글 읽는 대신 JSX 의
+  텍스트를 그대로 옮김). 이미지는 `regions` (위치/크기) 추론에만 사용.
+  - **tree-sitter 필수** (`pip install tree-sitter tree-sitter-javascript
+    tree-sitter-typescript`). 미설치 시 자동 fallback — 단일 entry 파일을
+    8000자까지 잘라서 첨부 (자식 컴포넌트 미포함). 콘솔에 `(closure 미사용:
+    ModuleNotFoundError ...)` 표시됨. 폐쇄망 wheel install 가이드는
+    `CLAUDE.md` 의 "tree-sitter (옵트인)" 참고.
 - `--source-mapping <yaml>` — (선택) 휴리스틱 매칭이 실패하는 캡처
   (예: 한글 캡처명 vs 영문 컴포넌트명) 를 수기로 매핑. 값이 상대 경로면
   `--frontend-dir` 기준 resolve:
@@ -1459,8 +1467,15 @@ python main.py screen-converter `
    모든 슬라이드가 이 값을 일관 적용 — 출력이 템플릿 비주얼과 맞도록.
    누락된 키는 `_DEFAULT_STYLE` (짙은 네이비 + 맑은 고딕) 로 fallback.
 2. **Layout 추출 (캡처당 1회)** — `extract_layout(asis_image,
-   template_images, config, source_path)` 가 AS-IS + 템플릿 + (있으면)
-   React 소스를 첨부, 다음 JSON 추출:
+   template_images, config, source_path, frontend_dir)` 가 AS-IS + 템플릿
+   + (있으면) **closure 번들 React 소스** 를 첨부, 다음 JSON 추출:
+   - `--frontend-dir` 와 매칭된 entry 가 모두 있으면, `build_closure` 가
+     entry 컴포넌트 + import 자식 컴포넌트들을 BFS 로 묶어 Markdown 으로
+     직렬화 (`# Screen / ## File: ...` 헤더 + `\`\`\`jsx` fences) → 그대로
+     프롬프트에 첨부. 콘솔에 `소스 첨부 (closure): N 파일, ~T tokens` 표시.
+   - 매칭 자체가 없거나 tree-sitter 미설치면 단일 파일 8000자 fallback.
+   - `llm_raw/<화면>.json` 의 `source_attachment` 필드에 `mode`/`file_count`/
+     `total_tokens`/`files[]` (depth, mode) 가 기록됨.
    ```json
    {
      "page_title": "주문 조회",
