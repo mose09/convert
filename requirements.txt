@@ -23,9 +23,12 @@ tree-sitter>=0.21
 tree-sitter-javascript>=0.21
 tree-sitter-typescript>=0.21
 
-# 화면변환기 (screen-converter): AS-IS 캡처 → TO-BE PPTX 도형 렌더용.
-# 폐쇄망 wheel install (tree-sitter 와 동일 패턴):
-#   pip download python-pptx -d ./wheels --platform win_amd64 \
-#     --python-version 311 --only-binary=:all:
-#   python -m pip install --no-index --find-links=./wheels python-pptx
+# python-pptx: 화면변환기 (screen-converter) + flowchart PPTX export
+# (--export-flowchart-pptx) 양쪽에서 사용. 폐쇄망 wheel install:
+#   인터넷 PC:
+#     python -m pip download python-pptx -d .\wheels ^
+#       --platform win_amd64 --python-version 311 --only-binary=:all:
+#   폐쇄망 PC (wheels 폴더 옮긴 후):
+#     python -m pip install --no-index --find-links=.\wheels python-pptx
+# (사용자 환경: `pip` 직접 실행 안 됨 → 항상 `python -m pip` 또는 `py -m pip`)
 python-pptx>=0.6.23
