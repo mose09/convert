@@ -1434,9 +1434,13 @@ python main.py screen-converter `
    표 헤더(빈 행 3줄) → 버튼(우측 정렬 둥근 사각형) → 노트 순으로 도형
    배치.
 
-**JSON 파싱 실패 시**: `_call_llm` 의 raw dump 인프라가
-`output/legacy_analysis/<YYYYMMDD>/pattern_llm_raw_screen_<파일명>.txt` 에
-원본 응답을 저장 — vision 미지원 모델/프롬프트 누락 진단에 사용.
+**디버깅 산출물** (렌더 결과가 기대와 다를 때 가장 먼저 확인):
+- `output/screen-converter/<YYYYMMDD>/llm_raw/<화면명>.json` — 매 호출의
+  파싱된 VLM layout dict (`{asis_image, template_images, layout}` 포함).
+  모델이 search 조건/컬럼/버튼을 실제로 뭐라고 추출했는지 확인 가능.
+- `output/legacy_analysis/<YYYYMMDD>/pattern_llm_raw_screen_<화면명>.txt`
+  — JSON 파싱 실패 시에만 떨어지는 raw text (vision 미지원 모델/프롬프트
+  누락 진단용).
 
 **PoC 범위 제한 (의도적, 동작 확인 후 후속)**:
 - 캐시 없음 (매번 VLM 호출)

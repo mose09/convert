@@ -23,6 +23,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -321,6 +322,28 @@ def render_pptx(layouts: list[tuple[str, dict]], output_path: Path) -> None:
 # ── 파이프라인 엔트리 ───────────────────────────────────────────────
 
 
+def _dump_layout(layout: dict, asis_image: Path, template_images: list[Path],
+                 dump_dir: Path) -> Path:
+    """Persist the parsed VLM layout dict for post-hoc inspection.
+
+    렌더링 결과가 기대와 다를 때 모델이 실제로 무엇을 추출했는지 확인
+    하기 위한 디버그 산출물. ``_call_llm`` 의 raw text dump 는 JSON 파싱
+    실패 때만 떨어지므로, 성공 케이스의 추출 결과는 여기서 따로 저장.
+    """
+    dump_dir.mkdir(parents=True, exist_ok=True)
+    record = {
+        "asis_image": asis_image.name,
+        "template_images": [t.name for t in template_images],
+        "layout": layout,
+    }
+    path = dump_dir / f"{asis_image.stem}.json"
+    path.write_text(
+        json.dumps(record, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    return path
+
+
 def convert(captures_dir: Path, templates_dir: Path,
             output_pptx: Path, config: dict) -> dict[str, Any]:
     asis_imgs = _list_images(captures_dir)
@@ -332,6 +355,8 @@ def convert(captures_dir: Path, templates_dir: Path,
 
     print(f"  AS-IS 캡처 {len(asis_imgs)}장 / 템플릿 {len(tmpl_imgs)}장 참조")
 
+    dump_dir = output_pptx.parent / "llm_raw"
+
     layouts: list[tuple[str, dict]] = []
     fail = 0
     for img in asis_imgs:
@@ -340,6 +365,7 @@ def convert(captures_dir: Path, templates_dir: Path,
         if not layout:
             fail += 1
         layouts.append((img.stem, layout))
+        _dump_layout(layout, img, tmpl_imgs, dump_dir)
 
     render_pptx(layouts, output_pptx)
 
@@ -348,4 +374,5 @@ def convert(captures_dir: Path, templates_dir: Path,
         "templates": len(tmpl_imgs),
         "fail": fail,
         "pptx": str(output_pptx),
+        "llm_raw_dir": str(dump_dir),
     }
