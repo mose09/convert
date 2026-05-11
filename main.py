@@ -991,6 +991,37 @@ def cmd_convert_mapping(args):
     print(f"사용 예: python main.py migration-impact --mapping {output_path} ...")
 
 
+def cmd_screen_converter(args):
+    """AS-IS 화면 캡처 폴더 → TO-BE PPTX (Vision LLM, PoC).
+
+    템플릿 캡처들을 비주얼 컨텍스트로 첨부해 VLM 이 한 번에 layout JSON
+    을 뽑고, python-pptx 로 도형 기반 슬라이드를 렌더한다. 캐시/스타일
+    추출 없는 단순 PoC — 동작 확인 후 후속 확장.
+    """
+    from pathlib import Path as _Path
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    captures_dir = _Path(args.captures_dir)
+    templates_dir = _Path(args.templates_dir)
+
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    if args.output:
+        output_pptx = _Path(args.output)
+    else:
+        dated = _build_dated_output_dir(base_output, "screen-converter")
+        output_pptx = _Path(dated) / "screens.pptx"
+
+    from oracle_embeddings.screen_converter import convert
+    stats = convert(captures_dir, templates_dir, output_pptx, config)
+    print(
+        f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
+        f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
+    )
+    print(f"  PPTX: {stats['pptx']}")
+
+
 def cmd_migrate_sql(args):
     """column_mapping.yaml 기반으로 MyBatis XML 전체를 TO-BE 스키마용으로 변환.
 
@@ -2288,6 +2319,18 @@ def main():
     cmap_parser.add_argument("--no-llm", action="store_true",
                              help="LLM 호출 없이 pipe-table heuristic 만 사용 (폐쇄망/오프라인)")
 
+    # screen-converter command (PoC)
+    sc_parser = subparsers.add_parser(
+        "screen-converter",
+        help="AS-IS 화면 캡처 폴더 → TO-BE PPTX 자동 생성 (Vision LLM, PoC)",
+    )
+    sc_parser.add_argument("--captures-dir", required=True,
+                           help="AS-IS 화면 캡처 폴더 (png/jpg, 파일명=화면명)")
+    sc_parser.add_argument("--templates-dir", required=True,
+                           help="DRM 템플릿 캡처 폴더 (여러 장, VLM 시각 참조용)")
+    sc_parser.add_argument("--output",
+                           help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
+
     # migrate-sql command
     ms_parser = subparsers.add_parser(
         "migrate-sql",
@@ -2437,6 +2480,8 @@ def main():
         cmd_migration_impact(args)
     elif args.command == "convert-mapping":
         cmd_convert_mapping(args)
+    elif args.command == "screen-converter":
+        cmd_screen_converter(args)
     elif args.command == "migrate-sql":
         cmd_migrate_sql(args)
     elif args.command == "validate-migration":

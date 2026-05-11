@@ -27,6 +27,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
 | `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 (`--format-only` 로 매핑 없이 포매터만 미리보기 가능) | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
+| `screen-converter` | AS-IS 화면 캡처 폴더 → TO-BE PPTX 도형 자동 생성 (Vision LLM 이 DRM 템플릿 캡처를 시각 참조로 layout JSON 추출 → python-pptx 렌더, PoC) | X | O |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -52,6 +53,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `output/audit/<날짜>/` | audit-standards |
 | `output/legacy_analysis/<날짜>/` | analyze-legacy + discover-patterns |
 | `output/migration/<날짜>/` | migration-impact + migrate-sql + validate-migration |
+| `output/screen-converter/<날짜>/` | screen-converter |
 
 예외:
 - `--output` 으로 명시 지정 시 사용자 경로 그대로 사용
@@ -92,6 +94,7 @@ convert/
     ├── legacy_report.py          # AS-IS 리포트 Markdown + Excel (최대 8시트)
     ├── legacy_biz_extractor.py   # Phase A: ServiceImpl 비즈니스 로직 LLM 추출 (opt-in)
     ├── legacy_util.py            # URL 정규화 공유 헬퍼
+    ├── screen_converter.py       # 화면변환기 PoC: AS-IS 캡처 → TO-BE PPTX (Vision LLM)
     └── migration/
         ├── mapping_model.py         # 매핑 dataclass
         ├── mapping_loader.py        # YAML 로드 + 검증
@@ -1372,6 +1375,74 @@ xlsx 행 하이라이트:
 
 ---
 
+### 14. 화면변환기 (screen-converter) — AS-IS 캡처 → TO-BE PPTX (PoC)
+
+소스 코드가 없는 화면 (외주 모듈, 레거시 ASP/JSP, 외부 시스템 캡처) 의
+AS-IS 화면 캡처 이미지를 **Vision LLM (VLM) 이 DRM 잠긴 PPT 템플릿 캡처와
+함께 보고** TO-BE 화면 레이아웃을 자동 생성합니다. 결과는 편집 가능한
+python-pptx 도형 (제목/검색 패널/표/버튼/노트) 으로 떨어집니다.
+
+**전제**:
+- `LLM_API_BASE` / `LLM_API_KEY` 에 vision-capable 모델 엔드포인트 연결
+  (예: Qwen3-VL 계열, LLaVA, Qwen2.5-VL 등). `SCREEN_LLM_MODEL` 환경변수로
+  화면변환 전용 모델 지정 가능, 미지정 시 `LLM_MODEL` fallback.
+- DRM 으로 PPT 템플릿 파일 자체는 못 열어도, **템플릿 슬라이드를 화면
+  캡처한 png/jpg** 가 1장 이상 있으면 됩니다 (여러 장 권장 — 표지/본문/
+  표 슬라이드 등).
+
+**실행**:
+
+```powershell
+# 1) 폴더 준비 — 파일명이 곧 화면명 (PPTX 슬라이드 타이틀 기본값)
+mkdir input\asis_captures
+mkdir input\template_captures
+# (AS-IS 화면 캡처들 → input\asis_captures\*.png
+#  DRM 템플릿 캡처들 → input\template_captures\*.png)
+
+# 2) 변환
+python main.py screen-converter `
+  --captures-dir input\asis_captures `
+  --templates-dir input\template_captures
+
+# 출력: output\screen-converter\<YYYYMMDD>\screens.pptx
+```
+
+**옵션**:
+- `--output <path>` — PPTX 출력 경로 명시 지정 (기본:
+  `output/screen-converter/<YYYYMMDD>/screens.pptx`)
+
+**LLM 호출 흐름** (캡처 1장당 1회):
+1. `extract_layout(asis_image, template_images, config)` 가
+   `legacy_pattern_discovery._call_llm(image_paths=[asis] + templates, ...)`
+   호출 — AS-IS + 모든 템플릿 캡처를 multimodal user content 로 첨부.
+2. VLM 응답 JSON:
+   ```json
+   {
+     "page_title": "주문 조회",
+     "search_fields": [{"label": "주문번호", "type": "text"}, ...],
+     "table_columns": ["주문번호", "주문일자", "고객사", ...],
+     "buttons": ["조회", "초기화", "엑셀"],
+     "notes": "검색 후 행 클릭 시 상세 팝업"
+   }
+   ```
+3. `render_pptx` 가 슬라이드당 제목 → 검색 패널(라벨+박스 그리드) →
+   표 헤더(빈 행 3줄) → 버튼(우측 정렬 둥근 사각형) → 노트 순으로 도형
+   배치.
+
+**JSON 파싱 실패 시**: `_call_llm` 의 raw dump 인프라가
+`output/legacy_analysis/<YYYYMMDD>/pattern_llm_raw_screen_<파일명>.txt` 에
+원본 응답을 저장 — vision 미지원 모델/프롬프트 누락 진단에 사용.
+
+**PoC 범위 제한 (의도적, 동작 확인 후 후속)**:
+- 캐시 없음 (매번 VLM 호출)
+- 템플릿 색상/폰트의 코드 추출 → 슬라이드 반영 없음 (도형 스타일 고정:
+  검정 보더 / 흰 배경 / 맑은 고딕 / 짙은 네이비 헤더·버튼)
+- `analyze-legacy --extract-screen-layout` 의 ScreenLayout JSON 직접 입력
+  모드 미지원 (지금은 항상 이미지 → VLM 경로)
+- `convert-menu` 산출물 `input/menu.md` 메뉴 계층 매칭 미연동
+
+---
+
 ### 6. 벡터 DB 임베딩 + RAG ERD
 
 ```powershell
@@ -1423,6 +1494,11 @@ python main.py analyze-legacy `
   --menu-md input\menu.md `
   --patterns output\legacy_analysis\patterns.yaml `
   --menu-only
+
+# 9. (선택) 소스 없는 화면은 캡처본으로 TO-BE PPTX 자동 생성 (Vision LLM)
+python main.py screen-converter `
+  --captures-dir input\asis_captures `
+  --templates-dir input\template_captures
 ```
 
 ## ERD 렌더링

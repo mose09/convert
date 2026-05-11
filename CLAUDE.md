@@ -24,7 +24,7 @@
 - **브랜치 전략**: GitHub Flow — `main` 안정. `claude/<task>-<id>` 피처
   브랜치 → PR squash-merge.
 
-## 주요 커맨드 (22종)
+## 주요 커맨드 (23종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -45,6 +45,7 @@
 | `migration-impact` | SQL Migration 사전 영향분석 | X | X |
 | `migrate-sql` | MyBatis XML 일괄 변환 + 5시트 리포트 | 선택 | X |
 | `validate-migration` | 변환 XML parse-only 검증 (Stage B) | X | O |
+| `screen-converter` | AS-IS 화면 캡처 + DRM 템플릿 캡처 → TO-BE PPTX 도형 (Vision LLM, PoC) | O | X |
 
 각 커맨드 상세 옵션: `python main.py <cmd> --help`. 모듈 / 파이프라인
 구조 / 회귀 mock / 해결된 이슈 표는 archive 참고.
@@ -70,6 +71,8 @@ LLM_API_BASE / LLM_API_KEY / LLM_MODEL
 EMBEDDING_API_BASE / EMBEDDING_API_KEY / EMBEDDING_MODEL
 # 패턴 발견 + biz extraction 전용 (코딩 특화 모델 권장)
 PATTERN_LLM_MODEL=qwen2.5-coder:14b
+# 화면변환기 (screen-converter) 전용 — vision 가능 모델 (Qwen3-VL/2.5-VL 등)
+SCREEN_LLM_MODEL=qwen3-vl:235b
 ```
 
 ### tree-sitter (옵트인, `--closure-llm`)

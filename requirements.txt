@@ -22,3 +22,10 @@ lxml>=5.0.0
 tree-sitter>=0.21
 tree-sitter-javascript>=0.21
 tree-sitter-typescript>=0.21
+
+# 화면변환기 (screen-converter): AS-IS 캡처 → TO-BE PPTX 도형 렌더용.
+# 폐쇄망 wheel install (tree-sitter 와 동일 패턴):
+#   pip download python-pptx -d ./wheels --platform win_amd64 \
+#     --python-version 311 --only-binary=:all:
+#   python -m pip install --no-index --find-links=./wheels python-pptx
+python-pptx>=0.6.23
