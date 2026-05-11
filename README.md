@@ -1440,36 +1440,58 @@ python main.py screen-converter `
 - 매칭 결과는 `llm_raw/<화면>.json` 의 `matched_source` 필드에 기록 —
   잘못 매칭됐는지 사전 확인 가능.
 
-**LLM 호출 흐름** (캡처 1장당 1회):
-1. `extract_layout(asis_image, template_images, config)` 가
-   `legacy_pattern_discovery._call_llm(image_paths=[asis] + templates, ...)`
-   호출 — AS-IS + 모든 템플릿 캡처를 multimodal user content 로 첨부.
-2. VLM 응답 JSON:
+**LLM 호출 흐름** (시작 시 style 1회 + 캡처 1장당 layout 1회):
+1. **Style profile 추출 (1회)** — `extract_style_profile(template_images,
+   config)` 가 템플릿 캡처 N장을 한 번에 VLM 에 첨부, 색·폰트·버튼 모양
+   JSON 추출. `output/screen-converter/<날짜>/style_profile.json` 저장.
+   ```json
+   {
+     "primary_color": "#0067A6", "title_color": "#003366",
+     "panel_bg": "#F2F8FF", "panel_border": "#B0CDE8",
+     "table_header_bg": "#0067A6", "table_header_text": "#FFFFFF",
+     "button_bg": "#FF6600", "button_text": "#FFFFFF",
+     "button_shape": "rounded",
+     "font_family": "나눔고딕"
+   }
+   ```
+   모든 슬라이드가 이 값을 일관 적용 — 출력이 템플릿 비주얼과 맞도록.
+   누락된 키는 `_DEFAULT_STYLE` (짙은 네이비 + 맑은 고딕) 로 fallback.
+2. **Layout 추출 (캡처당 1회)** — `extract_layout(asis_image,
+   template_images, config, source_path)` 가 AS-IS + 템플릿 + (있으면)
+   React 소스를 첨부, 다음 JSON 추출:
    ```json
    {
      "page_title": "주문 조회",
      "search_fields": [{"label": "주문번호", "type": "text"}, ...],
-     "table_columns": ["주문번호", "주문일자", "고객사", ...],
+     "table_columns": ["주문번호", "주문일자", ...],
      "buttons": ["조회", "초기화", "엑셀"],
-     "notes": "검색 후 행 클릭 시 상세 팝업"
+     "notes": "...",
+     "regions": { /* 각 섹션의 normalized bbox */ }
    }
    ```
-3. `render_pptx` 가 슬라이드당 제목 → 검색 패널(라벨+박스 그리드) →
-   표 헤더(빈 행 3줄) → 버튼(우측 정렬 둥근 사각형) → 노트 순으로 도형
-   배치.
+3. **렌더링** — `render_pptx` 가 슬라이드당 제목 → 검색 패널 → 표 →
+   버튼 → 노트 순으로 도형 배치. 위치는 `regions`, 색·폰트·버튼 모양은
+   style profile, 텍스트는 layout content (또는 React 소스).
 
 **디버깅 산출물** (렌더 결과가 기대와 다를 때 가장 먼저 확인):
+- `output/screen-converter/<YYYYMMDD>/style_profile.json` — 템플릿에서
+  추출한 색·폰트·버튼 모양 (`extracted` = VLM 출력 그대로, `resolved` =
+  기본값 병합 후 실제 적용 값). 출력이 템플릿과 색이 안 맞으면 여기서
+  확인.
 - `output/screen-converter/<YYYYMMDD>/llm_raw/<화면명>.json` — 매 호출의
-  파싱된 VLM layout dict (`{asis_image, template_images, layout}` 포함).
-  모델이 search 조건/컬럼/버튼을 실제로 뭐라고 추출했는지 확인 가능.
+  파싱된 VLM layout dict (`asis_image` / `template_images` /
+  `matched_source` / `source_match_candidates` / `layout` 포함).
+  모델이 search 조건/컬럼/버튼을 실제로 뭐라고 추출했는지 + React 소스
+  어느 파일이 매칭됐는지 확인.
 - `output/legacy_analysis/<YYYYMMDD>/pattern_llm_raw_screen_<화면명>.txt`
   — JSON 파싱 실패 시에만 떨어지는 raw text (vision 미지원 모델/프롬프트
   누락 진단용).
 
 **PoC 범위 제한 (의도적, 동작 확인 후 후속)**:
-- 캐시 없음 (매번 VLM 호출)
-- 템플릿 색상/폰트의 코드 추출 → 슬라이드 반영 없음 (도형 스타일 고정:
-  검정 보더 / 흰 배경 / 맑은 고딕 / 짙은 네이비 헤더·버튼)
+- 캐시 없음 (매번 VLM 호출 — 화면당 1회 + 시작 시 style 1회)
+- 템플릿 픽셀을 슬라이드 배경으로 깔지는 않음 (도형으로 재구성).
+  픽셀 단위 동일성이 필요하면 옵션 B (raster 배경 + 텍스트 오버레이)
+  검토 필요 — 편집/접근성 떨어짐
 - `analyze-legacy --extract-screen-layout` 의 ScreenLayout JSON 직접 입력
   모드 미지원 (지금은 항상 이미지 → VLM 경로)
 - `convert-menu` 산출물 `input/menu.md` 메뉴 계층 매칭 미연동
