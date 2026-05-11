@@ -1420,6 +1420,14 @@ python main.py screen-converter `
   라벨/컬럼/버튼 텍스트 정확도가 크게 향상 (VLM 이 픽셀에서 한글 읽는
   대신 JSX `<input label="...">` / `<Column header="...">` / `<Button>`
   를 그대로 옮김). 이미지는 `regions` (위치/크기) 추론에만 사용.
+- `--source-mapping <yaml>` — (선택) 휴리스틱 매칭이 실패하는 캡처
+  (예: 한글 캡처명 vs 영문 컴포넌트명) 를 수기로 매핑. 값이 상대 경로면
+  `--frontend-dir` 기준 resolve:
+  ```yaml
+  # input/screen_source_mapping.yaml
+  주문조회: src/pages/order/OrderInquiry.tsx
+  사용자관리: src/pages/admin/UserMgmt.tsx
+  ```
 
 **소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
 - 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과
