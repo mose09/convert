@@ -568,7 +568,7 @@ python main.py analyze-legacy `
 | `--sequence-diagram` | Mermaid sequence diagram 생성 (LLM 불필요, parser-only). |
 | `--sequence-diagram-group` | sequence diagram .md 묶음 단위. `main_menu` (default) / `menu_path` / `sub_menu` / `controller_class` / `backend_project` (레포) / `none` (endpoint 별). |
 | **`--frontend-only`** | **backend / 메뉴 / 컨트롤러 체인 모두 skip — React frontend 만 스캔**. `--frontend-dir` 또는 `--frontends-root` 필요. `--backend-*` 인자 무시. `--extract-screen-layout` 와 함께 쓰면 빠르게 화면 mockup 만 생성. |
-| **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` (브라우저로 더블클릭) |
+| **`--extract-screen-layout`** | **화면별 LLM 분석 + HTML mockup 생성 (Phase C)**. Page Title / Search Panel / DataTable / Edit Mode / Tabs / 이벤트→백엔드 URL. 산출물: `output/legacy_analysis/<일자>/screens/<file>.html` + `<file>.mmd` (flowchart 있는 화면). `.mmd` 는 `mmdc -i X.mmd -o X.svg` 로 SVG 변환 후 PowerPoint **삽입 → 그림 → SVG → 도형으로 변환** 으로 편집 가능한 도형으로 사용 가능. |
 | `--screen-max N` | screen layout 분석 최대 화면 수 cap (기본 200, LLM 비용 통제) |
 | `--render-screenshots` | (스텁) Playwright 로 진짜 React 화면 스크린샷. 사용자 PC 에 React 빌드/실행 + Playwright 셋업 가능할 때만. 현재 follow-up 대기. |
 | **`--closure-llm`** | (옵트인, tree-sitter 필요) Phase C LLM input 을 raw JSX + smart_slice 대신 **AST closure markdown** (import 그래프 BFS + popup 3 신호 facts box) 으로 보강. 미설치 시 자동 fallback. |
