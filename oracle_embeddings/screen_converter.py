@@ -246,6 +246,178 @@ def extract_style_profile(template_images: list[Path], config: dict) -> dict:
     return result
 
 
+# ── CSS 스타일 파싱 (TO-BE 스타일 가이드 파일 — LLM 비용 0) ──────────────
+
+
+_CSS_VAR_ALIASES: dict[str, list[str]] = {
+    "primary_color": ["primary-color", "color-primary", "brand-primary",
+                       "brand-color", "main-color", "color-main", "color-brand",
+                       "primary", "theme-primary"],
+    "title_color": ["title-color", "color-title", "heading-color",
+                     "color-heading", "text-heading", "h1-color"],
+    "section_label_color": ["section-color", "section-label-color",
+                              "label-color", "color-label", "secondary-text"],
+    "panel_bg": ["panel-bg", "panel-background", "search-bg", "filter-bg",
+                  "form-bg", "card-bg", "color-bg-panel"],
+    "panel_border": ["panel-border", "border-color", "color-border"],
+    "input_bg": ["input-bg", "field-bg", "form-field-bg", "color-bg-input"],
+    "input_border": ["input-border", "field-border", "form-field-border"],
+    "field_label_color": ["field-label-color", "input-label-color"],
+    "input_placeholder_color": ["placeholder-color", "color-placeholder"],
+    "table_header_bg": ["table-header-bg", "thead-bg", "grid-header-bg",
+                          "header-bg"],
+    "table_header_text": ["table-header-text", "thead-text",
+                            "grid-header-text", "header-text"],
+    "table_row_bg": ["table-row-bg", "tbody-bg", "grid-row-bg", "row-bg"],
+    "button_bg": ["button-bg", "btn-bg", "primary-button-bg",
+                   "color-btn-primary-bg"],
+    "button_text": ["button-text", "btn-text", "primary-button-text",
+                     "btn-color", "color-btn-primary-text"],
+    "font_family": ["font-family-base", "font-family", "font-sans",
+                     "font-default", "base-font"],
+    "notes_color": ["notes-color", "caption-color", "color-caption"],
+}
+
+
+def parse_css_style(css_path: Path | str) -> dict:
+    """CSS 파일 → style_profile dict.
+
+    추출 우선순위:
+      1. CSS 변수 (``:root { --foo: #fff }``) — alias 군으로 first-match
+      2. 의미 있는 클래스 (``.btn-primary``, ``thead`` 등) 의 속성
+      3. ``body`` / ``:root`` 의 ``font-family`` (첫 폰트만)
+
+    매칭 안 된 키는 dict 에 미포함 → ``_resolve_style`` 이 default 로 fallback.
+    LLM 호출 0, 결정적, 폐쇄망 친화.
+    """
+    p = Path(css_path)
+    if not p.is_file():
+        return {}
+    try:
+        text = p.read_text(encoding="utf-8", errors="ignore")
+    except Exception as e:
+        logger.warning("CSS 읽기 실패 %s: %s", p, e)
+        return {}
+
+    # 주석 제거
+    text = re.sub(r"/\*.*?\*/", "", text, flags=re.DOTALL)
+
+    out: dict[str, str] = {}
+
+    # 1. CSS 변수 인덱스
+    variables: dict[str, str] = {}
+    for m in re.finditer(r"--([\w-]+)\s*:\s*([^;]+);", text):
+        variables[m.group(1).strip().lower()] = m.group(2).strip()
+
+    def _resolve_value(v: str, _depth: int = 0) -> str:
+        """``var(--x, fallback)`` → 실제 값. 무한루프 방지 depth cap 4."""
+        if _depth >= 4:
+            return v.strip()
+        m = re.match(r"\s*var\s*\(\s*--([\w-]+)\s*(?:,\s*([^)]+))?\s*\)\s*$",
+                     v.strip())
+        if m:
+            ref = m.group(1).lower()
+            fallback = (m.group(2) or "").strip()
+            if ref in variables:
+                return _resolve_value(variables[ref], _depth + 1)
+            return fallback
+        return v.strip()
+
+    for key, aliases in _CSS_VAR_ALIASES.items():
+        for alias in aliases:
+            if alias in variables:
+                out[key] = _resolve_value(variables[alias])
+                break
+
+    # 2. 클래스 / 태그 속성 — 변수에서 못 찾은 키 보강
+    def _extract(sel_re: str, prop: str) -> str | None:
+        rule_re = re.compile(
+            rf"(^|[\s,{{}}]){sel_re}\s*(?:,[^{{]*)?\{{([^}}]+)\}}",
+            re.IGNORECASE | re.DOTALL | re.MULTILINE,
+        )
+        for m in rule_re.finditer(text):
+            body = m.group(2)
+            pm = re.search(rf"\b{prop}\s*:\s*([^;]+);", body, re.IGNORECASE)
+            if pm:
+                return _resolve_value(pm.group(1))
+        return None
+
+    # button bg/text
+    if "button_bg" not in out:
+        v = (_extract(r"\.btn-primary", "background-color")
+             or _extract(r"\.btn-primary", "background")
+             or _extract(r"\.button-primary", "background-color")
+             or _extract(r"\.btn\.primary", "background-color"))
+        if v:
+            out["button_bg"] = v
+    if "button_text" not in out:
+        v = (_extract(r"\.btn-primary", "color")
+             or _extract(r"\.button-primary", "color")
+             or _extract(r"\.btn\.primary", "color"))
+        if v:
+            out["button_text"] = v
+    # button shape
+    if "button_shape" not in out:
+        radius = (_extract(r"\.btn", "border-radius")
+                  or _extract(r"\.button", "border-radius"))
+        if radius:
+            rm = re.search(r"(\d+(?:\.\d+)?)", radius)
+            if rm:
+                out["button_shape"] = "rounded" if float(rm.group(1)) >= 2 else "square"
+    # table header
+    if "table_header_bg" not in out:
+        v = (_extract(r"thead", "background-color")
+             or _extract(r"thead", "background")
+             or _extract(r"\.table\s+thead", "background-color")
+             or _extract(r"\.grid-header", "background-color")
+             or _extract(r"\.ag-header", "background-color"))
+        if v:
+            out["table_header_bg"] = v
+    if "table_header_text" not in out:
+        v = (_extract(r"thead", "color")
+             or _extract(r"\.grid-header", "color")
+             or _extract(r"\.ag-header", "color"))
+        if v:
+            out["table_header_text"] = v
+    # panel bg/border
+    if "panel_bg" not in out:
+        v = (_extract(r"\.panel", "background-color")
+             or _extract(r"\.search-panel", "background-color")
+             or _extract(r"\.card", "background-color"))
+        if v:
+            out["panel_bg"] = v
+    if "panel_border" not in out:
+        v = _extract(r"\.panel", "border-color") or _extract(r"\.card", "border-color")
+        if v:
+            out["panel_border"] = v
+    # input bg/border
+    if "input_bg" not in out:
+        v = (_extract(r"input", "background-color")
+             or _extract(r"\.form-control", "background-color"))
+        if v:
+            out["input_bg"] = v
+    if "input_border" not in out:
+        v = (_extract(r"input", "border-color")
+             or _extract(r"\.form-control", "border-color"))
+        if v:
+            out["input_border"] = v
+    # font-family — body / :root / html
+    if "font_family" not in out:
+        v = (_extract(r"body", "font-family")
+             or _extract(r":root", "font-family")
+             or _extract(r"html", "font-family"))
+        if v:
+            out["font_family"] = v
+
+    # font-family 후처리 — 첫 폰트만 + quotes / fallback chain 제거.
+    if "font_family" in out:
+        ff = out["font_family"].split(",")[0].strip().strip("'\"")
+        if ff:
+            out["font_family"] = ff
+
+    return out
+
+
 # ── 소스 매칭 ────────────────────────────────────────────────────────
 
 _SOURCE_EXTS = (".tsx", ".jsx", ".ts", ".js", ".vue")
@@ -965,18 +1137,29 @@ def _dump_layout(layout: dict, asis_image: Path, template_images: list[Path],
     return path
 
 
-def convert(captures_dir: Path, templates_dir: Path,
+def convert(captures_dir: Path, templates_dir: Path | None,
             output_pptx: Path, config: dict,
             frontend_dir: Path | None = None,
-            source_mapping_path: Path | None = None) -> dict[str, Any]:
+            source_mapping_path: Path | None = None,
+            style_css_path: Path | None = None) -> dict[str, Any]:
     asis_imgs = _list_images(captures_dir)
-    tmpl_imgs = _list_images(templates_dir)
+    tmpl_imgs = _list_images(templates_dir) if templates_dir else []
     if not asis_imgs:
         raise SystemExit(f"AS-IS 캡처 없음 (png/jpg): {captures_dir}")
-    if not tmpl_imgs:
+    if templates_dir and not tmpl_imgs:
         raise SystemExit(f"템플릿 캡처 없음 (png/jpg): {templates_dir}")
 
-    print(f"  AS-IS 캡처 {len(asis_imgs)}장 / 템플릿 {len(tmpl_imgs)}장 참조")
+    # ``--style-css`` 명시 안 했어도 ``input/tobe_style.css`` 있으면 자동 사용.
+    if style_css_path is None:
+        auto_css = Path("input") / "tobe_style.css"
+        if auto_css.is_file():
+            style_css_path = auto_css
+
+    print(f"  AS-IS 캡처 {len(asis_imgs)}장"
+          + (f" / 템플릿 {len(tmpl_imgs)}장 참조" if tmpl_imgs else "")
+          + (f" / TO-BE CSS {style_css_path}" if style_css_path else ""))
+    if not tmpl_imgs and not style_css_path:
+        print("  ⚠ 템플릿 / CSS 둘 다 없음 — default 스타일로 진행")
 
     source_index = _build_source_index(frontend_dir)
     if frontend_dir is not None:
@@ -989,14 +1172,21 @@ def convert(captures_dir: Path, templates_dir: Path,
     if mapping:
         print(f"  수기 매핑 로드: {source_mapping_path} ({len(mapping)} 항목)")
 
-    # 템플릿에서 1회 style profile 추출 → 모든 슬라이드에 일관 적용
-    style_raw = extract_style_profile(tmpl_imgs, config)
+    # 스타일 — CSS 우선 (LLM 0), 템플릿이 있으면 VLM 추출로 보강 (CSS 가 우선).
+    style_from_css = parse_css_style(style_css_path) if style_css_path else {}
+    if style_from_css:
+        print(f"  CSS 스타일 파싱: {len(style_from_css)} 키 추출")
+    style_from_vlm = extract_style_profile(tmpl_imgs, config) if tmpl_imgs else {}
+    style_raw = {**style_from_vlm, **style_from_css}   # CSS 가 VLM 덮어쓰기
     style = _resolve_style(style_raw)
     style_path = output_pptx.parent / "style_profile.json"
     style_path.parent.mkdir(parents=True, exist_ok=True)
     style_path.write_text(
-        json.dumps({"extracted": style_raw, "resolved": style},
-                   ensure_ascii=False, indent=2),
+        json.dumps({
+            "extracted_from_css": style_from_css,
+            "extracted_from_vlm": style_from_vlm,
+            "resolved": style,
+        }, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
     print(f"    스타일 저장: {style_path.name} "

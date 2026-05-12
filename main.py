@@ -1004,10 +1004,11 @@ def cmd_screen_converter(args):
     config = load_config(args.config) if os.path.exists(args.config) else {}
 
     captures_dir = _Path(args.captures_dir)
-    templates_dir = _Path(args.templates_dir)
+    templates_dir = _Path(args.templates_dir) if args.templates_dir else None
     frontend_dir = _Path(args.frontend_dir) if args.frontend_dir else None
     source_mapping_path = (_Path(args.source_mapping)
                            if args.source_mapping else None)
+    style_css_path = _Path(args.style_css) if getattr(args, "style_css", None) else None
 
     base_output = config.get("storage", {}).get("output_dir", "./output")
     if args.output:
@@ -1021,7 +1022,8 @@ def cmd_screen_converter(args):
     from oracle_embeddings.screen_converter import convert
     stats = convert(captures_dir, templates_dir, output_pptx, config,
                     frontend_dir=frontend_dir,
-                    source_mapping_path=source_mapping_path)
+                    source_mapping_path=source_mapping_path,
+                    style_css_path=style_css_path)
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
@@ -2362,8 +2364,15 @@ def main():
     )
     sc_parser.add_argument("--captures-dir", required=True,
                            help="AS-IS 화면 캡처 폴더 (png/jpg, 파일명=화면명)")
-    sc_parser.add_argument("--templates-dir", required=True,
-                           help="DRM 템플릿 캡처 폴더 (여러 장, VLM 시각 참조용)")
+    sc_parser.add_argument("--templates-dir",
+                           help="(선택) DRM 템플릿 캡처 폴더 (여러 장, VLM 시각 참조). "
+                                "--style-css 와 함께 쓰면 CSS 가 우선 적용 + VLM 결과 보강.")
+    sc_parser.add_argument("--style-css",
+                           help="(선택) TO-BE 스타일 CSS 파일 경로. CSS 변수 + "
+                                "의미 있는 클래스 (`.btn-primary`, `thead`, `body` 등) 를 "
+                                "정규식으로 파싱해 style_profile dict 으로 변환 "
+                                "(LLM 호출 0). 미지정 시 `input/tobe_style.css` 가 "
+                                "있으면 자동 사용.")
     sc_parser.add_argument("--frontend-dir",
                            help="(선택) 프론트엔드 React/Vue 소스 루트. 캡처 파일명에 "
                                 "매칭되는 컴포넌트 파일을 찾아 VLM 프롬프트에 첨부 — "
