@@ -1150,10 +1150,20 @@ def convert(captures_dir: Path, templates_dir: Path | None,
         raise SystemExit(f"템플릿 캡처 없음 (png/jpg): {templates_dir}")
 
     # ``--style-css`` 명시 안 했어도 ``input/tobe_style.css`` 있으면 자동 사용.
+    # CWD 또는 repo root (이 모듈 위치 기준) 둘 다 시도.
     if style_css_path is None:
-        auto_css = Path("input") / "tobe_style.css"
-        if auto_css.is_file():
-            style_css_path = auto_css
+        candidates = [
+            Path("input") / "tobe_style.css",  # CWD 기준
+            Path(__file__).resolve().parent.parent / "input" / "tobe_style.css",  # repo root 기준
+        ]
+        for c in candidates:
+            if c.is_file():
+                style_css_path = c
+                break
+    elif not Path(style_css_path).is_file():
+        # 명시 경로가 잘못된 경우 silent skip 대신 명확히 알림.
+        print(f"  ⚠ --style-css 파일 없음: {style_css_path}")
+        style_css_path = None
 
     print(f"  AS-IS 캡처 {len(asis_imgs)}장"
           + (f" / 템플릿 {len(tmpl_imgs)}장 참조" if tmpl_imgs else "")
@@ -1174,8 +1184,27 @@ def convert(captures_dir: Path, templates_dir: Path | None,
 
     # 스타일 — CSS 우선 (LLM 0), 템플릿이 있으면 VLM 추출로 보강 (CSS 가 우선).
     style_from_css = parse_css_style(style_css_path) if style_css_path else {}
-    if style_from_css:
-        print(f"  CSS 스타일 파싱: {len(style_from_css)} 키 추출")
+    discovered_vars: list[str] = []
+    if style_css_path:
+        try:
+            _t = Path(style_css_path).read_text(encoding="utf-8", errors="ignore")
+            _t = re.sub(r"/\*.*?\*/", "", _t, flags=re.DOTALL)
+            discovered_vars = sorted(set(re.findall(r"--([\w-]+)\s*:", _t)))
+        except Exception:
+            pass
+        if style_from_css:
+            print(f"  CSS 스타일 파싱 ✓ {len(style_from_css)} 키 적용: "
+                  f"{', '.join(sorted(style_from_css))}")
+        else:
+            print(f"  ⚠ CSS 파싱 0 키 추출 — 변수명/클래스명이 alias 리스트와 "
+                  f"불일치 가능성.")
+            if discovered_vars:
+                preview = ", ".join(f"--{v}" for v in discovered_vars[:12])
+                more = (f" (외 {len(discovered_vars) - 12} 개)"
+                        if len(discovered_vars) > 12 else "")
+                print(f"    발견된 CSS 변수: {preview}{more}")
+                print(f"    → 매핑 필요 시 oracle_embeddings/screen_converter.py "
+                      f"의 _CSS_VAR_ALIASES 에 변수명 추가")
     style_from_vlm = extract_style_profile(tmpl_imgs, config) if tmpl_imgs else {}
     style_raw = {**style_from_vlm, **style_from_css}   # CSS 가 VLM 덮어쓰기
     style = _resolve_style(style_raw)
@@ -1184,6 +1213,7 @@ def convert(captures_dir: Path, templates_dir: Path | None,
     style_path.write_text(
         json.dumps({
             "extracted_from_css": style_from_css,
+            "discovered_css_variables": discovered_vars,
             "extracted_from_vlm": style_from_vlm,
             "resolved": style,
         }, ensure_ascii=False, indent=2),
