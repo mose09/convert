@@ -191,12 +191,27 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
 
     ``strip_patterns`` / ``route_prefix`` forwarded to the router parser
     for cross-source URL normalization.
+
+    ``route_prefix`` 미지정 시 ``frontend_dir/.env*`` 에서 ``REACT_APP_NAME``
+    을 읽어 ``/apps/<name>`` 을 자동 합성한다. 사용자 환경: src/index.js
+    에서 basename 을 ``.env`` 값으로 동적 합성하는 SPA — scanner 는
+    ``<Route path="/">`` literal 만 보므로 그대로 두면 메뉴 URL
+    (``/apps/<slug>/page``) 과 매칭 실패. patterns 의 명시 prefix 가
+    있으면 그게 우선 (override 가능).
     """
     if not frontend_dir:
         return {}, "unknown"
     if not os.path.isdir(frontend_dir):
         logger.warning("Frontend dir not found: %s", frontend_dir)
         return {}, "unknown"
+
+    if route_prefix is None:
+        from .legacy_react_api_scanner import load_react_app_name
+        app_name = load_react_app_name(frontend_dir)
+        if app_name:
+            route_prefix = f"/apps/{app_name}"
+            logger.info("Auto route_prefix from .env REACT_APP_NAME: %s "
+                        "(frontend_dir=%s)", route_prefix, frontend_dir)
 
     fw = (framework or "auto").lower()
     if fw == "auto":

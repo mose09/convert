@@ -110,6 +110,15 @@ _REACT_ENV_KEY_RE = re.compile(
     r"^\s*REACT_APP_API_(?P<key>[A-Z0-9_]+)_NAME\s*=\s*(?P<val>\S+)\s*$",
     re.MULTILINE,
 )
+# basename 합성용 ``REACT_APP_NAME=<slug>`` — SPA 의 src/index.js 가
+# 런타임에 ``basename = `/apps/${REACT_APP_NAME}` `` 식으로 router prefix 를
+# 만드는 케이스. scanner 는 ``<Route path="/">`` literal 만 보니 그대로
+# 두면 메뉴 URL (`/apps/<slug>/page`) 과 매칭 실패 → 자동 prefix 합성에
+# 사용된다.
+_REACT_APP_NAME_RE = re.compile(
+    r"^\s*REACT_APP_NAME\s*=\s*(?P<val>\S+)\s*$",
+    re.MULTILINE,
+)
 # Builder 호출의 첫 quoted 토큰 (KEY) 추출. ``getBackendUrl('BASE', ...)``
 # 같은 형태에서 'BASE' 만 캡처. 변수 참조 (`getBackendUrl(backendType, ...)`)
 # 는 KEY 가 dynamic 이라 매칭 안 됨 — 그 경우 backend_repo 는 unknown.
@@ -156,6 +165,38 @@ def load_backend_name_map(root: str) -> dict[str, str]:
         except OSError:
             continue
     return merged
+
+
+def load_react_app_name(root: str) -> str | None:
+    """``root`` 의 ``.env*`` 파일들에서 ``REACT_APP_NAME=<slug>`` 추출.
+
+    이 값이 src/index.js 의 ``basename = `/apps/${REACT_APP_NAME}` `` 합성
+    소스. router scanner 가 literal 만 보는 한계를 메우려고 caller 가
+    auto route_prefix 합성에 사용한다. 환경별 파일 (`.env.local` 등) 이
+    같은 키를 가지면 마지막에 읽힌 값이 우승. 없으면 None.
+    """
+    if not root or not os.path.isdir(root):
+        return None
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return None
+    val: str | None = None
+    for name in names:
+        if not name.startswith(".env"):
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except OSError:
+            continue
+        m = _REACT_APP_NAME_RE.search(text)
+        if m:
+            val = m.group("val").strip().strip('"').strip("'")
+    return val or None
 
 
 def _extract_builder_key(content: str, builder_start: int, burl_start: int) -> str | None:
