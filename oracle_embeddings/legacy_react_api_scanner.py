@@ -47,6 +47,9 @@ EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".vue", ".html"}
 _DEFAULT_API_METHODS = (
     "axios.get", "axios.post", "axios.put", "axios.patch", "axios.delete",
     "axios.request",
+    # axios wrapper 변형 — 한국 SI 흔한 네이밍 (postAxios, getAxios, ...).
+    # 함수 직접 호출 형태: ``postAxios(url, data)``.
+    "postAxios", "getAxios", "putAxios", "deleteAxios", "patchAxios",
     "fetch",
 )
 
@@ -214,6 +217,9 @@ def _build_call_regex(methods: list[str]) -> re.Pattern:
         rf"""\b(?P<method>{alt})\s*\(
              \s*(?:
                    (?P<quote>['"`])(?P<url>(?:https?:/)?/[^'"`\n]+?)(?P=quote)
+                 | (?P<builder>\w+)\s*\(   # URL builder: ``getBackendUrl('BASE', '/api/...')``
+                     [^()]*?                # builder args (skip prior literals like 'BASE')
+                     (?P<bquote>['"`])(?P<burl>(?:https?:/)?/[^'"`\n]+?)(?P=bquote)
                  | (?P<var>\w+)
              )
          """,
@@ -755,7 +761,7 @@ def _scan_body_with_chain(body: str,
 
     # 1. 직접 axios/fetch URL 매칭
     for m in call_re.finditer(body):
-        raw = m.group("url") or ""
+        raw = m.group("url") or m.group("burl") or ""
         if not raw:
             var = m.group("var") or ""
             raw = const_map.get(var, "") if var else ""
@@ -832,7 +838,7 @@ def _scan_body_for_urls(body: str, call_re, const_map: dict[str, str],
     """
     out: set[str] = set()
     for m in call_re.finditer(body):
-        raw = m.group("url") or ""
+        raw = m.group("url") or m.group("burl") or ""
         if not raw:
             var = m.group("var") or ""
             if not var:
@@ -916,7 +922,7 @@ def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
     for fp, content in file_contents.items():
         rel = os.path.relpath(fp, frontend_dir)
         for m in call_re.finditer(content):
-            raw = m.group("url") or ""
+            raw = m.group("url") or m.group("burl") or ""
             if not raw:
                 var = m.group("var") or ""
                 if not var:
@@ -942,7 +948,7 @@ def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
             leaf = fn_ref.rsplit(".", 1)[-1]
             if leaf in _SAGA_INDIRECT_SKIP_NAMES:
                 continue
-            raw = m.group("url") or ""
+            raw = m.group("url") or m.group("burl") or ""
             if not raw:
                 continue
             canonical = normalize_url(_normalize_template(raw), strip_patterns)
