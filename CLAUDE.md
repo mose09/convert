@@ -24,7 +24,7 @@
 - **브랜치 전략**: GitHub Flow — `main` 안정. `claude/<task>-<id>` 피처
   브랜치 → PR squash-merge.
 
-## 주요 커맨드 (23종)
+## 주요 커맨드 (24종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -46,6 +46,7 @@
 | `migrate-sql` | MyBatis XML 일괄 변환 + 5시트 리포트 | 선택 | X |
 | `validate-migration` | 변환 XML parse-only 검증 (Stage B) | X | O |
 | `screen-converter` | AS-IS 화면 캡처 + DRM 템플릿 캡처 → TO-BE PPTX 도형. 템플릿에서 1회 style profile 추출 (색·폰트·버튼) + 캡처별 layout 추출, `--frontend-dir` 로 React 소스 매칭 (Vision LLM, PoC) | O | X |
+| `screen-spec` | React 화면 closure → AST 패턴 추출 (검색/그리드/탭/이벤트+flow/검증) → 마스터 xlsx (시트=영역, LLM 0, 같은 소스 → 같은 결과 deterministic) | X | X |
 
 각 커맨드 상세 옵션: `python main.py <cmd> --help`. 모듈 / 파이프라인
 구조 / 회귀 mock / 해결된 이슈 표는 archive 참고.
