@@ -28,6 +28,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 (`--format-only` 로 매핑 없이 포매터만 미리보기 가능) | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
 | `screen-converter` | AS-IS 화면 캡처 폴더 → TO-BE PPTX 도형 자동 생성 (Vision LLM 이 DRM 템플릿 캡처를 시각 참조로 layout JSON 추출 → python-pptx 렌더, PoC) | X | O |
+| `screen-spec` | React 화면 closure (entry + 자식 컴포넌트 BFS) → AST 패턴으로 검색·그리드·탭·이벤트+flow·검증 deterministic 추출 → 마스터 xlsx (시트=영역, 1열=화면명). 같은 소스 → 같은 산출물 보장 (LLM 0). PPTX 설계서에 시트 단위 복사·붙여넣기 워크플로우용 | X | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -54,6 +55,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `output/legacy_analysis/<날짜>/` | analyze-legacy + discover-patterns |
 | `output/migration/<날짜>/` | migration-impact + migrate-sql + validate-migration |
 | `output/screen-converter/<날짜>/` | screen-converter |
+| `output/screen-spec/<날짜>/` | screen-spec |
 
 예외:
 - `--output` 으로 명시 지정 시 사용자 경로 그대로 사용
@@ -95,6 +97,11 @@ convert/
     ├── legacy_biz_extractor.py   # Phase A: ServiceImpl 비즈니스 로직 LLM 추출 (opt-in)
     ├── legacy_util.py            # URL 정규화 공유 헬퍼
     ├── screen_converter.py       # 화면변환기 PoC: AS-IS 캡처 → TO-BE PPTX (Vision LLM)
+    ├── screen_spec/              # 화면 UI 정의서 추출 (AST 패턴, LLM 0, deterministic)
+    │   ├── models.py                #   FormField/GridColumn/Tab/ButtonEvent/ValidationRule/ScreenSpec
+    │   ├── extractors.py            #   5종 추출기 + extract_screen_spec entry
+    │   ├── flow_tracer.py           #   onClick handler → 순서있는 FlowStep 리스트
+    │   └── excel_writer.py          #   마스터 xlsx 7시트 (openpyxl)
     └── migration/
         ├── mapping_model.py         # 매핑 dataclass
         ├── mapping_loader.py        # YAML 로드 + 검증
@@ -1513,6 +1520,89 @@ python main.py screen-converter `
 - `analyze-legacy --extract-screen-layout` 의 ScreenLayout JSON 직접 입력
   모드 미지원 (지금은 항상 이미지 → VLM 경로)
 - `convert-menu` 산출물 `input/menu.md` 메뉴 계층 매칭 미연동
+
+---
+
+### 15. 화면 UI 정의서 추출 (screen-spec) — AST 패턴, deterministic, PPTX 복붙용
+
+`screen-converter` 가 캡처 + 템플릿으로 TO-BE 시안 PPTX 를 생성한다면,
+`screen-spec` 은 **React 소스에서 화면 UI 정의서를 100% 결정론적으로
+추출** 합니다 — LLM 호출 0, 같은 소스 → 같은 산출물 (byte-level
+identical). 실제 설계서 PPTX 에 **시트 단위로 복사·붙여넣기** 하는
+워크플로우 전제.
+
+**전제**:
+- `tree-sitter` + `tree-sitter-javascript` + `tree-sitter-typescript` 설치
+- `--frontend-dir` (React/Vue/TS 소스 루트)
+- `--captures-dir` (캡처 파일명을 화면 ID 로 사용)
+
+**실행**:
+
+```powershell
+python main.py screen-spec `
+  --captures-dir input\asis_captures `
+  --frontend-dir C:\workspace\frontend `
+  [--patterns output\legacy_analysis\patterns.yaml] `
+  [--source-mapping input\screen_source_mapping.yaml]
+
+# 출력: output\screen-spec\<YYYYMMDD>\screen_spec_<HHMMSS>.xlsx
+```
+
+**파이프라인**:
+1. 캡처 파일명 → React entry 컴포넌트 매칭 (`screen-converter` 와 동일
+   휴리스틱; cross-language 는 `--source-mapping` YAML 으로 수기)
+2. `legacy_react_closure.build_closure` 로 entry + import 자식 컴포넌트
+   까지 한 덩어리로 묶음 (`<SearchPanel/>` `<OrderGrid/>` `<Buttons/>`
+   가 분리돼 있어도 통합)
+3. 5종 추출기 (LLM 0):
+   - **검색 필드**: `<input>` / `<Select>` / `<DatePicker>` 등 props
+     (label, name, type, required, validation 인라인)
+   - **그리드 컬럼**: `<Table columns={...}/>` 의 array → header /
+     dataIndex(물리명) / type / width / hidden / sortable. const 변수
+     references 자동 해석 (`columns={COLUMNS}` 도 OK)
+   - **탭**: `<Tab>` `<TabPanel>` props
+   - **이벤트 + 플로우**: `<Button onClick={fn}>` → fn 본체 traversal
+     → API 호출 (`axios.post('/api/...')` 등) / 화면 호출 (`navigate`
+     `window.open` `history.push` 등) 순서대로 step 리스트. inline arrow
+     `() => fn(x)` 도 fn 본체 다시 해석.
+   - **검증규칙**: 인라인 props (`required`/`pattern`/`min/max`) +
+     yup/zod/joi schema chain (`.required('msg').matches(/.../, 'msg2')`)
+4. 모든 화면 → 마스터 xlsx 1개 (openpyxl). 시트 = 영역, 1열 = 화면명.
+
+**출력 xlsx 시트 구조**:
+
+| 시트 | 컬럼 |
+|------|------|
+| **개요** | 화면명 / entry 파일 / closure 파일수 / closure tokens / truncated / 각 영역 row 수 |
+| **검색조건** | 화면명 / 순번 / 라벨 / 필드명 / 타입 / 필수 / 기본값 / 검증규칙 / 소스파일 |
+| **그리드컬럼** | 화면명 / 순번 / 헤더 / **물리명** / 데이터타입 / 너비 / **표시** / 정렬 / 소스파일 |
+| **탭** | 화면명 / 순번 / 탭명 / 컨텐츠 컴포넌트 / 소스파일 |
+| **이벤트** | 화면명 / 트리거(라벨) / 종류 / 핸들러 / API 호출 / 화면 호출 / 비고 / 소스파일 |
+| **검증규칙** | 화면명 / 필드 / 규칙 / 상세 / 메시지 / 출처 (jsx_prop / yup / zod / joi) / 소스파일 |
+| **이벤트플로우** | 화면명 / 이벤트 / step# / 동작 (api/navigate) / 상세 / 조건 |
+
+PPTX 설계서에 슬라이드별로 해당 시트를 그대로 복사 → 표 붙여넣기 가능.
+
+**사내 컨벤션 흡수**: `patterns.yaml` 의 `react.screen_spec` 슬롯으로
+default 패턴 확장:
+
+```yaml
+react:
+  screen_spec:
+    input_components: ["MyInput", "MyDate"]
+    table_components: ["MyDataTable"]
+    button_components: ["MyButton", "PrimaryButton"]
+    tab_item_components: ["MyTab"]
+```
+
+`discover-patterns` 가 자동 발견하도록 슬롯이 이미 있어서 그대로 인식.
+
+**범위 제한**:
+- 동적으로 계산되는 컬럼 (`isAdmin ? COLS_A : COLS_B`) 은 한쪽만 추출
+  될 수 있음 (보수적)
+- 다른 파일에 정의된 `columns` const 는 closure 안에 있어야 해석 가능
+- 메시지가 `t('orderNo.required')` 같은 i18n key 면 key 만 추출
+  (resolve 안 함)
 
 ---
 

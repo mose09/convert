@@ -1048,6 +1048,110 @@ def cmd_screen_converter(args):
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
 
+def cmd_screen_spec(args):
+    """AST 기반 화면 UI 정의서 추출 (LLM 0, deterministic).
+
+    캡처 파일명을 화면 ID 로 사용. --frontend-dir 의 React 소스에서 매칭
+    되는 entry 컴포넌트 → build_closure (entry + 자식 BFS) → 5종 추출기
+    (검색/그리드/탭/버튼/검증) + flow tracer → 마스터 xlsx (7 시트).
+    같은 소스 → 같은 xlsx 보장.
+    """
+    from pathlib import Path as _Path
+    from datetime import datetime as _dt
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    captures_dir = _Path(args.captures_dir)
+    frontend_dir = _Path(args.frontend_dir)
+    source_mapping_path = (_Path(args.source_mapping)
+                           if args.source_mapping else None)
+    patterns_path = (_Path(args.patterns) if args.patterns else None)
+
+    if not frontend_dir.is_dir():
+        print(f"Error: --frontend-dir 폴더 없음: {frontend_dir}")
+        return
+    if not captures_dir.is_dir():
+        print(f"Error: --captures-dir 폴더 없음: {captures_dir}")
+        return
+
+    # patterns.yaml 로드 (있으면)
+    patterns: dict | None = None
+    if patterns_path is not None:
+        if not patterns_path.is_file():
+            print(f"⚠ --patterns 파일 없음 (스킵): {patterns_path}")
+        else:
+            patterns = yaml.safe_load(patterns_path.read_text(encoding="utf-8"))
+
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    if args.output:
+        output_xlsx = _Path(args.output)
+    else:
+        dated = _build_dated_output_dir(base_output, "screen-spec")
+        output_xlsx = _Path(dated) / f"screen_spec_{_dt.now().strftime('%H%M%S')}.xlsx"
+
+    # 캡처 → 소스 매칭은 screen_converter 의 인프라 재사용
+    from oracle_embeddings.screen_converter import (
+        _list_images, _build_source_index, _load_source_mapping, _match_source,
+    )
+    from oracle_embeddings.screen_spec import (
+        extract_screen_spec, write_master_xlsx,
+    )
+    from oracle_embeddings.legacy_react_closure import build_closure
+
+    captures = _list_images(captures_dir)
+    if not captures:
+        print(f"Error: 캡처 없음 (png/jpg): {captures_dir}")
+        return
+    source_index = _build_source_index(frontend_dir)
+    mapping = _load_source_mapping(source_mapping_path, frontend_dir)
+
+    print(f"  캡처: {len(captures)}장 / 소스 인덱스: {len(source_index)} 파일"
+          + (f" / 매핑: {len(mapping)} 항목" if mapping else ""))
+
+    specs = []
+    matched = 0
+    miss = []
+    for img in captures:
+        stem = img.stem
+        source_path, candidates = _match_source(stem, source_index,
+                                                mapping=mapping)
+        if source_path is None:
+            top = candidates[0][1] if candidates else 0
+            miss.append((stem, top))
+            print(f"  ✗ {stem} — 소스 매칭 실패 (최고 점수 {top})")
+            continue
+        matched += 1
+        print(f"  → {stem} : {source_path.name}")
+        try:
+            closure = build_closure(
+                entry_file=str(source_path),
+                repo_root=str(frontend_dir),
+                patterns=patterns,
+                max_depth=3,
+                token_budget=20000,
+                verbose=False,
+            )
+        except Exception as e:
+            print(f"     ⚠ closure 빌드 실패: {e} — 스킵")
+            continue
+        spec = extract_screen_spec(closure, screen_id=stem, patterns=patterns)
+        specs.append(spec)
+        print(f"     검색 {len(spec.form_fields)} / 그리드 {len(spec.grid_columns)} "
+              f"/ 탭 {len(spec.tabs)} / 이벤트 {len(spec.buttons)} "
+              f"/ 검증 {len(spec.validations)}")
+
+    if not specs:
+        print("\n✗ 추출된 화면 0개 — xlsx 생성 안 함")
+        return
+
+    write_master_xlsx(specs, output_xlsx)
+    print(f"\n✓ 화면 정의서 추출 완료: {matched}/{len(captures)}장")
+    if miss:
+        print(f"  매칭 실패 {len(miss)} 건 — --source-mapping 으로 수기 보완 가능")
+    print(f"  XLSX: {output_xlsx}")
+
+
 def cmd_migrate_sql(args):
     """column_mapping.yaml 기반으로 MyBatis XML 전체를 TO-BE 스키마용으로 변환.
 
@@ -2385,6 +2489,25 @@ def main():
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
+    # screen-spec command (AST-based UI spec, deterministic)
+    ss_parser = subparsers.add_parser(
+        "screen-spec",
+        help="화면별 AST 기반 UI 정의서 추출 (검색/그리드/탭/이벤트/검증) → 마스터 xlsx (LLM 0)",
+    )
+    ss_parser.add_argument("--captures-dir", required=True,
+                           help="화면 캡처 폴더 (파일명=화면명)")
+    ss_parser.add_argument("--frontend-dir", required=True,
+                           help="React/Vue 소스 루트 (closure root)")
+    ss_parser.add_argument("--patterns",
+                           help="(선택) patterns.yaml — react.screen_spec 슬롯으로 "
+                                "사내 컨벤션 입력/그리드/탭/버튼 컴포넌트명 주입")
+    ss_parser.add_argument("--source-mapping",
+                           help="(선택) 캡처 stem → 컴포넌트 경로 수기 매핑 YAML "
+                                "(휴리스틱 매칭 실패 시)")
+    ss_parser.add_argument("--output",
+                           help="출력 XLSX 경로 (기본: output/screen-spec/YYYYMMDD/"
+                                "screen_spec_HHMMSS.xlsx)")
+
     # migrate-sql command
     ms_parser = subparsers.add_parser(
         "migrate-sql",
@@ -2536,6 +2659,8 @@ def main():
         cmd_convert_mapping(args)
     elif args.command == "screen-converter":
         cmd_screen_converter(args)
+    elif args.command == "screen-spec":
+        cmd_screen_spec(args)
     elif args.command == "migrate-sql":
         cmd_migrate_sql(args)
     elif args.command == "validate-migration":
