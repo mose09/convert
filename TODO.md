@@ -119,6 +119,43 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: getBackendUrl + .env → backend repo 매칭
+
+사용자 환경: `postAxios(getBackendUrl('BASE', '/api/...'), ...)` 호출에서
+KEY (`'BASE'`) 가 frontend 레포 root `.env` 의
+`REACT_APP_API_<KEY>_NAME=<repo>` 매핑으로 lookup → backend 레포 이름이
+실제 URL path 첫 segment (Spring context-path 또는 nginx prefix
+routing) 로 박힘. 즉 호출 site 만 보면 어느 백엔드 레포로 가는지
+알 수 있는데, 기존 scanner 는 path 만 추출하고 KEY 는 무시했음.
+
+작업 항목:
+
+- [x] `legacy_react_api_scanner` 에 `parse_react_env_text` /
+      `load_backend_name_map` (`.env*` 자동 스캔) /
+      `_extract_builder_key` (builder substring 첫 quoted 토큰) 추가
+- [x] `build_api_url_index` / `_build_api_url_index_from_files` /
+      `_scan_body_for_urls` / `_scan_body_with_chain` 에
+      `backend_name_map=None, repo_index_out=None` 옵트인 파라미터.
+      `repo_index_out` 가 dict 면 `{url: {repo}}` 채움 (out-param,
+      반환 시그니처 그대로 — backwards compat)
+- [x] `build_api_url_index` 가 `backend_name_map=None` 일 때
+      `frontend_dir/.env*` 자동 로드 — 호출자 매핑 제공 불필요
+- [x] `legacy_frontend.build_frontend_api_index` /
+      `build_frontend_url_map_multi` 에 `repo_index_out` /
+      `repos_by_frontend_out` out-param 추가 (반환 튜플 모양 그대로 →
+      diag/main 영향 없음)
+- [x] `legacy_analyzer` single 모드 (single_api_repos) + multi 모드
+      (repos_by_frontend) + batch precompute 모두 plumb. `_build_row`
+      에 `backend_repo: str` 인자 + row dict 키 + menu placeholder row
+      에도 default
+- [x] `legacy_report` 4 컬럼 매핑 (single/batch × menu/no-menu) 에
+      `("Backend Repo", "backend_repo")` 추가 (Trigger 옆)
+- [x] mock fixture 검증: `.env` 3개 KEY + `getBackendUrl` 2 종 호출 +
+      literal `fetch` 1 종 → KEY 있는 호출만 repo 매칭, 없는 건
+      repo_idx 미등재 (의도). backwards compat (out-param 미지정 시
+      기존 동작) 회귀 없음
+- [ ] PR squash-merge + local cleanup
+
 ### 진행 중: 화면변환기 PoC — `screen-converter` (AS-IS 캡처 → TO-BE PPTX)
 
 소스 없는 화면 (외주 모듈/레거시 ASP/JSP) 대상 캡처본 → TO-BE PPTX
