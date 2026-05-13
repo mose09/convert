@@ -1526,6 +1526,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
         "frontend_project": frontend_project,
         "presentation_layer": presentation_layer,
         "frontend_trigger": "",
+        "backend_repo": "",
         "frontend_validation_summary": "",
         "controller_class": "",
         "service_class": "",
@@ -1611,6 +1612,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
                menu_raw_url: str = "",
                react_entry: dict | None = None,
                frontend_trigger: str = "",
+               backend_repo: str = "",
                emit_sequence_diagram: bool = False,
                sequence_diagram_with_frontend: bool = False) -> dict:
     """Assemble a single program-row dict for one controller endpoint.
@@ -1694,6 +1696,7 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
             else (react_file or "")
         ),
         "frontend_trigger": frontend_trigger,
+        "backend_repo": backend_repo,
         "frontend_validation_summary": "",  # Phase B 가 나중에 채움
         "controller_class": controller["fqcn"],
         # 여러 항목이 들어가는 컬럼은 Excel 셀에서 한 항목당 한 줄씩
@@ -1957,8 +1960,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     by_frontend: dict[str, dict] = {}
     api_by_frontend: dict[str, dict] = {}
     triggers_by_frontend: dict[str, dict] = {}
+    # bucket → {url → {backend repo}} : ``getBackendUrl(KEY, '/api/...')`` 의
+    # KEY 를 .env 의 ``REACT_APP_API_<KEY>_NAME`` 으로 lookup 한 결과.
+    repos_by_frontend: dict[str, dict[str, set[str]]] = {}
     single_api_index: dict[str, list[str]] = {}
     single_triggers: dict[str, list[str]] = {}
+    single_api_repos: dict[str, set[str]] = {}
     detected_frontend = "unknown"
     # frontend 스캔 단계는 같은 파일을 router/import-graph/api-scanner/
     # trigger 등 4~5개 path 가 각각 다시 읽어서 디스크 I/O 가 dominant.
@@ -1972,8 +1979,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         by_frontend = precomputed_frontend.get("by_frontend") or {}
         api_by_frontend = precomputed_frontend.get("api_by_frontend") or {}
         triggers_by_frontend = precomputed_frontend.get("triggers_by_frontend") or {}
+        repos_by_frontend = precomputed_frontend.get("repos_by_frontend") or {}
         single_api_index = precomputed_frontend.get("single_api_index") or {}
         single_triggers = precomputed_frontend.get("single_triggers") or {}
+        single_api_repos = precomputed_frontend.get("single_api_repos") or {}
     elif frontend_dir:
         try:
             from .legacy_frontend import (
@@ -1992,6 +2001,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     frontend_dir, framework=frontend_framework,
                     strip_patterns=url_strip, route_prefix=route_prefix,
                     patterns=patterns, allowed_apps=allowed,
+                    repos_by_frontend_out=repos_by_frontend,
                 )
             else:
                 print(f"  Frontend dir: {frontend_dir}")
@@ -2001,6 +2011,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 )
                 single_api_index, single_triggers = build_frontend_api_index(
                     frontend_dir, patterns=patterns, strip_patterns=url_strip,
+                    repo_index_out=single_api_repos,
                 )
             print(f"  Frontend framework: {detected_frontend}")
             print(f"  Frontend routes indexed: {len(react_url_map)}")
@@ -2278,6 +2289,17 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             elif single_triggers:
                 trigger_labels = list(single_triggers.get(key) or [])
 
+            # Backend repo (frontend ``.env`` 의 REACT_APP_API_<KEY>_NAME 매핑
+            # 으로 lookup). 같은 bucket 결정 로직 — 한 endpoint 가 여러 KEY
+            # 로 호출되면 sorted 합집합.
+            backend_repos: list[str] = []
+            if repos_by_frontend:
+                bucket = app_slug_lower or two_hop_app
+                if bucket:
+                    backend_repos = sorted((repos_by_frontend.get(bucket) or {}).get(key) or [])
+            elif single_api_repos:
+                backend_repos = sorted(single_api_repos.get(key) or [])
+
             react_file = (react_entry or {}).get("file_path", "")
             # Prefer the concrete 2-hop screens as Frontend screen — they
             # are the files that actually call this endpoint. Fall back
@@ -2292,6 +2314,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 menu_raw_url=raw_menu_url,
                 react_entry=react_entry,
                 frontend_trigger=";\n".join(trigger_labels),
+                backend_repo=", ".join(backend_repos),
                 emit_sequence_diagram=emit_sequence_diagram,
                 sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             )
@@ -2621,12 +2644,15 @@ def analyze_legacy_batch(backends_root: str,
             menu_apps = slugs or None
         allowed = menu_apps if (menu_only and menu_apps) else None
         print(f"\n=== Scanning frontend (batch-wide, once) ===")
+        repos_fe: dict[str, dict[str, set[str]]] = {}
+        single_api_repos_pre: dict[str, set[str]] = {}
         if frontends_root:
             (react_map, det_fw, by_fe,
              api_fe, trig_fe) = build_frontend_url_map_multi(
                 frontend_dir, framework=frontend_framework,
                 strip_patterns=strip, route_prefix=rp,
                 patterns=patterns, allowed_apps=allowed,
+                repos_by_frontend_out=repos_fe,
             )
             single_api, single_trig = {}, {}
         else:
@@ -2638,6 +2664,7 @@ def analyze_legacy_batch(backends_root: str,
             api_fe, trig_fe = {}, {}
             single_api, single_trig = build_frontend_api_index(
                 frontend_dir, patterns=patterns, strip_patterns=strip,
+                repo_index_out=single_api_repos_pre,
             )
         precomputed_frontend = {
             "react_url_map": react_map,
@@ -2645,8 +2672,10 @@ def analyze_legacy_batch(backends_root: str,
             "by_frontend": by_fe,
             "api_by_frontend": api_fe,
             "triggers_by_frontend": trig_fe,
+            "repos_by_frontend": repos_fe,
             "single_api_index": single_api,
             "single_triggers": single_trig,
+            "single_api_repos": single_api_repos_pre,
         }
         total_api = sum(len(v) for v in api_fe.values()) if api_fe else len(single_api)
         total_trig = sum(len(v) for v in trig_fe.values()) if trig_fe else len(single_trig)

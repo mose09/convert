@@ -155,17 +155,25 @@ def detect_frontend_framework(frontend_dir: str) -> str:
 
 
 def build_frontend_api_index(frontend_dir: str, patterns: dict | None = None,
-                               strip_patterns=None) -> tuple[dict, dict]:
+                               strip_patterns=None,
+                               repo_index_out: dict[str, set[str]] | None = None,
+                               ) -> tuple[dict, dict]:
     """Single-frontend helper: return (api_index, trigger_index).
 
     Thin wrapper that delegates to :mod:`legacy_react_api_scanner` so the
     analyzer can call one place for both single and multi-repo setups.
+
+    ``repo_index_out`` (out-param, optional) 가 dict 면 ``getBackendUrl(KEY,
+    '/api/...')`` builder 호출의 KEY 를 ``frontend_dir/.env*`` 의
+    ``REACT_APP_API_<KEY>_NAME=<repo>`` 매핑으로 lookup 해 ``{url: {repo}}`` 를
+    채워준다. 시그니처 (return tuple) 는 변경 없음 — backwards compat.
     """
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}, {}
     from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
     api_idx = build_api_url_index(frontend_dir, patterns=patterns,
-                                   strip_patterns=strip_patterns)
+                                   strip_patterns=strip_patterns,
+                                   repo_index_out=repo_index_out)
     trig = extract_button_triggers(frontend_dir, api_idx, patterns=patterns,
                                     strip_patterns=strip_patterns) if api_idx else {}
     return api_idx, trig
@@ -337,6 +345,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   route_prefix: str | None = None,
                                   patterns: dict | None = None,
                                   allowed_apps: set[str] | None = None,
+                                  repos_by_frontend_out: dict[str, dict[str, set[str]]] | None = None,
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
@@ -414,9 +423,16 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                 merged_map.setdefault(key, tagged)
             detected_frameworks.append(fw)
             logger.info("Frontend sub-project %s: %s, %d routes", entry, fw, len(url_map))
+        # bucket 별 backend repo lookup — 각 repo 의 root .env* 를 읽어
+        # ``getBackendUrl(KEY, '/api/...')`` 호출 site 의 KEY → backend repo
+        # 매핑. ``repos_by_frontend_out`` (out-param) 이 주어졌을 때만 채움.
+        local_repo_idx: dict[str, set[str]] | None = (
+            {} if repos_by_frontend_out is not None else None
+        )
         try:
             api_idx = build_api_url_index(child, patterns=patterns,
-                                           strip_patterns=strip_patterns)
+                                           strip_patterns=strip_patterns,
+                                           repo_index_out=local_repo_idx)
         except Exception as e:
             logger.warning("build_api_url_index %s 실패: %s", entry, e)
             api_idx = {}
@@ -436,6 +452,10 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                     bucket[url] = merged_list
                 else:
                     bucket[url] = prefixed
+            if repos_by_frontend_out is not None and local_repo_idx:
+                rbucket = repos_by_frontend_out.setdefault(entry_lower, {})
+                for url, repos in local_repo_idx.items():
+                    rbucket.setdefault(url, set()).update(repos)
             logger.info("Frontend sub-project %s: %d api urls", entry, len(api_idx))
             try:
                 trig = extract_button_triggers(child, api_idx, patterns=patterns,

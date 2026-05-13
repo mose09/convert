@@ -100,6 +100,76 @@ _SKIP_FILE_INFIX = (".min.", ".bundle.", ".chunk.", ".compiled.")
 _MAX_FILE_BYTES = 500_000
 
 
+# ── React .env → backend repo 매핑 ────────────────────────────────
+#
+# 사용자 환경: ``getBackendUrl(KEY, '/api/...')`` 호출의 KEY 가 .env 의
+# ``REACT_APP_API_<KEY>_NAME`` 변수로 lookup → backend repo 이름이 URL path
+# 첫 segment 로 박혀 들어간다 (Spring context-path 또는 nginx prefix routing).
+# 즉 호출 site 의 KEY ↔ 어느 backend repo 에 attach 되는지 결정한다.
+_REACT_ENV_KEY_RE = re.compile(
+    r"^\s*REACT_APP_API_(?P<key>[A-Z0-9_]+)_NAME\s*=\s*(?P<val>\S+)\s*$",
+    re.MULTILINE,
+)
+# Builder 호출의 첫 quoted 토큰 (KEY) 추출. ``getBackendUrl('BASE', ...)``
+# 같은 형태에서 'BASE' 만 캡처. 변수 참조 (`getBackendUrl(backendType, ...)`)
+# 는 KEY 가 dynamic 이라 매칭 안 됨 — 그 경우 backend_repo 는 unknown.
+_BUILDER_KEY_RE = re.compile(r"['\"`](?P<key>[A-Z0-9_]+)['\"`]")
+
+
+def parse_react_env_text(text: str) -> dict[str, str]:
+    """``REACT_APP_API_<KEY>_NAME=<repo_name>`` 라인을 dict 로 추출.
+
+    값에서 따옴표는 벗기고, 빈 값 / 주석 라인은 무시한다. KEY 는 대문자
+    + 숫자 + 밑줄만 (사용자 환경 명세).
+    """
+    out: dict[str, str] = {}
+    for m in _REACT_ENV_KEY_RE.finditer(text or ""):
+        key = m.group("key")
+        val = m.group("val").strip().strip('"').strip("'")
+        if key and val:
+            out[key] = val
+    return out
+
+
+def load_backend_name_map(root: str) -> dict[str, str]:
+    """``root`` 의 ``.env*`` 파일들을 스캔해 KEY → backend repo 이름 dict 를
+    빌드. 환경별 파일 (`.env.local`, `.env.production` 등) 이 같은 KEY 를
+    덮어쓰면 마지막에 읽힌 게 우승하지만, 일반적으로 모든 환경이 같은 repo
+    이름을 가리킨다 (host/port 만 다름). 파일 없으면 빈 dict.
+    """
+    if not root or not os.path.isdir(root):
+        return {}
+    merged: dict[str, str] = {}
+    try:
+        names = sorted(os.listdir(root))
+    except OSError:
+        return {}
+    for name in names:
+        if not name.startswith(".env"):
+            continue
+        full = os.path.join(root, name)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                merged.update(parse_react_env_text(f.read()))
+        except OSError:
+            continue
+    return merged
+
+
+def _extract_builder_key(content: str, builder_start: int, burl_start: int) -> str | None:
+    """Builder 호출의 ``builder(`` 와 URL 리터럴 사이 substring 에서 첫
+    quoted 토큰을 추출 (KEY). ``getBackendUrl('BASE', '/api/foo')`` →
+    ``"BASE"``. 변수 인자 (`getBackendUrl(type, ...)`) 는 None.
+    """
+    if builder_start < 0 or burl_start <= builder_start:
+        return None
+    span = content[builder_start:burl_start]
+    m = _BUILDER_KEY_RE.search(span)
+    return m.group("key") if m else None
+
+
 def _strip_comments(content: str) -> str:
     """JS/JSX 의 ``//`` 및 ``/* */`` 주석 제거. string literal (``'`` / ``"``
     / `` ` ``) 안의 ``//`` / ``/*`` 는 보존. handler body 안에 주석으로
@@ -745,7 +815,9 @@ def _scan_body_with_chain(body: str,
                             seen: set | None = None,
                             prop_index: dict[str, list[tuple[str, str]]] | None = None,
                             via_props: set | None = None,
-                            current_file: str | None = None) -> set[str]:
+                            current_file: str | None = None,
+                            backend_name_map: dict[str, str] | None = None,
+                            repo_index_out: dict[str, set[str]] | None = None) -> set[str]:
     """body 안의 axios URL 직접 매칭 + 호출되는 함수 chain follow 로 URL 수집.
 
     handler 가 ``onClick={fncSearch}`` 인데 ``fncSearch`` 본체가 다시
@@ -770,6 +842,12 @@ def _scan_body_with_chain(body: str,
         canonical = normalize_url(_normalize_template(raw), strip_patterns)
         if canonical:
             urls.add(canonical)
+            if (backend_name_map and repo_index_out is not None
+                    and m.group("burl")):
+                key = _extract_builder_key(body, m.start("builder"), m.start("burl"))
+                repo = backend_name_map.get(key) if key else None
+                if repo:
+                    repo_index_out.setdefault(canonical, set()).add(repo)
 
     if depth <= 0:
         return urls
@@ -791,6 +869,7 @@ def _scan_body_with_chain(body: str,
             urls |= _scan_body_with_chain(
                 sub_body, fn_index, call_re, const_map, strip_patterns,
                 depth - 1, seen, prop_index, via_props, current_file,
+                backend_name_map=backend_name_map, repo_index_out=repo_index_out,
             )
 
     # 3. this.props.X(...) — prop binding chain follow.
@@ -821,6 +900,7 @@ def _scan_body_with_chain(body: str,
                     local_urls |= _scan_body_with_chain(
                         sub_body, fn_index, call_re, const_map, strip_patterns,
                         depth - 1, seen, prop_index, via_props, current_file,
+                        backend_name_map=backend_name_map, repo_index_out=repo_index_out,
                     )
                 if local_urls:
                     if via_props is not None:
@@ -830,11 +910,16 @@ def _scan_body_with_chain(body: str,
 
 
 def _scan_body_for_urls(body: str, call_re, const_map: dict[str, str],
-                         strip_patterns) -> set[str]:
+                         strip_patterns,
+                         backend_name_map: dict[str, str] | None = None,
+                         repo_index_out: dict[str, set[str]] | None = None) -> set[str]:
     """Extract normalized URLs from a function body slice.
 
     Shared between direct-call scanning and indirect saga resolution so
     both paths use the same literal/template/const-var logic.
+
+    ``backend_name_map`` + ``repo_index_out`` 가 주어지면 builder 호출의
+    KEY 를 lookup 해 ``{url: {backend_repo_names}}`` 를 채워준다 (out-param).
     """
     out: set[str] = set()
     for m in call_re.finditer(body):
@@ -849,6 +934,12 @@ def _scan_body_for_urls(body: str, call_re, const_map: dict[str, str],
         canonical = normalize_url(_normalize_template(raw), strip_patterns)
         if canonical:
             out.add(canonical)
+            if (backend_name_map and repo_index_out is not None
+                    and m.group("burl")):
+                key = _extract_builder_key(body, m.start("builder"), m.start("burl"))
+                repo = backend_name_map.get(key) if key else None
+                if repo:
+                    repo_index_out.setdefault(canonical, set()).add(repo)
     return out
 
 
@@ -862,7 +953,10 @@ def _normalize_template(url: str) -> str:
 
 
 def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
-                         strip_patterns=None) -> dict[str, list[str]]:
+                         strip_patterns=None,
+                         backend_name_map: dict[str, str] | None = None,
+                         repo_index_out: dict[str, set[str]] | None = None,
+                         ) -> dict[str, list[str]]:
     """Return ``{normalized_api_url: [source_file, ...]}`` for the dir.
 
     Keys are deduplicated case-insensitively (``normalize_url`` lowercases);
@@ -873,19 +967,32 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
     ``patterns["frontend"].api_call_methods`` extends the built-in
     ``axios.*`` / ``fetch`` set with project-specific wrappers learned by
     ``discover-patterns``.
+
+    ``backend_name_map`` (KEY → backend repo) + ``repo_index_out`` 가 주어지면
+    ``getBackendUrl(KEY, '/api/...')`` 호출의 KEY 를 lookup 해 ``{url: {repo}}``
+    를 채워준다 (out-param). ``backend_name_map`` 미지정 시 자동으로
+    ``frontend_dir`` 의 ``.env*`` 파일에서 빌드 — 호출자가 명시 매핑을 줄 수
+    없는 일반 케이스를 위해.
     """
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}
 
+    if backend_name_map is None:
+        backend_name_map = load_backend_name_map(frontend_dir) or None
+
     files = _scan_dir(frontend_dir)
     return _build_api_url_index_from_files(
         files, frontend_dir, patterns=patterns, strip_patterns=strip_patterns,
+        backend_name_map=backend_name_map, repo_index_out=repo_index_out,
     )
 
 
 def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
                                      patterns: dict | None = None,
-                                     strip_patterns=None) -> dict[str, list[str]]:
+                                     strip_patterns=None,
+                                     backend_name_map: dict[str, str] | None = None,
+                                     repo_index_out: dict[str, set[str]] | None = None,
+                                     ) -> dict[str, list[str]]:
     """Core implementation of :func:`build_api_url_index` with the file
     set injected by caller. Reused by the menu-scope resolver which
     passes only the subset of files reachable via imports from a Route
@@ -935,10 +1042,17 @@ def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
                 continue
             index.setdefault(canonical, set()).add(rel)
             matches_count += 1
+            if (backend_name_map and repo_index_out is not None
+                    and m.group("burl")):
+                key = _extract_builder_key(content, m.start("builder"), m.start("burl"))
+                repo = backend_name_map.get(key) if key else None
+                if repo:
+                    repo_index_out.setdefault(canonical, set()).add(repo)
 
     # ── Phase A: redux-saga ``call(fn, '/url')`` — URL 이 2번째 인자 ──
     # 1번째 인자의 leaf name 이 ``Function.prototype.call`` 계열 (this/bind
     # 등) 이면 skip. ``arr.call(this, '/path')`` 같은 false positive 방지.
+    # Saga 패턴은 builder 형태가 거의 없어서 KEY lookup 생략.
     for fp, content in file_contents.items():
         if "call(" not in content and "apply(" not in content:
             continue
@@ -977,7 +1091,10 @@ def _build_api_url_index_from_files(files: list[str], frontend_dir: str,
             seen_fns_here.add(fn_name)
             bodies = fn_index.get(fn_name) or []
             for (_body_fp, body) in bodies:
-                for url in _scan_body_for_urls(body, call_re, const_map, strip_patterns):
+                for url in _scan_body_for_urls(
+                    body, call_re, const_map, strip_patterns,
+                    backend_name_map=backend_name_map, repo_index_out=repo_index_out,
+                ):
                     index.setdefault(url, set()).add(rel)
                     saga_indirect_count += 1
 
