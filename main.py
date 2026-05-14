@@ -1023,7 +1023,8 @@ def cmd_screen_converter(args):
     stats = convert(captures_dir, templates_dir, output_pptx, config,
                     frontend_dir=frontend_dir,
                     source_mapping_path=source_mapping_path,
-                    style_css_path=style_css_path)
+                    style_css_path=style_css_path,
+                    export_html=bool(getattr(args, "export_html", False)))
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
@@ -1045,6 +1046,9 @@ def cmd_screen_converter(args):
         print(f"  스타일:  {stats['style_profile']} "
               f"({stats['style_keys_extracted']} 키 추출)")
     print(f"  PPTX:    {stats['pptx']}")
+    if stats.get("html_dir"):
+        n_html = stats.get("html_generated", 0)
+        print(f"  HTML:    {stats['html_dir']}/  ({n_html}장 생성, index.html 포함)")
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
 
@@ -2486,6 +2490,12 @@ def main():
                                 "(휴리스틱 매칭이 실패하는 경우용). "
                                 "값이 상대 경로면 --frontend-dir 기준 resolve. "
                                 "예: input/screen_source_mapping.yaml")
+    sc_parser.add_argument("--export-html", action="store_true",
+                           help="(선택) PPTX 외에 HTML 도 추가 생성. --style-css 의 CSS 와 "
+                                "AS-IS 캡처 + (있으면) React 소스를 VLM 에 넘겨 "
+                                "TO-BE HTML body 를 생성. 결과를 <link rel=stylesheet> 로 "
+                                "CSS 와 묶어 브라우저에서 TO-BE 디자인 그대로 확인 가능. "
+                                "(주의: VLM 출력이라 매 실행 변동성 존재 — 시각 검토용)")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
