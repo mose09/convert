@@ -1,50 +1,61 @@
-"""메뉴 URL ↔ react_url_map 매칭 진단 — 한 줄 결론 출력.
+"""메뉴 URL ↔ react_url_map 매칭 진단 — 사용자가 그대로 보낼 수 있는
+4~6 줄 dump.
 
-사용자 단방향 환경에서 "왜 frontend 매핑이 안 되나" 를 좁히기 위한
-진단 도구. ``analyze-legacy`` 의 frontend 단계를 단독 재현해 정확히
-어디서 끊기는지 1~3 줄로 emit.
+사용자 단방향 환경 (수기 타이핑) 친화적: 모든 결정적 정보를 한 화면에
+짧게 emit. 추측/객관식 질문 없이, 실제 코드를 그대로 dump.
 
 사용법
 ------
 
-    python diag_route_match.py <frontends_root> "<menu_url>"
+    python diag_route_match.py <main_repo_or_frontends_root> "<menu_url>"
 
 예
 --
 
-    python diag_route_match.py D:\\workspace\\frontend ^
-        "http://workplace.skhynix.com/apps/gipms-unitclass"
+    python diag_route_match.py D:\\workspace\\frontend\\main "http://workplace.skhynix.com/apps/gipms-unitclass"
 
 출력 예
 -------
 
-    [PASS] /apps/gipms-unitclass → bucket=gipms-unitclass base=/apps/gipms-unitclass
-    [FAIL] Route 추출 0건 — PR #201 dynamic resolver 가 못 잡음. routes/index.js 의 첫 5 줄을 보여주세요
-    [FAIL] .env REACT_APP_NAME 없음 — auto-prefix 불가
-    [FAIL] base 등록은 됐는데 (/apps/foo) 메뉴 URL (/apps/gipms-unitclass) 와 mismatch
+    [MODE] SINGLE — main (.env=Y src/=Y)
+    [MENU_NORM] /apps/gipms-unitclass
+    [ENV] REACT_APP_NAME=gipms-unitclass
+    [ROUTES] 1건 — bases=['/apps/gipms-unitclass']
+    [ROUTE_RAW] src/routes/index.js: <Route path={getRoutePath(basename, '/')} component={Main}/>
+    [VERDICT] PASS via=prefix file=src/pages/Main.jsx
+
+매칭 실패 시 [VERDICT] FAIL <원인 한 줄>.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import sys
 
 
-def _list_buckets(root: str) -> list[tuple[str, str]]:
-    """root 의 sub-repo enumerate.
+_ROUTE_LINE_RE = re.compile(r"<Route\b[^>]*?>", re.DOTALL)
 
-    - root 자체가 sub-repo (``.env`` + ``src/`` 보유) 면 root 만 yield
-    - 아니면 1-depth child 폴더들을 sub-repo 로 enumerate (analyzer 의
-      ``_enumerate_buckets`` 와 동일 정책)
-    """
+
+def _has_env(root: str) -> bool:
+    if not os.path.isdir(root):
+        return False
+    try:
+        for n in os.listdir(root):
+            if n.startswith(".env") and os.path.isfile(os.path.join(root, n)):
+                return True
+    except OSError:
+        return False
+    return False
+
+
+def _list_buckets(root: str) -> tuple[str, list[tuple[str, str]]]:
+    """Return ``(mode, [(name, path), ...])`` — SINGLE 또는 MULTI."""
     root = os.path.abspath(root)
-    self_env = os.path.isfile(os.path.join(root, ".env")) or any(
-        n.startswith(".env") and os.path.isfile(os.path.join(root, n))
-        for n in (os.listdir(root) if os.path.isdir(root) else [])
-    )
-    self_src = os.path.isdir(os.path.join(root, "src"))
-    if self_env and self_src:
-        return [(os.path.basename(root), root)]
+    has_env = _has_env(root)
+    has_src = os.path.isdir(os.path.join(root, "src"))
+    if has_env and has_src:
+        return "SINGLE", [(os.path.basename(root) or root, root)]
     out: list[tuple[str, str]] = []
     try:
         for name in sorted(os.listdir(root)):
@@ -54,18 +65,51 @@ def _list_buckets(root: str) -> list[tuple[str, str]]:
     except OSError as e:
         print(f"[ERROR] {root} 읽기 실패: {e}")
         sys.exit(2)
-    return out
+    return "MULTI", out
+
+
+def _dump_route_lines(repo_root: str, max_lines: int = 2) -> tuple[str, list[str]]:
+    """첫 발견된 routes 파일에서 ``<Route ...>`` 라인 max_lines 개 dump."""
+    candidates = [
+        "src/routes/index.js", "src/routes/index.jsx",
+        "src/routes/index.ts", "src/routes/index.tsx",
+        "src/routes/Routes.js", "src/routes/Routes.jsx",
+        "src/Routes.js", "src/Routes.jsx",
+        "routes/index.js", "routes/index.jsx",
+        "src/index.js", "src/index.jsx",
+        "src/index.ts", "src/index.tsx",
+    ]
+    for c in candidates:
+        full = os.path.join(repo_root, c)
+        if not os.path.isfile(full):
+            continue
+        try:
+            with open(full, "r", encoding="utf-8", errors="ignore") as f:
+                text = f.read()
+        except OSError:
+            continue
+        lines = []
+        for m in _ROUTE_LINE_RE.finditer(text):
+            line = re.sub(r"\s+", " ", m.group(0)).strip()
+            if len(line) > 140:
+                line = line[:140] + "..."
+            lines.append(line)
+            if len(lines) >= max_lines:
+                break
+        if lines:
+            return c, lines
+    return "", []
 
 
 def main() -> int:
     if len(sys.argv) < 3:
         print(__doc__)
         return 2
-    frontends_root = sys.argv[1]
+    root = sys.argv[1]
     menu_url = sys.argv[2]
 
-    if not os.path.isdir(frontends_root):
-        print(f"[ERROR] frontends_root 폴더 없음: {frontends_root}")
+    if not os.path.isdir(root):
+        print(f"[ERROR] path 없음: {root}")
         return 2
 
     from oracle_embeddings.legacy_util import normalize_url
@@ -74,55 +118,66 @@ def main() -> int:
     from oracle_embeddings.legacy_analyzer import _lookup_react_entry_by_prefix
 
     norm_menu = normalize_url(menu_url)
-    print(f"# 메뉴 URL 정규화: {menu_url}  →  {norm_menu}")
+    print(f"[MENU_NORM] {norm_menu}")
 
-    buckets = _list_buckets(frontends_root)
+    mode, buckets = _list_buckets(root)
+    has_env = _has_env(root)
+    has_src = os.path.isdir(os.path.join(root, "src"))
+    print(f"[MODE] {mode} — {os.path.basename(root) or root} "
+          f"(.env={'Y' if has_env else 'N'} src/={'Y' if has_src else 'N'}) "
+          f"buckets={len(buckets)}")
+
     if not buckets:
-        print(f"[FAIL] sub-repo 0개 — {frontends_root} 안 1-depth child 가 없음")
+        print(f"[VERDICT] FAIL — buckets 0개")
         return 1
-    print(f"# sub-repo {len(buckets)}개 발견")
 
-    merged_map: dict = {}
-    found_match: tuple[str, str, dict] | None = None
+    # 라우터 보유 sub-repo 만 highlight (routes>0)
+    router_repos: list[tuple[str, str, str | None, dict]] = []
     for name, path in buckets:
         app_name = load_react_app_name(path)
         try:
-            url_map, fw = build_frontend_url_map(path, framework="react")
+            url_map, _ = build_frontend_url_map(path, framework="react")
         except Exception as e:
-            print(f"  - {name}: build_frontend_url_map 실패 ({e})")
+            print(f"[BUCKET] {name}: build 실패 ({e})")
             continue
-        # 정확 매칭
+        if url_map:
+            router_repos.append((name, path, app_name, url_map))
+
+    if not router_repos:
+        # 모든 sub-repo 가 routes=0 — 라우터 없음
+        print(f"[ENV] (routes=0 인 sub-repo 만)")
+        # routes 파일 자체가 있는지 dump 시도 (메인 레포 후보 찾기)
+        for name, path in buckets[:3]:
+            file, lines = _dump_route_lines(path)
+            if file:
+                print(f"[ROUTE_RAW] {name}/{file}: {lines[0]}")
+                break
+        print(f"[VERDICT] FAIL — 어느 sub-repo 에서도 Route 추출 0건. "
+              f"routes/index.js 패턴이 PR #201 regex 와 다름")
+        return 1
+
+    # 매칭 시도
+    for name, path, app_name, url_map in router_repos:
+        bases = sorted(url_map.keys())[:3]
+        print(f"[BUCKET] {name}: REACT_APP_NAME={app_name!r} "
+              f"routes={len(url_map)} bases={bases}")
         exact = url_map.get(norm_menu)
-        # prefix 매칭 (PR #202 동작 재현)
         prefix = _lookup_react_entry_by_prefix(url_map, norm_menu)
         if exact or prefix:
             via = "exact" if exact else "prefix"
             entry = exact or prefix
-            found_match = (name, via, entry or {})
-            print(f"  - {name}: REACT_APP_NAME={app_name!r}, routes={len(url_map)}, "
-                  f"매칭=YES ({via})")
-            break
-        else:
-            print(f"  - {name}: REACT_APP_NAME={app_name!r}, routes={len(url_map)}, "
-                  f"매칭=NO (base 예시: {list(url_map.keys())[:3]})")
-        merged_map.update(url_map)
+            f = entry.get("file_path") or entry.get("declared_in") or "?"
+            print(f"[VERDICT] PASS — bucket={name} via={via} file={f}")
+            return 0
 
-    print()
-    if found_match:
-        name, via, entry = found_match
-        print(f"[PASS] {norm_menu} → bucket={name} via={via} "
-              f"frontend_name={entry.get('frontend_name')} "
-              f"file={entry.get('file_path') or entry.get('declared_in')}")
-        return 0
-
-    # 매칭 실패 — 진단 단서
-    print("[FAIL] 어느 sub-repo 의 react_url_map 에서도 매칭 안 됨.")
-    print("  진단 단서:")
-    print(f"    1. 정규화된 메뉴 URL: {norm_menu}")
-    print(f"    2. 위에서 routes=0 인 sub-repo → PR #201 dynamic Route 추출 실패")
-    print(f"       해결: routes/index.js 의 <Route ...> 줄을 알려주세요")
-    print(f"    3. routes>0 이고 base 가 다른 형태 → REACT_APP_NAME vs menu slug mismatch")
-    print(f"       해결: .env REACT_APP_NAME 값과 menu URL slug 일치 여부 확인")
+    # 매칭 실패 — Route 라인 raw dump (가장 큰 router_repo 우선)
+    name, path, _, _ = max(router_repos, key=lambda r: len(r[3]))
+    file, lines = _dump_route_lines(path)
+    if file:
+        for ln in lines[:2]:
+            print(f"[ROUTE_RAW] {name}/{file}: {ln}")
+    print(f"[VERDICT] FAIL — Route 추출은 됐는데 base 가 메뉴 URL 와 mismatch. "
+          f"위 ROUTE_RAW + bases 를 보여주세요")
     return 1
 
 
