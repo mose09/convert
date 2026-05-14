@@ -701,32 +701,69 @@ def extract_layout(asis_image: Path, template_images: list[Path],
 
 # ── VLM 으로 HTML 추출 (옵션 D: --export-html) ───────────────────────
 
-_HTML_SYSTEM_PROMPT = (
+_HTML_SYSTEM_PROMPT_SOURCE = (
+    "당신은 차세대 SI 프론트엔드 개발자입니다. AS-IS React 소스와 TO-BE "
+    "CSS 를 보고, CSS 의 클래스/규칙을 정확히 사용하는 TO-BE HTML 마크업 "
+    "(body 안 내용만) 을 생성하세요. 결과는 HTML 코드 블록 하나만, "
+    "설명/마크다운 텍스트/주석 금지."
+)
+
+_HTML_SYSTEM_PROMPT_VISION = (
     "당신은 차세대 SI 프론트엔드 개발자입니다. AS-IS 화면 캡처와 (있으면) "
     "TO-BE 디자인 템플릿 캡처를 보고, 첨부된 TO-BE CSS 의 클래스/규칙을 "
     "정확히 사용하는 HTML 마크업 (body 안 내용만) 을 생성하세요. "
     "결과는 HTML 코드 블록 하나만, 설명/마크다운 텍스트/주석 금지."
 )
 
-_HTML_PROMPT_TEMPLATE = """다음 입력으로 TO-BE HTML body 안 마크업을 생성:
+# 소스 매칭된 화면 — text-only 호출. 이미지 0, 코딩 모델 OK.
+_HTML_PROMPT_SOURCE = """다음 입력으로 TO-BE HTML body 안 마크업을 생성:
 
-[AS-IS] 첫 번째 이미지 = 변환 대상 화면 캡처
-[Template] 그 뒤 이미지들 = TO-BE 디자인 시각 참조
-[CSS] 첨부된 TO-BE CSS = 사용 가능한 클래스/selector 의 출처
-[Source] (있으면) AS-IS React 소스 = 라벨/컬럼/버튼 텍스트 정답
+[Source] AS-IS React 소스 = 변환 대상 화면의 정답 (라벨/컬럼/버튼/구조)
+[CSS] TO-BE CSS = 사용 가능한 클래스/selector 의 출처
 
 규칙:
 1. **반드시 CSS 안에 정의된 class/selector 만 사용**. 임의로 새 클래스
    이름 발명 금지. CSS 에 `.btn-primary` `.search-form .field-row`
    같은 게 있으면 그걸 그대로 써라.
 2. 구조도 CSS 가 기대하는 nesting 그대로 (`.form > .field > input` 등).
-3. AS-IS 의 모든 라벨/컬럼/버튼 텍스트를 빠짐없이 옮긴다. React 소스가
-   첨부됐으면 그 텍스트가 정답. 이미지에서만 다르게 보여도 소스 우선.
-4. 출력은 `<body>` 안 들어갈 마크업만. `<html>` / `<head>` /
+3. React 소스에 나오는 모든 라벨/컬럼/버튼 텍스트를 빠짐없이 옮긴다.
+   소스가 정답이다.
+4. JSX `className` 은 CSS class 와 직접 매핑되는 경우만 그대로 사용,
+   소스에만 있는 사내 컴포넌트명 (예: `<MyForm>`) 은 CSS 의 동등한
+   selector 로 대체 (`<form class="search-form">` 등).
+5. 출력은 `<body>` 안 들어갈 마크업만. `<html>` / `<head>` /
    `<link rel=stylesheet>` 같은 wrap 은 생성하지 마라 (호출 측이 추가).
+6. 결과를 코드 블록으로 감싸 출력:
+   ```html
+   <div class="...">
+     ...
+   </div>
+   ```
+
+=== TO-BE CSS (사용 가능한 selector 목록) ===
+{css_text}
+
+=== AS-IS React 소스 (라벨/컬럼/버튼/구조 정답) ===
+{source_text}
+"""
+
+# 소스 매칭 실패 fallback — vision 호출. AS-IS 이미지 1장 + CSS.
+_HTML_PROMPT_VISION = """다음 입력으로 TO-BE HTML body 안 마크업을 생성:
+
+[AS-IS] 첨부 이미지 = 변환 대상 화면 캡처 (React 소스 매칭 실패 → 이미지로만 추출)
+[CSS] 첨부된 TO-BE CSS = 사용 가능한 클래스/selector 의 출처
+
+규칙:
+1. **반드시 CSS 안에 정의된 class/selector 만 사용**. 임의로 새 클래스
+   이름 발명 금지. CSS 에 `.btn-primary` `.search-form .field-row`
+   같은 게 있으면 그걸 그대로 써라.
+2. 구조도 CSS 가 기대하는 nesting 그대로 (`.form > .field > input` 등).
+3. 이미지에서 보이는 모든 라벨/컬럼/버튼 텍스트를 빠짐없이 옮긴다.
+4. 출력은 `<body>` 안 들어갈 마크업만. `<html>` / `<head>` /
+   `<link rel=stylesheet>` 같은 wrap 은 생성하지 마라.
 5. 결과를 코드 블록으로 감싸 출력:
    ```html
-   <div class=...>
+   <div class="...">
      ...
    </div>
    ```
@@ -766,14 +803,18 @@ def _strip_html_fence(text: str) -> str:
 
 def extract_html(asis_image: Path, template_images: list[Path],
                  css_text: str, source_text: str | None,
-                 config: dict) -> str:
-    """VLM 1회 호출 → TO-BE HTML body 마크업 문자열. 실패 시 빈 문자열.
+                 config: dict) -> tuple[str, str]:
+    """LLM 1회 호출 → (body 마크업, 모드). 실패 시 ("", mode).
 
-    `_call_llm` 가 JSON 응답을 기대해서 여기서는 직접 OpenAI client 호출
-    경로를 쓰지 않고, 텍스트 응답을 받기 위해 chat completions API 를
-    직접 사용한다 (CSS + 이미지 묶음).
+    모드 자동 결정:
+     - source_text 가 있으면 **text-only** (이미지 0, 코딩 모델 OK). 더
+       안정/빠름. 소스가 정답이라 이미지 노이즈 제거.
+     - source_text 가 없으면 **vision** (AS-IS 이미지 1장 + CSS) —
+       legacy 외주 화면 등 React 소스 없는 케이스 fallback.
+
+    template_images 는 이 함수에서 미사용 (CSS 가 style 정답이라 중복).
+    인자는 시그니처 호환을 위해 받지만 무시한다.
     """
-    # 직접 OpenAI 호환 chat call (JSON 강제 안 함)
     try:
         from openai import OpenAI
     except ImportError as e:
@@ -792,41 +833,41 @@ def extract_html(asis_image: Path, template_images: list[Path],
 
     client = OpenAI(api_key=api_key, base_url=api_base)
 
-    # multimodal user content (AS-IS + templates)
-    import base64
-    user_content: list[dict] = []
-    user_content.append({
-        "type": "text",
-        "text": _HTML_PROMPT_TEMPLATE.format(
+    use_source = bool(source_text and source_text.strip())
+    mode = "source" if use_source else "vision"
+
+    if use_source:
+        sys_prompt = _HTML_SYSTEM_PROMPT_SOURCE
+        user_content = _HTML_PROMPT_SOURCE.format(
+            css_text=_truncate_css_for_prompt(css_text),
+            source_text=source_text[:_SOURCE_MAX_CHARS],
+        )
+    else:
+        sys_prompt = _HTML_SYSTEM_PROMPT_VISION
+        prompt_text = _HTML_PROMPT_VISION.format(
             css_text=_truncate_css_for_prompt(css_text)
-        ),
-    })
-    for img in [asis_image] + list(template_images):
+        )
+        import base64
+        user_content_list: list[dict] = [{"type": "text", "text": prompt_text}]
         try:
-            data = Path(img).read_bytes()
+            data = Path(asis_image).read_bytes()
             b64 = base64.b64encode(data).decode("ascii")
-            ext = Path(img).suffix.lower().lstrip(".") or "png"
+            ext = Path(asis_image).suffix.lower().lstrip(".") or "png"
             mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
-            user_content.append({
+            user_content_list.append({
                 "type": "image_url",
                 "image_url": {"url": f"data:{mime};base64,{b64}"},
             })
         except Exception as e:
-            logger.warning("HTML extract — 이미지 base64 실패 (%s): %s", img, e)
-    if source_text:
-        user_content.append({
-            "type": "text",
-            "text": (
-                "\n=== AS-IS React 소스 (라벨/컬럼/버튼 텍스트 정답) ===\n"
-                + source_text[:_SOURCE_MAX_CHARS]
-            ),
-        })
+            logger.warning("HTML extract — 이미지 base64 실패 (%s): %s",
+                           asis_image, e)
+        user_content = user_content_list
 
     try:
         response = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": _HTML_SYSTEM_PROMPT},
+                {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_content},
             ],
             temperature=0.1,
@@ -834,9 +875,10 @@ def extract_html(asis_image: Path, template_images: list[Path],
         )
         raw = response.choices[0].message.content or ""
     except Exception as e:
-        logger.error("HTML extract LLM 호출 실패 (%s): %s", asis_image.name, e)
-        return ""
-    return _strip_html_fence(raw)
+        logger.error("HTML extract LLM 호출 실패 (%s, mode=%s): %s",
+                     asis_image.name, mode, e)
+        return "", mode
+    return _strip_html_fence(raw), mode
 
 
 def render_html(screens: list[tuple[str, str]],
@@ -1493,6 +1535,7 @@ def convert(captures_dir: Path, templates_dir: Path | None,
         "style_profile": str(style_path),
         "html_dir": html_stats.get("dir") if html_stats else None,
         "html_generated": html_stats.get("generated") if html_stats else 0,
+        "html_by_mode": html_stats.get("by_mode") if html_stats else None,
     }
 
 
@@ -1517,6 +1560,7 @@ def _generate_html_per_screen(asis_imgs: list[Path],
 
     screens: list[tuple[str, str]] = []
     generated = 0
+    by_mode = {"source": 0, "vision": 0}
     for img in asis_imgs:
         source_path, _ = _match_source(img.stem, source_index, mapping=mapping)
         source_text = ""
@@ -1526,13 +1570,20 @@ def _generate_html_per_screen(asis_imgs: list[Path],
                 source_text, _ = bundle
             else:
                 source_text = _read_source_snippet(source_path)
-        print(f"    → {img.name}")
-        body = extract_html(img, tmpl_imgs, css_text,
-                            source_text or None, config)
+        body, mode = extract_html(img, tmpl_imgs, css_text,
+                                  source_text or None, config)
+        kind_hint = (f"source {len(source_text)} chars"
+                     if mode == "source" else "vision (소스 매칭 실패)")
+        print(f"    → {img.name}  ({kind_hint})")
         if body:
             generated += 1
+            by_mode[mode] = by_mode.get(mode, 0) + 1
         screens.append((img.stem, body))
 
     render_html(screens, css_text, output_dir,
                 css_filename=Path(style_css_path).name)
-    return {"dir": str(output_dir), "generated": generated}
+    return {
+        "dir": str(output_dir),
+        "generated": generated,
+        "by_mode": by_mode,
+    }
