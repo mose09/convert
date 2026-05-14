@@ -1048,7 +1048,17 @@ def cmd_screen_converter(args):
     print(f"  PPTX:    {stats['pptx']}")
     if stats.get("html_dir"):
         n_html = stats.get("html_generated", 0)
-        print(f"  HTML:    {stats['html_dir']}/  ({n_html}장 생성, index.html 포함)")
+        by_mode = stats.get("html_by_mode") or {}
+        modes_txt = ""
+        if by_mode:
+            parts = []
+            if by_mode.get("source"):
+                parts.append(f"source {by_mode['source']}")
+            if by_mode.get("vision"):
+                parts.append(f"vision {by_mode['vision']}")
+            modes_txt = f" — {', '.join(parts)}" if parts else ""
+        print(f"  HTML:    {stats['html_dir']}/  "
+              f"({n_html}장 생성{modes_txt}, index.html 포함)")
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
 

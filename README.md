@@ -1441,11 +1441,19 @@ python main.py screen-converter `
   사용자관리: src/pages/admin/UserMgmt.tsx
   ```
 - `--export-html` — (선택) PPTX 외에 **TO-BE HTML 도 추가 생성**.
-  `--style-css` 의 CSS 와 AS-IS 캡처 + (있으면) React 소스를 VLM 에 넘겨
-  body 마크업을 받고 `<link rel=stylesheet href=tobe_style.css>` 로
-  묶어 화면별 html + index.html 산출. 브라우저로 열어 TO-BE 디자인 그대로
-  확인 가능 (PPTX 도형 재구성 한계 우회). 단 VLM 출력이라 매 실행 변동성
-  있음 — 시각 검토용. 출력: `output/screen-converter/<날짜>/html/`.
+  `--style-css` 의 CSS 와 React 소스를 LLM 에 넘겨 body 마크업을 받고
+  `<link rel=stylesheet href=tobe_style.css>` 로 묶어 화면별 html +
+  index.html 산출. 브라우저로 열어 TO-BE 디자인 그대로 확인 가능
+  (PPTX 도형 재구성 한계 우회).
+  - **소스 매칭된 화면**: **text-only LLM 호출** (이미지 0). React JSX
+    가 정답 — 코딩 모델로도 동작 + vision 모델보다 빠르고 안정. CSS 가
+    스타일 정답이라 템플릿 이미지도 불필요.
+  - **소스 매칭 실패한 화면 (legacy 외주 등)**: AS-IS 이미지 1장 +
+    CSS 로 vision fallback.
+  - 콘솔에 `source N장, vision M장` 으로 표시.
+  - VLM 출력이라 매 실행 변동성 있음 — **시각 검토용** (deterministic
+    정의서는 `screen-spec` 의 xlsx 가 담당).
+  - 출력: `output/screen-converter/<날짜>/html/`.
 
 **소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
 - 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과
