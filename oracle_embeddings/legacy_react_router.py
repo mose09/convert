@@ -22,8 +22,15 @@ from .mybatis_parser import _read_file_safe
 logger = logging.getLogger(__name__)
 
 
-SKIP_DIRS = {"node_modules", "build", "dist", ".next", ".git", "coverage",
-             "bower_components", "__pycache__", ".cache"}
+# dev/test/story 폴더 (production 빌드에 안 들어가는 Route) 도 함께 skip.
+# 모두 lowercase — caller 가 ``d.lower() not in SKIP_DIRS`` 로 비교.
+SKIP_DIRS = {
+    "node_modules", "build", "dist", ".next", ".git", "coverage",
+    "bower_components", "__pycache__", ".cache",
+    "devonly", "dev-only", "dev_only",
+    "__tests__", "__mocks__",
+    "storybook", ".storybook", "stories",
+}
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx"}
 
 # Minified / 빌드 산출 파일 패턴 — 수 MB 짜리 한 파일이 regex 폭발의
@@ -61,7 +68,7 @@ def scan_react_dir(base_dir: str) -> list[str]:
             return cached
     files = []
     for root, dirs, names in os.walk(base_dir):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS]
         for n in names:
             if os.path.splitext(n)[1].lower() not in EXTENSIONS:
                 continue

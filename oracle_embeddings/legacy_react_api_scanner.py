@@ -40,7 +40,18 @@ from .mybatis_parser import _read_file_safe
 logger = logging.getLogger(__name__)
 
 
-SKIP_DIRS = {"node_modules", "build", "dist", ".next", ".git", "coverage", "bower_components"}
+# dev/test/story 폴더 — production 빌드에 안 들어가는 Route / API call /
+# 컴포넌트. 사용자 사례: ``src/devOnly/RestrictedRoute.js`` 의 ``/signin``
+# Route 가 base 인덱스에 노이즈로 끼는 케이스. 보수적으로 명확한 dev
+# 마커만 — ``test`` / ``mock`` 단독은 production 의도 폴더와 충돌 가능
+# 해서 제외 (``__tests__`` / ``__mocks__`` 의 jest 컨벤션만).
+SKIP_DIRS = {
+    "node_modules", "build", "dist", ".next", ".git", "coverage",
+    "bower_components",
+    "devonly", "dev-only", "dev_only",
+    "__tests__", "__mocks__",
+    "storybook", ".storybook", "stories",
+}
 EXTENSIONS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".vue", ".html"}
 
 
@@ -281,7 +292,7 @@ def _scan_dir(base: str) -> list[str]:
             return cached
     out = []
     for root, dirs, names in os.walk(base):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [d for d in dirs if d.lower() not in SKIP_DIRS]
         for n in names:
             if os.path.splitext(n)[1].lower() not in EXTENSIONS:
                 continue
