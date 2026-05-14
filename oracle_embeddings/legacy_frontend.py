@@ -205,7 +205,15 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
         logger.warning("Frontend dir not found: %s", frontend_dir)
         return {}, "unknown"
 
-    if route_prefix is None:
+    # .env REACT_APP_NAME 자동 prefix — caller (`analyze_legacy_batch`) 가
+    # ``patterns.url.react_route_prefix`` 값을 그대로 forward 하기 때문에:
+    # (a) patterns.yaml 미사용 → None
+    # (b) patterns.yaml 의 react_route_prefix 미설정 → None
+    # (c) react_route_prefix 가 빈 문자열 `""` 로 설정됨 → None 아님 (truthy
+    #     not), 하지만 실제로는 prefix 의도 없음 — falsy 처리해서 .env 발동
+    # (d) 명시적 hardcoded prefix (예: ``/web``) → 그것 사용
+    # 즉 빈/공백만 들어있어도 .env 가 truth source 가 되도록 ``not`` 처리.
+    if not (route_prefix and route_prefix.strip()):
         from .legacy_react_api_scanner import load_react_app_name
         app_name = load_react_app_name(frontend_dir)
         if app_name:
