@@ -114,10 +114,21 @@ def build_component_index(files: list[str]) -> dict:
 # `<Route path="/x" element={<X/>} />` or `component={X}`. component 값은
 # 변수 reference 라 PascalCase 외에 camelCase alias 도 흔함 — `[A-Za-z_]`
 # 로 완화. element 의 JSX 태그는 React 컨벤션상 PascalCase 유지.
+#
+# path 는 두 형태:
+# 1. literal:  ``path="/list"`` 또는 ``path='/list'``
+# 2. dynamic:  ``path={getRoutePath(basename, '/list')}`` 같은 JSX
+#    expression. 사용자 사례: SPA 의 ``routes/index.js`` 가 basename 합성
+#    함수로 path 를 만든다. 이 경우 ``{...}`` 안에서 quoted literal 을
+#    별도 후처리로 추출 (:func:`_resolve_path_expr`). 중첩 brace 없는 단순
+#    expression 만 — ``{...{...}...}`` 는 skip (드물고 정적 해석 어려움).
 _ROUTE_JSX_RE = re.compile(
     r"""<Route
         \b[^>]*?
-        \bpath\s*=\s*(?P<quote>["'])(?P<path>[^"']*)(?P=quote)
+        \bpath\s*=\s*(?:
+            (?P<quote>["'])(?P<path>[^"']*)(?P=quote)
+          | \{(?P<path_expr>[^{}]+)\}
+        )
         [^>]*?
         (?:
             element\s*=\s*\{\s*<\s*(?P<comp1>[A-Z]\w*)
@@ -126,6 +137,35 @@ _ROUTE_JSX_RE = re.compile(
     """,
     re.VERBOSE,
 )
+
+
+def _resolve_path_expr(expr: str) -> str | None:
+    """JSX expression ``{...}`` 안에서 path literal 을 추출.
+
+    지원 패턴:
+    - ``getRoutePath(basename, '/list')`` → ``'/list'`` (마지막 path-like quoted)
+    - ``getRoutePath(basename, '/')`` → ``'/'``
+    - `` `/list/${id}` `` → ``'/list/{p}'`` (template literal, dynamic 치환)
+    - ``URLS.LIST`` / 변수 reference → None (정적 해석 불가)
+
+    path-like 우선순위는 ``/`` 시작 토큰. 같은 expression 에 여러 quoted
+    string 이 있으면 마지막 path-like 토큰 선택. 함수 호출 첫 인자가
+    변수, 뒤가 path literal 인 일반적 케이스 매칭.
+    """
+    if not expr:
+        return None
+    # 1. Template literal (back-tick) — ``${...}`` 는 ``{p}`` 토큰으로 치환
+    m = re.search(r"`([^`]+)`", expr)
+    if m:
+        return re.sub(r"\$\{[^}]+\}", "{p}", m.group(1))
+    # 2. quoted string literal — / 시작 우선
+    matches = re.findall(r"""['"]([^'"]*)['"]""", expr)
+    if matches:
+        path_like = [s for s in matches if s.startswith("/")]
+        if path_like:
+            return path_like[-1]
+        return matches[-1]
+    return None
 
 
 def _build_route_jsx_re(extra_tags: list[str] | None = None) -> re.Pattern:
@@ -139,7 +179,10 @@ def _build_route_jsx_re(extra_tags: list[str] | None = None) -> re.Pattern:
     return re.compile(
         rf"""<(?:{alt})
             \b[^>]*?
-            \bpath\s*=\s*(?P<quote>["'])(?P<path>[^"']*)(?P=quote)
+            \bpath\s*=\s*(?:
+                (?P<quote>["'])(?P<path>[^"']*)(?P=quote)
+              | \{{(?P<path_expr>[^{{}}]+)\}}
+            )
             [^>]*?
             (?:
                 element\s*=\s*\{{\s*<\s*(?P<comp1>[A-Z]\w*)
@@ -375,7 +418,13 @@ def _extract_routes_from_content(content: str,
             routes.append({"path": path, "component": comp})
 
     for m in jsx_re.finditer(content):
-        _add(m.group("path"), m.group("comp1") or m.group("comp2"))
+        raw_path = m.group("path")
+        if raw_path is None:
+            # ``path={...}`` JSX expression — extract quoted literal.
+            raw_path = _resolve_path_expr(m.group("path_expr") or "")
+            if not raw_path:
+                continue
+        _add(raw_path, m.group("comp1") or m.group("comp2"))
 
     for m in _ROUTE_OBJ_RE.finditer(content):
         _add(m.group("path"), m.group("comp1") or m.group("comp2"))
