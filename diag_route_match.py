@@ -7,12 +7,16 @@
 사용법
 ------
 
-    python diag_route_match.py <main_repo_or_frontends_root> "<menu_url>"
+    python diag_route_match.py REPO_PATH MENU_URL
+
+placeholder 는 꺾쇠 표기를 쓰지 않는다. 실제 입력 시 ``REPO_PATH`` /
+``MENU_URL`` 자리에 값을 따옴표로 감싸 넣는다 — ``<...>`` literal 을
+포함하면 normalize_url 결과에 ``<`` / ``>`` 가 섞여 매칭이 실패.
 
 예
 --
 
-    python diag_route_match.py D:\\workspace\\frontend\\main "http://workplace.skhynix.com/apps/gipms-unitclass"
+    python diag_route_match.py "D:\\workspace\\frontend\\main" "http://workplace.skhynix.com/apps/gipms-unitclass"
 
 출력 예
 -------
