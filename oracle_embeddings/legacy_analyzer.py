@@ -1479,6 +1479,33 @@ def _inherit_class_paths(controller: dict, controllers_by_fqcn: dict) -> list[st
     return paths
 
 
+def _lookup_react_entry_by_prefix(react_url_map: dict, menu_url_norm: str) -> dict | None:
+    """``react_url_map`` 의 base 중 ``menu_url_norm`` 의 prefix 인 것을
+    longest-match 로 찾는다.
+
+    사용자 사례: catch-all SPA — Layer 2 가 ``<Route path={fn(basename, '/')}>``
+    하나만 있어 sub-app build 1개 = 메뉴 N개를 자체 처리. react_url_map
+    에는 base ``/apps/<name>`` 하나만 등록되어 있어 ``/apps/<name>/list``
+    같은 메뉴 URL 은 정확 매칭 실패. 그 base 가 메뉴 URL 의 prefix 면
+    동일 sub-app 으로 간주해 react_entry 반환.
+
+    가장 긴 base 우선 — 여러 SPA 가 ``/apps/foo`` / ``/apps/foo-bar`` 처럼
+    겹칠 때 더 구체적인 매칭 보장.
+    """
+    if not menu_url_norm or not react_url_map:
+        return None
+    best_base = ""
+    best_entry = None
+    for base, entry in react_url_map.items():
+        if not base or base == "/":
+            continue
+        if menu_url_norm == base or menu_url_norm.startswith(base + "/"):
+            if len(base) > len(best_base):
+                best_base = base
+                best_entry = entry
+    return best_entry
+
+
 def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     """Placeholder row for a menu entry that didn't match any endpoint.
 
@@ -1495,6 +1522,10 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     raw_menu_url = menu_entry.get("url", "")
     menu_url_norm = normalize_url(raw_menu_url, url_strip) if raw_menu_url else ""
     re_entry = react_url_map.get(menu_url_norm) if menu_url_norm else None
+    if re_entry is None and menu_url_norm:
+        # catch-all SPA: Layer 2 만 있고 sub-route 가 없는 케이스 — base
+        # ``/apps/<name>`` 이 메뉴 URL 의 prefix 면 같은 sub-app 으로 간주.
+        re_entry = _lookup_react_entry_by_prefix(react_url_map, menu_url_norm)
     presentation_layer = ""
     frontend_project = ""
     if re_entry:
@@ -2269,8 +2300,18 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 menu_url_norm = normalize_url(menu_entry.get("url", ""), url_strip)
                 if menu_url_norm and menu_url_norm != key:
                     react_entry = react_url_map.get(menu_url_norm)
+                    if react_entry is None:
+                        # catch-all SPA fallback — Layer 2 base 가 메뉴 URL
+                        # 의 prefix 이면 같은 sub-app 으로 간주.
+                        react_entry = _lookup_react_entry_by_prefix(
+                            react_url_map, menu_url_norm,
+                        )
             if react_entry is None and app_slug_lower and by_frontend:
-                react_entry = (by_frontend.get(app_slug_lower) or {}).get(key)
+                bucket_map = by_frontend.get(app_slug_lower) or {}
+                react_entry = bucket_map.get(key)
+                if react_entry is None and menu_entry:
+                    _mu = normalize_url(menu_entry.get("url", ""), url_strip)
+                    react_entry = _lookup_react_entry_by_prefix(bucket_map, _mu)
             if react_entry is None:
                 react_entry = react_url_map.get(key)
             # If 2-hop supplied an app_slug but the Router didn't index

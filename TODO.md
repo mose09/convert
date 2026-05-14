@@ -119,6 +119,26 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: catch-all SPA — Layer 2 base prefix 매칭 fallback
+
+사용자 환경 4: 라우터가 메인 (Layer 2 routes/index.js) 에만 1개 존재하고
+sub-route 가 없는 catch-all SPA. ``<Route path={fn(basename, '/')}>`` 한
+줄이 sub-app build 1개의 모든 화면을 컴포넌트 안에서 routing. react_url_map
+에 base ``/apps/<name>`` 만 등록 → ``/apps/<name>/list`` 같은 메뉴 URL 은
+정확 매칭 실패. PR #200/#201 fix 후에도 일부 row 의 frontend_project /
+presentation_layer 가 비어있던 진짜 원인.
+
+- [x] `_lookup_react_entry_by_prefix(react_url_map, menu_url_norm)` 헬퍼
+      신규 — longest base prefix match. ``/`` base 는 false-match 위험으로
+      제외
+- [x] `_menu_only_row` (line 1497) 에 fallback: 정확 매칭 실패 시
+      longest-prefix lookup
+- [x] `_build_row` 호출 site (line 2268~) 에 fallback 2 곳 — react_url_map
+      및 by_frontend bucket map 둘 다
+- [x] mock 검증 6 케이스: 정확 매칭 / sub-route / longest-match
+      (hypm-foo vs hypm-foo-bar) / 매칭 없음 / `/` base 제외
+- [ ] PR + squash-merge + local cleanup
+
 ### 진행 중: `<Route path={fn(...)}>` dynamic JSX expression 매칭
 
 사용자 환경 3: `routes/index.js` 가
