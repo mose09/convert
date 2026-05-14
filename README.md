@@ -643,12 +643,6 @@ python main.py analyze-legacy `
 | **redux + saga indirect** | `fnX = () => dispatch(actions.X)` + 같은 폴더 또는 `apps/<X>/` ↔ `store/<X>/` 의 saga.js 가 axios | ✓ (`+saga` 마커) |
 | 커스텀 Route wrapper | `<PropsRouter path="..." component={...}/>` 처럼 `<Route>` 를 감싼 wrapper component | ✓ (자동 감지) |
 
-**진단 스크립트 (`diag_menu.py` / `diag_frontend.py`)** — 매핑이
-원하는 대로 안 잡힐 때 어느 단계에서 끊기는지 1회 실행으로 ✓/⚠/✗
-판정. 파일 상단 `FRONTEND_DIR` / `BACKEND_DIR` / `MENU_URL` 만 수정 후
-`python diag_menu.py` 또는 `python diag_frontend.py`. 결과의 첫 줄
-✓/⚠/✗ 메시지로 다음 액션 결정.
-
 ### LLM 연결 (`.env`)
 
 추출은 사내 LLM 게이트웨이 (`PATTERN_LLM_*` env) 를 사용. 미설정 시 `LLM_*` 로 fallback:
