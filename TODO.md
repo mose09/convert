@@ -119,6 +119,28 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: `<Route path={fn(...)}>` dynamic JSX expression 매칭
+
+사용자 환경 3: `routes/index.js` 가
+`<Route path={getRoutePath(basename, '/')} component={Main}>` 형태로 path 를
+JSX expression 으로 만든다. 기존 `_ROUTE_JSX_RE` 는 `path="literal"` /
+`path='literal'` 만 매칭 → dynamic path 0건 추출 → 메뉴 매칭 전부 실패.
+PR #200 의 auto route_prefix 도 prepend 할 대상이 없어 무용지물.
+
+- [x] `_ROUTE_JSX_RE` + `_build_route_jsx_re` 에 dynamic 분기 추가:
+      `path={...}` 안 JSX expression 캡처 (`path_expr` 그룹). 중첩
+      brace 없는 단순 expression 만 — 정적 해석 안전성 우선
+- [x] `_resolve_path_expr(expr)` 헬퍼 — 함수 호출 (`fn(arg, '/list')`)
+      의 마지막 path-like quoted / template literal (`` `/x/${id}` `` →
+      `/x/{p}`) / 변수만 (해석 불가) 케이스 처리
+- [x] `_extract_routes_from_content` 후처리: literal 미매칭 시
+      resolver 호출, 해석 실패면 skip
+- [x] mock 검증: dynamic `getRoutePath(basename, '/')` + dynamic
+      `getRoutePath(basename, '/detail/:id')` + literal `/static/literal`
+      모두 추출, `.env` REACT_APP_NAME 으로 합성된 prefix 적용 OK
+- [x] resolver 단위: 함수호출 path / template literal / 변수만 3 케이스
+- [ ] PR + squash-merge + local cleanup
+
 ### 진행 중: SPA basename 동적 합성 — `.env REACT_APP_NAME` 자동 prefix
 
 사용자 환경 2: src/index.js 에서 `basename = `/apps/${REACT_APP_NAME}` `
