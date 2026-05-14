@@ -1446,6 +1446,12 @@ python main.py screen-converter `
   주문조회: src/pages/order/OrderInquiry.tsx
   사용자관리: src/pages/admin/UserMgmt.tsx
   ```
+- `--export-html` — (선택) PPTX 외에 **TO-BE HTML 도 추가 생성**.
+  `--style-css` 의 CSS 와 AS-IS 캡처 + (있으면) React 소스를 VLM 에 넘겨
+  body 마크업을 받고 `<link rel=stylesheet href=tobe_style.css>` 로
+  묶어 화면별 html + index.html 산출. 브라우저로 열어 TO-BE 디자인 그대로
+  확인 가능 (PPTX 도형 재구성 한계 우회). 단 VLM 출력이라 매 실행 변동성
+  있음 — 시각 검토용. 출력: `output/screen-converter/<날짜>/html/`.
 
 **소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
 - 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과

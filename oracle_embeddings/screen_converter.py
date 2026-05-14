@@ -699,6 +699,211 @@ def extract_layout(asis_image: Path, template_images: list[Path],
     return result, attach_meta
 
 
+# ── VLM 으로 HTML 추출 (옵션 D: --export-html) ───────────────────────
+
+_HTML_SYSTEM_PROMPT = (
+    "당신은 차세대 SI 프론트엔드 개발자입니다. AS-IS 화면 캡처와 (있으면) "
+    "TO-BE 디자인 템플릿 캡처를 보고, 첨부된 TO-BE CSS 의 클래스/규칙을 "
+    "정확히 사용하는 HTML 마크업 (body 안 내용만) 을 생성하세요. "
+    "결과는 HTML 코드 블록 하나만, 설명/마크다운 텍스트/주석 금지."
+)
+
+_HTML_PROMPT_TEMPLATE = """다음 입력으로 TO-BE HTML body 안 마크업을 생성:
+
+[AS-IS] 첫 번째 이미지 = 변환 대상 화면 캡처
+[Template] 그 뒤 이미지들 = TO-BE 디자인 시각 참조
+[CSS] 첨부된 TO-BE CSS = 사용 가능한 클래스/selector 의 출처
+[Source] (있으면) AS-IS React 소스 = 라벨/컬럼/버튼 텍스트 정답
+
+규칙:
+1. **반드시 CSS 안에 정의된 class/selector 만 사용**. 임의로 새 클래스
+   이름 발명 금지. CSS 에 `.btn-primary` `.search-form .field-row`
+   같은 게 있으면 그걸 그대로 써라.
+2. 구조도 CSS 가 기대하는 nesting 그대로 (`.form > .field > input` 등).
+3. AS-IS 의 모든 라벨/컬럼/버튼 텍스트를 빠짐없이 옮긴다. React 소스가
+   첨부됐으면 그 텍스트가 정답. 이미지에서만 다르게 보여도 소스 우선.
+4. 출력은 `<body>` 안 들어갈 마크업만. `<html>` / `<head>` /
+   `<link rel=stylesheet>` 같은 wrap 은 생성하지 마라 (호출 측이 추가).
+5. 결과를 코드 블록으로 감싸 출력:
+   ```html
+   <div class=...>
+     ...
+   </div>
+   ```
+
+=== TO-BE CSS (사용 가능한 selector 목록) ===
+{css_text}
+"""
+
+
+def _truncate_css_for_prompt(css_text: str, max_chars: int = 12000) -> str:
+    """CSS 가 너무 크면 VLM 컨텍스트 안 넘어가도록 잘라낸다.
+    selector + property name 만 추출하는 정밀화는 후속.
+    """
+    if len(css_text) <= max_chars:
+        return css_text
+    return css_text[:max_chars] + "\n/* ... (이하 생략 — CSS truncated) */"
+
+
+_HTML_FENCE_RE = re.compile(r"```(?:html|HTML)?\s*([\s\S]*?)```", re.MULTILINE)
+
+
+def _strip_html_fence(text: str) -> str:
+    """LLM 응답에서 ```html ...``` 펜스 안 본문만 추출. 없으면 원본."""
+    if not text:
+        return ""
+    m = _HTML_FENCE_RE.search(text)
+    if m:
+        return m.group(1).strip()
+    # 펜스 없으면 trim 후 그대로 (단, 첫 < 부터 마지막 > 까지)
+    text = text.strip()
+    first = text.find("<")
+    last = text.rfind(">")
+    if first != -1 and last != -1 and last > first:
+        return text[first:last + 1]
+    return text
+
+
+def extract_html(asis_image: Path, template_images: list[Path],
+                 css_text: str, source_text: str | None,
+                 config: dict) -> str:
+    """VLM 1회 호출 → TO-BE HTML body 마크업 문자열. 실패 시 빈 문자열.
+
+    `_call_llm` 가 JSON 응답을 기대해서 여기서는 직접 OpenAI client 호출
+    경로를 쓰지 않고, 텍스트 응답을 받기 위해 chat completions API 를
+    직접 사용한다 (CSS + 이미지 묶음).
+    """
+    # 직접 OpenAI 호환 chat call (JSON 강제 안 함)
+    try:
+        from openai import OpenAI
+    except ImportError as e:
+        raise SystemExit("openai 패키지 필요 — `pip install openai`") from e
+
+    llm_config = config.get("llm", {})
+    api_key = (os.environ.get("PATTERN_LLM_API_KEY")
+               or os.environ.get("LLM_API_KEY")
+               or llm_config.get("api_key", "ollama"))
+    api_base = (os.environ.get("PATTERN_LLM_API_BASE")
+                or os.environ.get("LLM_API_BASE")
+                or llm_config.get("api_base", "http://localhost:11434/v1"))
+    model = (os.environ.get("PATTERN_LLM_MODEL")
+             or os.environ.get("LLM_MODEL")
+             or llm_config.get("model", "llama3"))
+
+    client = OpenAI(api_key=api_key, base_url=api_base)
+
+    # multimodal user content (AS-IS + templates)
+    import base64
+    user_content: list[dict] = []
+    user_content.append({
+        "type": "text",
+        "text": _HTML_PROMPT_TEMPLATE.format(
+            css_text=_truncate_css_for_prompt(css_text)
+        ),
+    })
+    for img in [asis_image] + list(template_images):
+        try:
+            data = Path(img).read_bytes()
+            b64 = base64.b64encode(data).decode("ascii")
+            ext = Path(img).suffix.lower().lstrip(".") or "png"
+            mime = "image/jpeg" if ext in ("jpg", "jpeg") else f"image/{ext}"
+            user_content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        except Exception as e:
+            logger.warning("HTML extract — 이미지 base64 실패 (%s): %s", img, e)
+    if source_text:
+        user_content.append({
+            "type": "text",
+            "text": (
+                "\n=== AS-IS React 소스 (라벨/컬럼/버튼 텍스트 정답) ===\n"
+                + source_text[:_SOURCE_MAX_CHARS]
+            ),
+        })
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _HTML_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.1,
+            timeout=300,
+        )
+        raw = response.choices[0].message.content or ""
+    except Exception as e:
+        logger.error("HTML extract LLM 호출 실패 (%s): %s", asis_image.name, e)
+        return ""
+    return _strip_html_fence(raw)
+
+
+def render_html(screens: list[tuple[str, str]],
+                css_text: str,
+                output_dir: Path,
+                css_filename: str = "tobe_style.css") -> None:
+    """screens=[(stem, html_body), ...] → 화면별 html + index.html.
+
+    - 같은 폴더에 css 파일 복사 (`<link rel=stylesheet href=...>`)
+    - index.html: 모든 화면 링크 목록
+    - 각 화면 html: 단순 wrap (<!DOCTYPE> + <head> 링크 + body)
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    css_path = output_dir / css_filename
+    css_path.write_text(css_text, encoding="utf-8")
+
+    rendered = 0
+    for stem, body in screens:
+        if not body:
+            continue
+        page = (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"ko\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            f"  <title>{_html_escape(stem)}</title>\n"
+            f"  <link rel=\"stylesheet\" href=\"{css_filename}\">\n"
+            "</head>\n"
+            "<body>\n"
+            f"{body}\n"
+            "</body>\n"
+            "</html>\n"
+        )
+        (output_dir / f"{stem}.html").write_text(page, encoding="utf-8")
+        rendered += 1
+
+    # index
+    items = "\n".join(
+        f"  <li><a href=\"{_html_escape(stem)}.html\">{_html_escape(stem)}</a></li>"
+        for stem, body in screens if body
+    )
+    index = (
+        "<!DOCTYPE html>\n"
+        "<html lang=\"ko\">\n"
+        "<head>\n"
+        "  <meta charset=\"utf-8\">\n"
+        "  <title>TO-BE 화면 인덱스</title>\n"
+        f"  <link rel=\"stylesheet\" href=\"{css_filename}\">\n"
+        "  <style>body{font-family:sans-serif;padding:24px}"
+        "ul{line-height:1.8}</style>\n"
+        "</head>\n"
+        "<body>\n"
+        f"  <h1>TO-BE 화면 인덱스 ({rendered}장)</h1>\n"
+        "  <ul>\n"
+        f"{items}\n"
+        "  </ul>\n"
+        "</body>\n"
+        "</html>\n"
+    )
+    (output_dir / "index.html").write_text(index, encoding="utf-8")
+
+
+def _html_escape(s: str) -> str:
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;")
+            .replace(">", "&gt;").replace("\"", "&quot;"))
+
+
 # ── PPTX 렌더 ────────────────────────────────────────────────────────
 
 
@@ -1141,7 +1346,8 @@ def convert(captures_dir: Path, templates_dir: Path | None,
             output_pptx: Path, config: dict,
             frontend_dir: Path | None = None,
             source_mapping_path: Path | None = None,
-            style_css_path: Path | None = None) -> dict[str, Any]:
+            style_css_path: Path | None = None,
+            export_html: bool = False) -> dict[str, Any]:
     asis_imgs = _list_images(captures_dir)
     tmpl_imgs = _list_images(templates_dir) if templates_dir else []
     if not asis_imgs:
@@ -1262,6 +1468,17 @@ def convert(captures_dir: Path, templates_dir: Path | None,
                 aspect_hint_image=tmpl_imgs[0] if tmpl_imgs else None,
                 style=style)
 
+    # --export-html: 화면별 HTML 생성 (CSS 필수)
+    html_stats: dict[str, Any] = {}
+    if export_html:
+        if not style_css_path or not Path(style_css_path).is_file():
+            print("  ⚠ --export-html 지정됐으나 TO-BE CSS 가 없음 — HTML 스킵")
+        else:
+            html_stats = _generate_html_per_screen(
+                asis_imgs, tmpl_imgs, style_css_path, source_index,
+                mapping, frontend_dir, config, output_pptx.parent / "html",
+            )
+
     return {
         "total": len(asis_imgs),
         "templates": len(tmpl_imgs),
@@ -1274,4 +1491,48 @@ def convert(captures_dir: Path, templates_dir: Path | None,
         "pptx": str(output_pptx),
         "llm_raw_dir": str(dump_dir),
         "style_profile": str(style_path),
+        "html_dir": html_stats.get("dir") if html_stats else None,
+        "html_generated": html_stats.get("generated") if html_stats else 0,
     }
+
+
+def _generate_html_per_screen(asis_imgs: list[Path],
+                              tmpl_imgs: list[Path],
+                              style_css_path: Path,
+                              source_index: list[Path],
+                              mapping: dict[str, Path],
+                              frontend_dir: Path | None,
+                              config: dict,
+                              output_dir: Path) -> dict[str, Any]:
+    """--export-html 옵션 시 호출. 각 캡처별로 VLM 한테 CSS+이미지+소스
+    던져서 HTML body 받고, render_html 로 파일로 떨어뜨림.
+    """
+    print(f"  HTML 생성 (--export-html): VLM 으로 화면별 HTML body 추출")
+    try:
+        css_text = Path(style_css_path).read_text(encoding="utf-8",
+                                                  errors="ignore")
+    except Exception as e:
+        print(f"  ⚠ CSS 읽기 실패: {e} — HTML 스킵")
+        return {}
+
+    screens: list[tuple[str, str]] = []
+    generated = 0
+    for img in asis_imgs:
+        source_path, _ = _match_source(img.stem, source_index, mapping=mapping)
+        source_text = ""
+        if source_path is not None and frontend_dir is not None:
+            bundle = _bundle_source_closure(source_path, frontend_dir)
+            if bundle is not None:
+                source_text, _ = bundle
+            else:
+                source_text = _read_source_snippet(source_path)
+        print(f"    → {img.name}")
+        body = extract_html(img, tmpl_imgs, css_text,
+                            source_text or None, config)
+        if body:
+            generated += 1
+        screens.append((img.stem, body))
+
+    render_html(screens, css_text, output_dir,
+                css_filename=Path(style_css_path).name)
+    return {"dir": str(output_dir), "generated": generated}
