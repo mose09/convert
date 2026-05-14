@@ -220,7 +220,11 @@ _LAZY_IMPORT_RE = re.compile(
 # 사용자 실 프로젝트에서 가장 흔한 Route 선언 패턴 (Router v5 HOC) 이라
 # 별도 balanced walker 로 정확히 처리한다.
 _ROUTE_OPEN_RE = re.compile(r"<Route\b")
-_PATH_ATTR_RE = re.compile(r"""\bpath\s*=\s*["']([^"']+)["']""")
+# path 는 두 형태 모두 지원: literal (group 1) 또는 dynamic JSX expression
+# (group 2 — caller 가 :func:`_resolve_path_expr` 로 후처리).
+_PATH_ATTR_RE = re.compile(
+    r"""\bpath\s*=\s*(?:["']([^"']+)["']|\{([^{}]+)\})"""
+)
 _RENDER_ATTR_RE = re.compile(r"""\brender\s*=\s*\{""")
 _JSX_CAPITAL_COMP_RE = re.compile(r"<\s*([A-Z]\w+)")
 
@@ -313,6 +317,12 @@ def _extract_render_routes(content: str) -> list[dict]:
         path_m = _PATH_ATTR_RE.search(tag)
         if not path_m:
             continue
+        # path 가 literal (group 1) 또는 dynamic expression (group 2).
+        # PR #201 의 _resolve_path_expr 재사용 — 함수 호출의 마지막 path-like
+        # quoted / template literal 처리.
+        raw_path = path_m.group(1) or _resolve_path_expr(path_m.group(2) or "")
+        if not raw_path:
+            continue
         render_m = _RENDER_ATTR_RE.search(tag)
         if not render_m:
             continue
@@ -322,7 +332,7 @@ def _extract_render_routes(content: str) -> list[dict]:
         body = _extract_brace_body(tag, open_brace)
         comp_m = _JSX_CAPITAL_COMP_RE.search(body)
         comp = comp_m.group(1) if comp_m else ""
-        routes.append({"path": path_m.group(1), "component": comp})
+        routes.append({"path": raw_path, "component": comp})
     return routes
 
 
@@ -439,6 +449,25 @@ def _extract_routes_from_content(content: str,
         if path and key not in seen:
             seen.add(key)
             routes.append({"path": path, "component": comp})
+
+    # Path-only fallback — component / element / render 모두 없는 ``<Route
+    # path={...}>...</Route>`` (children pattern). url_map 의 base 는
+    # 등록되어야 메뉴 URL prefix 매칭 (PR #202) 이 동작. file_path 는
+    # caller 가 declared_in 으로 fallback. 사용자 사례: 메인 레포의
+    # routes/index.js 가 catch-all path 만 있고 화면 렌더는 children 안
+    # 다른 라우터로 위임.
+    seen_paths = {r["path"] for r in routes}
+    for m in _ROUTE_OPEN_RE.finditer(content):
+        tag_end = _walk_to_tag_end(content, m.start())
+        tag = content[m.start():tag_end]
+        path_m = _PATH_ATTR_RE.search(tag)
+        if not path_m:
+            continue
+        raw_path = path_m.group(1) or _resolve_path_expr(path_m.group(2) or "")
+        if not raw_path or raw_path in seen_paths:
+            continue
+        seen_paths.add(raw_path)
+        routes.append({"path": raw_path, "component": ""})
 
     return routes
 
