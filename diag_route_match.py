@@ -34,7 +34,7 @@ import re
 import sys
 
 
-_ROUTE_LINE_RE = re.compile(r"<Route\b[^>]*?>", re.DOTALL)
+_ROUTE_LINE_RE = re.compile(r"<\w*Route\b[^>]*?>", re.DOTALL)
 
 
 def _has_env(root: str) -> bool:
@@ -47,6 +47,46 @@ def _has_env(root: str) -> bool:
     except OSError:
         return False
     return False
+
+
+def _find_routes_files(repo_root: str) -> list[str]:
+    """``repo_root`` 안 ``routes`` / ``Routes`` 가 들어간 모든 js/jsx/ts/tsx
+    파일을 walk 로 찾는다. 사용자 환경마다 위치가 달라서 (``src/routes/``,
+    ``src/Routes/``, ``app/routes/``, 또는 그냥 ``Routes.jsx``) hardcoded
+    candidate 대신 동적 검색.
+    """
+    out: list[str] = []
+    for root, dirs, names in os.walk(repo_root):
+        # skip noise
+        dirs[:] = [d for d in dirs if d not in {
+            "node_modules", "build", "dist", ".next", ".git", "coverage",
+        }]
+        for n in names:
+            stem, ext = os.path.splitext(n)
+            if ext.lower() not in {".js", ".jsx", ".ts", ".tsx", ".mjs"}:
+                continue
+            low = root.lower().replace("\\", "/") + "/" + n.lower()
+            if "routes" in low or n.lower().startswith("routes."):
+                out.append(os.path.join(root, n))
+    return out[:5]  # 최대 5개 — 너무 많으면 noise
+
+
+def _dump_route_lines(file_path: str, max_lines: int = 5) -> list[str]:
+    """파일의 ``<*Route ...>`` 라인 최대 N개 dump (wrapper 포함)."""
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
+            text = f.read()
+    except OSError:
+        return []
+    lines = []
+    for m in _ROUTE_LINE_RE.finditer(text):
+        line = re.sub(r"\s+", " ", m.group(0)).strip()
+        if len(line) > 140:
+            line = line[:140] + "..."
+        lines.append(line)
+        if len(lines) >= max_lines:
+            break
+    return lines
 
 
 def _list_buckets(root: str) -> tuple[str, list[tuple[str, str]]]:
@@ -66,39 +106,6 @@ def _list_buckets(root: str) -> tuple[str, list[tuple[str, str]]]:
         print(f"[ERROR] {root} 읽기 실패: {e}")
         sys.exit(2)
     return "MULTI", out
-
-
-def _dump_route_lines(repo_root: str, max_lines: int = 2) -> tuple[str, list[str]]:
-    """첫 발견된 routes 파일에서 ``<Route ...>`` 라인 max_lines 개 dump."""
-    candidates = [
-        "src/routes/index.js", "src/routes/index.jsx",
-        "src/routes/index.ts", "src/routes/index.tsx",
-        "src/routes/Routes.js", "src/routes/Routes.jsx",
-        "src/Routes.js", "src/Routes.jsx",
-        "routes/index.js", "routes/index.jsx",
-        "src/index.js", "src/index.jsx",
-        "src/index.ts", "src/index.tsx",
-    ]
-    for c in candidates:
-        full = os.path.join(repo_root, c)
-        if not os.path.isfile(full):
-            continue
-        try:
-            with open(full, "r", encoding="utf-8", errors="ignore") as f:
-                text = f.read()
-        except OSError:
-            continue
-        lines = []
-        for m in _ROUTE_LINE_RE.finditer(text):
-            line = re.sub(r"\s+", " ", m.group(0)).strip()
-            if len(line) > 140:
-                line = line[:140] + "..."
-            lines.append(line)
-            if len(lines) >= max_lines:
-                break
-        if lines:
-            return c, lines
-    return "", []
 
 
 def main() -> int:
@@ -131,8 +138,7 @@ def main() -> int:
         print(f"[VERDICT] FAIL — buckets 0개")
         return 1
 
-    # 라우터 보유 sub-repo 만 highlight (routes>0)
-    router_repos: list[tuple[str, str, str | None, dict]] = []
+    verdict: str | None = None
     for name, path in buckets:
         app_name = load_react_app_name(path)
         try:
@@ -140,45 +146,38 @@ def main() -> int:
         except Exception as e:
             print(f"[BUCKET] {name}: build 실패 ({e})")
             continue
-        if url_map:
-            router_repos.append((name, path, app_name, url_map))
-
-    if not router_repos:
-        # 모든 sub-repo 가 routes=0 — 라우터 없음
-        print(f"[ENV] (routes=0 인 sub-repo 만)")
-        # routes 파일 자체가 있는지 dump 시도 (메인 레포 후보 찾기)
-        for name, path in buckets[:3]:
-            file, lines = _dump_route_lines(path)
-            if file:
-                print(f"[ROUTE_RAW] {name}/{file}: {lines[0]}")
-                break
-        print(f"[VERDICT] FAIL — 어느 sub-repo 에서도 Route 추출 0건. "
-              f"routes/index.js 패턴이 PR #201 regex 와 다름")
-        return 1
-
-    # 매칭 시도
-    for name, path, app_name, url_map in router_repos:
         bases = sorted(url_map.keys())[:3]
         print(f"[BUCKET] {name}: REACT_APP_NAME={app_name!r} "
               f"routes={len(url_map)} bases={bases}")
-        exact = url_map.get(norm_menu)
-        prefix = _lookup_react_entry_by_prefix(url_map, norm_menu)
-        if exact or prefix:
-            via = "exact" if exact else "prefix"
-            entry = exact or prefix
-            f = entry.get("file_path") or entry.get("declared_in") or "?"
-            print(f"[VERDICT] PASS — bucket={name} via={via} file={f}")
-            return 0
 
-    # 매칭 실패 — Route 라인 raw dump (가장 큰 router_repo 우선)
-    name, path, _, _ = max(router_repos, key=lambda r: len(r[3]))
-    file, lines = _dump_route_lines(path)
-    if file:
-        for ln in lines[:2]:
-            print(f"[ROUTE_RAW] {name}/{file}: {ln}")
-    print(f"[VERDICT] FAIL — Route 추출은 됐는데 base 가 메뉴 URL 와 mismatch. "
-          f"위 ROUTE_RAW + bases 를 보여주세요")
-    return 1
+        # 매칭 시도 (VERDICT 우선순위: 첫 매칭 성공)
+        if verdict is None:
+            exact = url_map.get(norm_menu)
+            prefix = _lookup_react_entry_by_prefix(url_map, norm_menu)
+            if exact or prefix:
+                via = "exact" if exact else "prefix"
+                entry = exact or prefix
+                f = entry.get("file_path") or entry.get("declared_in") or "?"
+                verdict = f"PASS — bucket={name} via={via} file={f}"
+
+        # Route 파일 raw dump — 추출이 0건이거나 적은 (≤ 3) 경우만, 그리고
+        # 매칭 실패 진단에 도움. routes ≥ 4 면 normal 케이스라 dump 생략.
+        if len(url_map) <= 3:
+            route_files = _find_routes_files(path)
+            if not route_files:
+                print(f"  [NO_ROUTES_FILE] {name} 안 routes 파일 못 찾음")
+            for rf in route_files:
+                rel = os.path.relpath(rf, path).replace("\\", "/")
+                lines = _dump_route_lines(rf, max_lines=5)
+                if not lines:
+                    print(f"  [ROUTES_FILE] {rel}: (Route 패턴 0건)")
+                else:
+                    print(f"  [ROUTES_FILE] {rel}: {len(lines)}건")
+                    for ln in lines:
+                        print(f"    {ln}")
+
+    print(f"[VERDICT] {verdict or 'FAIL — 어느 bucket 에서도 매칭 안 됨'}")
+    return 0 if verdict else 1
 
 
 if __name__ == "__main__":
