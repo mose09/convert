@@ -671,15 +671,21 @@ def build_url_to_component_map(react_dir: str, strip_patterns=None,
         # literal path 만 매칭하므로 Route 추출 결과 비어 있어도, import
         # slug 가 메뉴 URL 의 진짜 truth source. has_route_keyword 가
         # 변하더라도 alias 는 영향받지 않도록 분리.
+        #
+        # ``slug`` 는 dash-normalized (``hypm-interlockrule``). 사용자
+        # 사례에 따라 메뉴 URL slug 가 underscore 그대로 (``hypm_interlockrule``)
+        # 인 환경이 있음. 매칭 보장 위해 dash + underscore 두 형태 모두
+        # alias 로 등록.
         for slug in _apps_import_aliases(content):
-            alias_key = normalize_url(f"/apps/{slug}", strip_patterns)
-            if not alias_key:
-                continue
-            url_map.setdefault(alias_key, {
-                "component": "",
-                "file_path": fp,
-                "declared_in": fp,
-            })
+            for variant in {slug, slug.replace("-", "_")}:
+                alias_key = normalize_url(f"/apps/{variant}", strip_patterns)
+                if not alias_key:
+                    continue
+                url_map.setdefault(alias_key, {
+                    "component": "",
+                    "file_path": fp,
+                    "declared_in": fp,
+                })
 
         # wrapper 가 있으면 사용처에서 ``<{Wrapper}\b`` 매칭이 되므로
         # ``Route`` substring 이 없는 파일도 후보. 보수적으로 wrapper 의
