@@ -40,6 +40,16 @@ def main():
         scan_react_dir, build_url_to_component_map,
         _apps_import_aliases, _APP_IMPORT_RE,
     )
+    from oracle_embeddings.legacy_util import normalize_url
+
+    # 0) 코드 버전 검사 — build_url_to_component_map 안에 alias 등록 step 이
+    # 실제로 포함됐는지. 사용자 PC 가 git pull 받지 않은 옛 버전이면 함수
+    # 안에 ``_apps_import_aliases`` 호출이 없음.
+    import inspect
+    bfn_src = inspect.getsource(build_url_to_component_map)
+    has_alias_step = "_apps_import_aliases" in bfn_src
+    print(f"[diag]  build_url_to_component_map 안 alias step: "
+          f"{'OK' if has_alias_step else 'MISSING — 옛 코드. git pull 필요!'}")
 
     kw = args.keyword.lower()
 
@@ -86,6 +96,19 @@ def main():
     url_map = build_url_to_component_map(args.frontend_dir)
     matching = sorted(k for k in url_map if kw in k.lower())
     print(f"[alias] url_map 매칭 키: {matching or 'NONE'}")
+
+    # 3-b) 수동 alias 시뮬레이션 — _apps_import_aliases + normalize_url 직접 호출.
+    # 이 결과가 OK 인데 url_map (위) 가 비어있으면 build_url_to_component_map
+    # 함수 자체가 옛 버전 (alias 등록 step 없음) 인 것이 확정.
+    manual: set[str] = set()
+    for fp, content in kw_files:
+        for slug in _apps_import_aliases(content):
+            ak = normalize_url(f"/apps/{slug}", None)
+            if ak:
+                manual.add(ak)
+    manual_kw = sorted(a for a in manual if kw in a.lower())
+    print(f"[diag]  수동 alias 시뮬레이션: {manual_kw or 'NONE'} "
+          f"(전체 {len(manual)}개)")
 
     # 4) menu_md 매칭 (옵션)
     if args.menu_md:
