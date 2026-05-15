@@ -37,7 +37,8 @@ def main():
         return 1
 
     from oracle_embeddings.legacy_react_router import (
-        scan_react_dir, build_url_to_component_map, _apps_import_aliases,
+        scan_react_dir, build_url_to_component_map,
+        _apps_import_aliases, _APP_IMPORT_RE,
     )
 
     kw = args.keyword.lower()
@@ -67,8 +68,19 @@ def main():
             content, flags=re.IGNORECASE,
         )
         print(f"[file]  {rel}: Route={'Y' if has_route else 'N'}, "
-              f"apps_import_match={kw_aliases or 'NONE'}, "
-              f"raw_kw_import={raw_imports[:1] or 'NONE'}")
+              f"apps_import_match={kw_aliases or 'NONE'}")
+        # raw_kw_import 각 라인에 _APP_IMPORT_RE 직접 적용 — 우리 regex 가
+        # 왜 매칭 못 했는지 즉시 보임. repr 로 invisible char (smart quotes 등)
+        # 까지 가시화.
+        for raw in raw_imports[:3]:
+            m = _APP_IMPORT_RE.search(raw)
+            if m:
+                slug_raw = m.group("slug")
+                slug_norm = slug_raw.replace("_", "-").lower()
+                print(f"        raw OK → slug_raw={slug_raw!r}, "
+                      f"slug_norm={slug_norm!r}")
+            else:
+                print(f"        raw MISS → regex 안 잡힘. repr={raw!r}")
 
     # 3) url_map 등록 확인
     url_map = build_url_to_component_map(args.frontend_dir)
@@ -82,31 +94,38 @@ def main():
         else:
             with open(args.menu_md, encoding="utf-8", errors="ignore") as f:
                 lines = f.read().splitlines()
-            menu_urls = []
+            # row 안의 **모든** URL-like token. 첫번째만이 아니라 전체.
+            # 우선순위: 키워드 포함 > /apps/ 시작 > 첫번째.
+            menu_urls: list[str] = []
+            kw_url_hits: list[str] = []
             for line in lines:
                 if "|" not in line or kw not in line.lower():
                     continue
-                # row 의 첫 URL-like token 추출
-                m = re.search(r"/[A-Za-z0-9_/\-]{2,}", line)
-                if m:
-                    menu_urls.append(m.group())
+                tokens = re.findall(r"/[A-Za-z0-9_/\-\.]+", line)
+                menu_urls.extend(tokens)
+                for t in tokens:
+                    if kw in t.lower() or t.lower().startswith("/apps/"):
+                        kw_url_hits.append(t)
             menu_urls = list(dict.fromkeys(menu_urls))
-            print(f"[menu]  {menu_urls or 'NONE'} ({len(menu_urls)}개)")
+            kw_url_hits = list(dict.fromkeys(kw_url_hits))
+            print(f"[menu]  키워드 row 의 URL token 전체: {menu_urls or 'NONE'}")
+            print(f"        그 중 /apps/ or kw 포함: {kw_url_hits or 'NONE'}")
 
-            # 5) 판정
-            if not menu_urls:
+            # 5) 판정 — kw_url_hits 우선 비교
+            target_urls = kw_url_hits or menu_urls
+            if not target_urls:
                 print("[match] menu_md 에 키워드 row 없음 — menu 자체에 등록 안 됨")
             elif not matching:
                 print("[match] url_map 에 alias 없음 — Routes scan 단계에서 미스")
             else:
                 aliases_lc = [k.lower() for k in matching]
                 hit = None
-                for mu in menu_urls:
+                for mu in target_urls:
                     if mu.lower() in aliases_lc:
                         hit = ("EXACT", mu)
                         break
                 if not hit:
-                    for mu in menu_urls:
+                    for mu in target_urls:
                         for k in matching:
                             if (mu.lower().endswith(k.lower())
                                     or k.lower().endswith(mu.lower())):
@@ -117,7 +136,7 @@ def main():
                 if hit:
                     print(f"[match] {hit[0]} ✓ ({hit[1]})")
                 else:
-                    print(f"[match] MISMATCH — menu={menu_urls} vs alias={matching}")
+                    print(f"[match] MISMATCH — menu={target_urls} vs alias={matching}")
     else:
         print("[match] --menu-md 미지정 — menu URL 비교 skip")
     return 0
