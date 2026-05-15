@@ -30,6 +30,10 @@ def main():
                    help="찾을 키워드 (default: interlock)")
     p.add_argument("--menu-md", default=None,
                    help="메뉴 .md 경로 (옵션) — URL 매칭까지 확인")
+    p.add_argument("--strip", action="append", default=[],
+                   help="url_prefix_strip 패턴 (반복 가능). 사용자 patterns.yaml "
+                        "의 url.url_prefix_strip 와 동일한 값을 주면 실제 "
+                        "analyze-legacy 환경 reproduce. 예: --strip '^/apps'")
     args = p.parse_args()
 
     if not os.path.isdir(args.frontend_dir):
@@ -116,8 +120,13 @@ def main():
             else:
                 print(f"        raw MISS → regex 안 잡힘. repr={raw!r}")
 
-    # 3) url_map 등록 확인
-    url_map = build_url_to_component_map(args.frontend_dir)
+    # 3) url_map 등록 확인 — strip_patterns 적용. 사용자가 ``--strip`` 으로
+    # 실제 patterns.yaml 의 url_prefix_strip 패턴을 주면 analyze-legacy 와
+    # 동일한 환경에서 alias 등록 결과 확인.
+    strip_patterns = args.strip or None
+    print(f"[strip] 적용 패턴: {strip_patterns or 'NONE (default)'}")
+    url_map = build_url_to_component_map(args.frontend_dir,
+                                          strip_patterns=strip_patterns)
     matching = sorted(k for k in url_map if kw in k.lower())
     print(f"[alias] url_map 매칭 키: {matching or 'NONE'}")
 
@@ -127,14 +136,14 @@ def main():
     manual: set[str] = set()
     for fp, content in kw_files:
         for slug in _apps_import_aliases(content):
-            ak = normalize_url(f"/apps/{slug}", None)
+            ak = normalize_url(f"/apps/{slug}", strip_patterns)
             if ak:
                 manual.add(ak)
     manual_kw = sorted(a for a in manual if kw in a.lower())
     print(f"[diag]  수동 alias 시뮬레이션: {manual_kw or 'NONE'} "
           f"(전체 {len(manual)}개)")
 
-    # 4) menu_md 매칭 (옵션)
+    # 4) menu_md 매칭 (옵션) — strip 후 비교까지 수행
     if args.menu_md:
         if not os.path.exists(args.menu_md):
             print(f"[menu]  파일 없음: {args.menu_md}")
@@ -155,11 +164,16 @@ def main():
                         kw_url_hits.append(t)
             menu_urls = list(dict.fromkeys(menu_urls))
             kw_url_hits = list(dict.fromkeys(kw_url_hits))
+            # strip 적용 후 형태도 같이 보여줘서 사용자가 매칭 keys 와
+            # 직접 비교 가능
+            kw_url_norm = [normalize_url(u, strip_patterns) for u in kw_url_hits]
             print(f"[menu]  키워드 row 의 URL token 전체: {menu_urls or 'NONE'}")
-            print(f"        그 중 /apps/ or kw 포함: {kw_url_hits or 'NONE'}")
+            print(f"        그 중 /apps/ or kw 포함 (원본): {kw_url_hits or 'NONE'}")
+            print(f"        그 중 /apps/ or kw 포함 (strip 후): {kw_url_norm or 'NONE'}")
 
-            # 5) 판정 — kw_url_hits 우선 비교
-            target_urls = kw_url_hits or menu_urls
+            # 5) 판정 — strip 후 normalized 형태로 비교
+            target_urls = kw_url_norm or [normalize_url(u, strip_patterns)
+                                            for u in menu_urls]
             if not target_urls:
                 print("[match] menu_md 에 키워드 row 없음 — menu 자체에 등록 안 됨")
             elif not matching:
