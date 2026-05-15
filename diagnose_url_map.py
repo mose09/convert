@@ -72,23 +72,30 @@ def main():
         has_route = "Route" in content or "path:" in content
         aliases = _apps_import_aliases(content)
         kw_aliases = [a for a in aliases if kw in a.lower()]
+        # content 전체에 대한 _APP_IMPORT_RE 매칭 횟수 — _apps_import_aliases
+        # 가 빈 list 반환할 때 진짜 finditer 결과 보이게.
+        full_matches = list(_APP_IMPORT_RE.finditer(content))
         # 이 파일의 import 라인 중 키워드 포함된 raw 도 출력 (regex 미스 진단용)
         raw_imports = re.findall(
             r"""import\s+[^;]+from\s+['"][^'"]*""" + re.escape(kw) + r"""[^'"]*['"]""",
             content, flags=re.IGNORECASE,
         )
         print(f"[file]  {rel}: Route={'Y' if has_route else 'N'}, "
-              f"apps_import_match={kw_aliases or 'NONE'}")
-        # raw_kw_import 각 라인에 _APP_IMPORT_RE 직접 적용 — 우리 regex 가
-        # 왜 매칭 못 했는지 즉시 보임. repr 로 invisible char (smart quotes 등)
-        # 까지 가시화.
+              f"apps_import_match={kw_aliases or 'NONE'}, "
+              f"finditer 전체매칭={len(full_matches)}개")
         for raw in raw_imports[:3]:
             m = _APP_IMPORT_RE.search(raw)
             if m:
                 slug_raw = m.group("slug")
                 slug_norm = slug_raw.replace("_", "-").lower()
+                # raw 가 content 안 어디에 있는지 위치 + 그 부근 ±40 char
+                # 의 repr — invisible char / BOM / smart quotes 등 가시화.
+                pos = content.find(raw)
+                near = content[max(0, pos-40): pos+len(raw)+10] if pos >= 0 else "(unknown)"
                 print(f"        raw OK → slug_raw={slug_raw!r}, "
                       f"slug_norm={slug_norm!r}")
+                print(f"        raw repr = {raw!r}")
+                print(f"        content[pos-40:pos+len+10] = {near!r}")
             else:
                 print(f"        raw MISS → regex 안 잡힘. repr={raw!r}")
 
