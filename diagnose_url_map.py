@@ -51,6 +51,23 @@ def main():
     print(f"[diag]  build_url_to_component_map 안 alias step: "
           f"{'OK' if has_alias_step else 'MISSING — 옛 코드. git pull 필요!'}")
 
+    # 0-b) _apps_import_aliases 함수 자체가 어디서 import 됐는지 + 본문이
+    # 우리가 작성한 형태와 같은지 검증. 사용자 결과가 finditer=1 인데
+    # _apps_import_aliases() 가 빈 list 를 반환하는 모순이 생기면, 그
+    # 함수 본문이 옛 버전 (예: 다른 regex 사용) 또는 다른 module 에서
+    # 가져온 다른 정의일 수 있음.
+    try:
+        aia_file = inspect.getfile(_apps_import_aliases)
+    except TypeError:
+        aia_file = "<unknown>"
+    aia_src = inspect.getsource(_apps_import_aliases)
+    aia_uses_re = "_APP_IMPORT_RE" in aia_src
+    aia_uses_norm = ('"_", "-"' in aia_src) or ("'_', '-'" in aia_src)
+    print(f"[diag]  _apps_import_aliases 정의 파일: {aia_file}")
+    print(f"        본문 length={len(aia_src)} chars, "
+          f"uses _APP_IMPORT_RE={aia_uses_re}, "
+          f"uses underscore->dash={aia_uses_norm}")
+
     kw = args.keyword.lower()
 
     # 1) scan
