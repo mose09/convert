@@ -1322,10 +1322,17 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
         return m.group(1).strip()
 
     # 2) 같은 tag children 텍스트
+    # 사용자 보고: ``<Input onKeyUp={fn} />`` 같은 self-closing 의 경우
+    # tag_close 가 self-close ``/>`` 의 ``>``. 그 직후가 부모 JSX 의
+    # ``}`` / ``/>`` / ``;`` 같은 raw 구문이라 ``}`` 만 있는 inner 가
+    # 통과해 ``[onKeyUp] }`` 같은 깨진 label 이 emit. case 4 와 동일하게
+    # **영문/한글 글자 1개 이상** 만 의미있는 children 으로 인정.
     next_lt = content.find("<", tag_close + 1)
     if 0 <= next_lt - tag_close <= 200:
         inner = content[tag_close + 1:next_lt].strip()
-        if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
+        if (inner and len(inner) <= 40 and "<" not in inner
+                and "{" not in inner and "}" not in inner
+                and re.search(r"[A-Za-z가-힣]", inner)):
             return inner
 
     # 3) 부모 Form.Item label — tag_open 이전 800자 안에 마지막 <Form.Item 검색
