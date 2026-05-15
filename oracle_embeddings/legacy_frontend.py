@@ -309,6 +309,23 @@ def _enumerate_buckets(frontends_root: str) -> list[tuple[str, str]]:
         child = os.path.join(frontends_root, entry)
         if not os.path.isdir(child) or entry.startswith(".") or entry == "node_modules":
             continue
+        # Standalone marker — child 자체가 SPA build root 면 nested descend 안 함.
+        # 사용자 사례: ``frontends_root/<sub-repo>/`` 가 ``.env`` + ``src/``
+        # 보유 = standalone. 안에 ``src/apps`` 같은 React 컨벤션 폴더가 있어도
+        # 그것은 *컴포넌트 분류* 용이지 sub-app 단위가 아님 — descend 하면
+        # routes/index.js 와 .env 가 누락된 빈 bucket 만 만들어져 매칭 실패.
+        # ``.env*`` 만 있으면 충분 (src 는 보편적).
+        self_has_env = False
+        try:
+            for n in os.listdir(child):
+                if n.startswith(".env") and os.path.isfile(os.path.join(child, n)):
+                    self_has_env = True
+                    break
+        except OSError:
+            pass
+        if self_has_env:
+            out.append((entry, child))
+            continue
         nested_parent = None
         for rel in ("src/apps", "src/app", "apps", "app", "src/pages", "packages"):
             cand = os.path.join(child, rel)
