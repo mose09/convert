@@ -663,6 +663,24 @@ def build_url_to_component_map(react_dir: str, strip_patterns=None,
             content = _read_file_safe(fp)
         except Exception:
             continue
+
+        # ``import X from 'apps/<slug>'`` alias 추출은 **Route keyword
+        # 검사 앞**. 사용자 사례: routes/index.js 가 ``<Route exact
+        # path={getRoutePath(basename, '/')} component={App}/>`` 형태로
+        # path 가 동적 함수 호출. _extract_routes_from_content 는 string
+        # literal path 만 매칭하므로 Route 추출 결과 비어 있어도, import
+        # slug 가 메뉴 URL 의 진짜 truth source. has_route_keyword 가
+        # 변하더라도 alias 는 영향받지 않도록 분리.
+        for slug in _apps_import_aliases(content):
+            alias_key = normalize_url(f"/apps/{slug}", strip_patterns)
+            if not alias_key:
+                continue
+            url_map.setdefault(alias_key, {
+                "component": "",
+                "file_path": fp,
+                "declared_in": fp,
+            })
+
         # wrapper 가 있으면 사용처에서 ``<{Wrapper}\b`` 매칭이 되므로
         # ``Route`` substring 이 없는 파일도 후보. 보수적으로 wrapper 의
         # 첫 alt 만 검사.
@@ -686,20 +704,6 @@ def build_url_to_component_map(react_dir: str, strip_patterns=None,
             url_map.setdefault(key, {
                 "component": comp,
                 "file_path": file_path,
-                "declared_in": fp,
-            })
-
-        # ``import App from 'apps/<slug>'`` alias — Route path 가 dynamic /
-        # 없거나 컴포넌트 안에서 처리될 때, import 경로의 slug 가 진짜
-        # 메뉴 URL slug 인 사용자 사례 (hypm_interlockRule → hypm-interlockrule).
-        # 같은 routes 파일에 등록 — file_path 는 그 파일 자체.
-        for slug in _apps_import_aliases(content):
-            alias_key = normalize_url(f"/apps/{slug}", strip_patterns)
-            if not alias_key:
-                continue
-            url_map.setdefault(alias_key, {
-                "component": "",
-                "file_path": fp,
                 "declared_in": fp,
             })
 
