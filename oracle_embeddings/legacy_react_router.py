@@ -221,6 +221,42 @@ _LAZY_IMPORT_RE = re.compile(
 )
 
 
+# ``import App from 'apps/<slug>'`` — 사용자 사례: routes/index.js 가
+# Route path 를 명시적으로 박지 않고 sub-app 컴포넌트만 import 해서
+# ``<Route component={App}/>`` 로 위임. 그러면 메뉴 URL 의 진짜 slug
+# 정보는 ``Route path`` 가 아니라 **import path 의 마지막 segment** 에
+# 들어있다. 이 패턴을 추출해서 ``/apps/<normalized-slug>`` alias 를
+# url_map 에 등록 (file_path = routes 선언 파일 자체).
+#
+# 표기 변환: ``hypm_interlockRule`` (underscore + camelCase) →
+# ``hypm-interlockrule`` (메뉴 URL 의 kebab-case). underscore → dash +
+# lowercase 만 적용 — normalize_url 이 lowercase 적용하니 실질적으로는
+# underscore → dash 만 필요하지만 명시적으로 처리.
+_APP_IMPORT_RE = re.compile(
+    r"""\bimport\s+
+        (?:\{[^}]*\}|\*\s+as\s+\w+|\w+(?:\s*,\s*\{[^}]*\})?)
+        \s+from\s+
+        ["'](?:\.{1,2}/)*apps/(?P<slug>[A-Za-z0-9_][\w-]*)
+    """,
+    re.VERBOSE,
+)
+
+
+def _apps_import_aliases(content: str) -> list[str]:
+    """``import X from 'apps/<slug>'`` 라인들에서 ``apps/<slug>`` 의 ``<slug>``
+    를 추출해 kebab-case 정규화한 리스트 반환. 중복 제거.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for m in _APP_IMPORT_RE.finditer(content):
+        raw = m.group("slug")
+        norm = raw.replace("_", "-").lower()
+        if norm and norm not in seen:
+            seen.add(norm)
+            out.append(norm)
+    return out
+
+
 # Balanced-brace / JSX walker primitives used by the ``render=`` handler.
 # `_ROUTE_JSX_RE` 는 attrs 를 `[^>]*?` 로 훑어 `(props) => <Foo/>` 같은
 # HOC render prop 에서 `=>` 의 `>` 에 막혀 매칭이 중단된다. 이 경로는
@@ -650,6 +686,20 @@ def build_url_to_component_map(react_dir: str, strip_patterns=None,
             url_map.setdefault(key, {
                 "component": comp,
                 "file_path": file_path,
+                "declared_in": fp,
+            })
+
+        # ``import App from 'apps/<slug>'`` alias — Route path 가 dynamic /
+        # 없거나 컴포넌트 안에서 처리될 때, import 경로의 slug 가 진짜
+        # 메뉴 URL slug 인 사용자 사례 (hypm_interlockRule → hypm-interlockrule).
+        # 같은 routes 파일에 등록 — file_path 는 그 파일 자체.
+        for slug in _apps_import_aliases(content):
+            alias_key = normalize_url(f"/apps/{slug}", strip_patterns)
+            if not alias_key:
+                continue
+            url_map.setdefault(alias_key, {
+                "component": "",
+                "file_path": fp,
                 "declared_in": fp,
             })
 
