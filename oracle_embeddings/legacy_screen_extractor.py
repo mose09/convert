@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v3"   # v3: data_table_columns 가 {title,field,width,hide} 객체 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v4"   # v4: search_panel / data_table_columns 가 파서 기반으로 채워짐 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -292,20 +292,30 @@ def _build_user_prompt(file_rel: str, file_content: str,
     )
 
 
-def _build_closure_markdown(rel: str, abs_fp: str, frontend_dir: str,
-                            patterns: Dict[str, Any],
-                            max_depth: int, token_budget: int) -> Optional[str]:
-    """Opt-in closure 빌드 + 직렬화. tree-sitter 미설치 시 None."""
+_CLOSURE_IMPORT_WARNED = False
+
+
+def _build_screen_closure(rel: str, abs_fp: str, frontend_dir: str,
+                          patterns: Dict[str, Any],
+                          max_depth: int, token_budget: int):
+    """build_closure 한 번 호출 — markdown 직렬화 + 파서 양쪽이 같은 객체 공유.
+
+    tree-sitter 미설치 / 빌드 실패 시 ``None``. 반환 타입은
+    ``ScreenClosure`` 지만 import 가 lazy 라 forward-ref 로 둠.
+    """
+    global _CLOSURE_IMPORT_WARNED
     try:
-        from .legacy_react_closure import build_closure, serialize_for_llm
+        from .legacy_react_closure import build_closure
     except Exception as e:
-        logger.warning(
-            "closure_llm requested but legacy_react_closure import failed "
-            "(tree-sitter wheel 미설치?): %s — 기존 smart_slice fallback", e
-        )
+        if not _CLOSURE_IMPORT_WARNED:
+            logger.warning(
+                "legacy_react_closure import 실패 (tree-sitter wheel 미설치?): %s "
+                "— closure 의존 경로 비활성 (이후 화면들도 동일)", e
+            )
+            _CLOSURE_IMPORT_WARNED = True
         return None
     try:
-        closure = build_closure(
+        return build_closure(
             entry_file=abs_fp,
             repo_root=frontend_dir,
             patterns=patterns,
@@ -313,10 +323,70 @@ def _build_closure_markdown(rel: str, abs_fp: str, frontend_dir: str,
             token_budget=token_budget,
             verbose=False,
         )
-        return serialize_for_llm(closure)
     except Exception as e:
         logger.warning("closure build failed for %s: %s", rel, e)
         return None
+
+
+def _serialize_closure_md(closure) -> Optional[str]:
+    if closure is None:
+        return None
+    try:
+        from .legacy_react_closure import serialize_for_llm
+        return serialize_for_llm(closure)
+    except Exception as e:
+        logger.warning("closure serialize 실패: %s", e)
+        return None
+
+
+def _parser_fill_layout(layout: "ScreenLayout", closure,
+                        patterns: Dict[str, Any]) -> tuple[int, int]:
+    """파서 기반 search_panel / data_table_columns 덮어쓰기.
+
+    closure 가 빌드되어 있으면 ``screen_spec.extractors`` 의 deterministic
+    추출기로 폼 필드 / 그리드 컬럼을 다시 추출해서 LLM 결과를 덮어쓴다.
+    events 와 동일 원칙: 파서가 ground truth.
+
+    추출 결과 0 건이면 LLM 결과 유지 (회귀 회피).
+    Returns ``(field_count, column_count)`` — 통계용.
+    """
+    if closure is None:
+        return 0, 0
+    try:
+        from .screen_spec.extractors import (
+            extract_form_fields,
+            extract_grid_columns,
+        )
+    except Exception as e:
+        logger.warning("screen_spec extractors import 실패: %s", e)
+        return 0, 0
+    try:
+        fields = extract_form_fields(closure, patterns)
+        cols = extract_grid_columns(closure, patterns)
+    except Exception as e:
+        logger.warning("파서 기반 화면 추출 실패: %s", e)
+        return 0, 0
+    if fields:
+        layout.search_panel = [
+            ScreenField(
+                label=(f.label or f.name or ""),
+                component=f.field_type or "",
+                default=f.default or "",
+                options="",
+            )
+            for f in fields
+        ]
+    if cols:
+        layout.data_table_columns = [
+            TableColumn(
+                title=c.header or "",
+                field=c.data_key or "",
+                width=c.width or "",
+                hide=(not c.visible),
+            )
+            for c in cols
+        ]
+    return len(fields), len(cols)
 
 
 def _find_flowchart_sample(base_dir: str = "input") -> Optional[str]:
@@ -531,6 +601,9 @@ def extract_screen_layouts(
     fallback_calls = 0
     closure_used = 0
     closure_failed = 0
+    parser_fields_total = 0
+    parser_grids_total = 0
+    parser_screens = 0
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
     sample_image = _find_flowchart_sample()
@@ -554,12 +627,15 @@ def extract_screen_layouts(
         except Exception:
             content = ""
 
+        # closure 한 번 빌드 — LLM markdown / 파서 기반 fill 양쪽이 공유.
+        # tree-sitter 미설치면 None (회귀 0, LLM-only 경로 유지).
+        closure_obj = _build_screen_closure(
+            rel, abs_fp, frontend_dir, patterns or {},
+            closure_max_depth, closure_token_budget,
+        )
         closure_md: Optional[str] = None
         if closure_llm:
-            closure_md = _build_closure_markdown(
-                rel, abs_fp, frontend_dir, patterns or {},
-                closure_max_depth, closure_token_budget,
-            )
+            closure_md = _serialize_closure_md(closure_obj)
             if closure_md:
                 closure_used += 1
             else:
@@ -594,6 +670,18 @@ def extract_screen_layouts(
         else:
             layout = _fallback_layout(rel, url_map)
             fallback_calls += 1
+
+        # search_panel / data_table_columns 도 events 와 동일 원칙으로 파서가
+        # ground truth. closure 가 빌드된 경우 (tree-sitter 설치 + 빌드 성공)
+        # screen_spec.extractors 의 deterministic 추출기 결과로 덮어쓴다.
+        # 자식 컴포넌트가 따로 import 된 분할 화면에서도 정확. 파서 0건이면
+        # LLM 결과 유지.
+        f_n, c_n = _parser_fill_layout(layout, closure_obj, patterns or {})
+        if f_n or c_n:
+            parser_screens += 1
+            parser_fields_total += f_n
+            parser_grids_total += c_n
+
         out[rel] = layout
         _cache_put(cache_key, layout, use_cache)
 
@@ -601,8 +689,14 @@ def extract_screen_layouts(
         f", closure_used={closure_used}, closure_failed={closure_failed}"
         if closure_llm else ""
     )
+    parser_stats = (
+        f", parser_screens={parser_screens}, "
+        f"parser_fields={parser_fields_total}, parser_grids={parser_grids_total}"
+        if parser_screens else ""
+    )
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
-          f"fallback={fallback_calls}, total={len(out)}{closure_stats}")
+          f"fallback={fallback_calls}, total={len(out)}"
+          f"{closure_stats}{parser_stats}")
     return out
 
 

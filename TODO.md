@@ -129,6 +129,29 @@ frontend_dir basename 을 timestamp dir 에 prefix.
 - [x] `oracle_embeddings/legacy_analyzer.py` — 동일 합성
 - [x] `write_screen_html_files` — top-folder 분리 제거, flat 저장
 
+### 진행 중: `--extract-screen-layout` 조회영역/그리드 빠짐 — 파서 기반 추출
+
+`--extract-screen-layout` 가 search_panel / data_table_columns 를 LLM 응답에만
+의존해서, 자식 컴포넌트 분할 화면(예: `index.js` 가 `<PropsRouter
+component={Sviddeling}/>` 만 렌더, Sviddeling 이 다시 `<SearchSection/>` /
+`<DataGrid/>` 로 분할) 에서 통째로 빈 배열. `--closure-llm` 켜도 depth 2+ 가
+signature 모드라 JSX skeleton (`<Table columns={...}/>`) 만 LLM 한테 도달 →
+컬럼/필드 손실.
+
+- [x] closure depth 완화 — `DEFAULT_DEPTH_MODE` 의 depth 2 도 full 로
+      (token budget 으로 자연 cap)
+- [x] `extract_screen_layouts()` 에 파서 기반 fill 추가:
+      - tree-sitter 있으면 closure 빌드(이미 있으면 재사용)
+      - `screen_spec.extractors.extract_form_fields` /
+        `extract_grid_columns` 호출 → 결과로 search_panel /
+        data_table_columns 덮어쓰기 (events 와 동일 원칙)
+      - 파서 0건이면 LLM 결과 유지 (회귀 회피)
+      - tree-sitter 미설치면 기존 LLM-only 경로 (회귀 0)
+- [x] `_resolve_array_in_closure` 신규 — `columns={X}` 의 X 가 별도 파일
+      const 일 때 closure 전체에서 해석 (사용자 실무 패턴)
+- [x] 통계 로그 — `parser_screens / parser_fields / parser_grids` count
+- [ ] PR + squash-merge
+
 ### 진행 중: catch-all SPA — Layer 2 base prefix 매칭 fallback
 
 사용자 환경 4: 라우터가 메인 (Layer 2 routes/index.js) 에만 1개 존재하고
