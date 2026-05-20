@@ -140,11 +140,180 @@ def _detect_text_child_label(content: str, jsx_match) -> bool:
     ))
 
 
+def _closure_level_diagnose(screen_file: Path, frontend_dir: Path) -> int:
+    """`--screen-file` 모드 — 특정 화면 entry 에서 closure 빌드 → 그리드/조회영역
+    안 잡히는 진짜 원인 식별. tree-sitter 필요.
+
+    체크리스트:
+      1. tree-sitter 설치 / closure 빌드 성공 여부
+      2. closure 안 파일 N개 (depth 별)
+      3. AgGridReact / 그리드 컴포넌트 JSX 발견 위치
+      4. columnDefs prop 값 형태 (literal / identifier / function call / 동적)
+      5. identifier 인 경우 closure 안에서 정의 찾기 결과
+    """
+    print(f"=== Closure-level diagnostic ===")
+    print(f"entry: {screen_file}")
+    print(f"frontend_dir: {frontend_dir}")
+    print()
+
+    # 1. tree-sitter
+    try:
+        from oracle_embeddings.legacy_react_closure import build_closure
+        from oracle_embeddings.legacy_react_ast import (
+            find_by_type, child_by_field, text_of, parse_file,
+        )
+    except Exception as e:
+        print(f"✗ tree-sitter 미설치 / 모듈 import 실패: {e}")
+        print("→ wheel install 필요 (CLAUDE.md 의 tree-sitter 섹션 참고)")
+        return 2
+    print("✓ tree-sitter 모듈 OK")
+
+    # 2. closure 빌드
+    try:
+        closure = build_closure(
+            entry_file=str(screen_file),
+            repo_root=str(frontend_dir),
+            patterns={},
+            max_depth=3,
+            token_budget=12000,
+            verbose=False,
+        )
+    except Exception as e:
+        print(f"✗ closure build 실패: {e}")
+        return 3
+    print(f"✓ closure built: {len(closure.files)}개 파일")
+
+    # 파일 depth/mode 요약
+    by_depth: dict[int, list] = {}
+    for f in closure.files:
+        by_depth.setdefault(f.depth, []).append(f)
+    for d in sorted(by_depth.keys()):
+        names = [f"{f.rel_path}({f.mode})" for f in by_depth[d][:3]]
+        more = f" ... +{len(by_depth[d]) - 3}" if len(by_depth[d]) > 3 else ""
+        print(f"  depth {d}: {len(by_depth[d])}개 — {', '.join(names)}{more}")
+
+    # skipped external (alias resolve 실패 가능성 단서)
+    if closure.skipped_external:
+        ext_sample = closure.skipped_external[:8]
+        print(f"  external/skipped: {len(closure.skipped_external)} — {ext_sample}"
+              + (" ..." if len(closure.skipped_external) > 8 else ""))
+    print()
+
+    # 3. AgGridReact 등 그리드 JSX 위치 + columnDefs 값 형태
+    table_names = {"AgGridReact", "Table", "DataTable", "DataGrid", "Grid",
+                   "MaterialTable"}
+    grid_hits: list[tuple[str, int, str, str]] = []   # (file, line, comp, cols_form)
+
+    for f in closure.files:
+        try:
+            tree, source, _ = parse_file(f.abs_path)
+        except Exception:
+            continue
+        if tree is None:
+            continue
+        for el_node in find_by_type(tree.root_node,
+                                    {"jsx_opening_element",
+                                     "jsx_self_closing_element"}):
+            name_node = child_by_field(el_node, "name")
+            if name_node is None:
+                continue
+            tag = text_of(name_node, source).strip()
+            if tag not in table_names:
+                continue
+            line = el_node.start_point[0] + 1
+            # columnDefs / columns / schema prop 의 값 노드 형태 식별
+            form = "(prop 없음)"
+            ident_name = None
+            for attr in el_node.children:
+                if attr.type != "jsx_attribute":
+                    continue
+                nc = attr.named_children
+                if not nc:
+                    continue
+                aname = text_of(nc[0], source).strip()
+                if aname not in ("columns", "columnDefs", "schema"):
+                    continue
+                if len(nc) < 2 or nc[1].type != "jsx_expression":
+                    form = f"{aname}=(literal string?)"
+                    break
+                # jsx_expression 안 첫 named child
+                inner_nodes = [c for c in nc[1].named_children]
+                if not inner_nodes:
+                    form = f"{aname}={{}}"
+                    break
+                inner = inner_nodes[0]
+                if inner.type == "array":
+                    form = f"{aname}=[inline array]"
+                elif inner.type == "identifier":
+                    ident_name = text_of(inner, source).strip()
+                    form = f"{aname}={ident_name} (identifier)"
+                elif inner.type == "call_expression":
+                    callee = child_by_field(inner, "function")
+                    cn = text_of(callee, source) if callee is not None else "?"
+                    form = f"{aname}={cn}(...) (call)"
+                elif inner.type == "member_expression":
+                    form = f"{aname}={text_of(inner, source)[:30]} (member)"
+                else:
+                    form = f"{aname}=<{inner.type}>"
+                break
+            grid_hits.append((f.rel_path, line, tag, form))
+
+    if not grid_hits:
+        print("✗ closure 안에서 AgGridReact / Table / DataGrid 등 그리드 JSX 0건")
+        print("  → 가능성:")
+        print("    a) closure BFS 가 그리드 정의 파일까지 못 도달 (alias 경로 해석 실패)")
+        print("    b) 그리드 컴포넌트가 wrap 된 다른 이름 (예: <MyGrid> + 내부 ag-grid)")
+        print("    c) entry 가 잘못된 파일 (실제 화면은 다른 entry)")
+        return 0
+
+    print(f"✓ 그리드 JSX {len(grid_hits)}건 발견:")
+    ident_targets: list[str] = []
+    for rel, line, tag, form in grid_hits:
+        print(f"    {rel}:{line}  <{tag} ... {form}/>")
+        m = re.match(r"\w+=(\w+) \(identifier\)", form)
+        if m:
+            ident_targets.append(m.group(1))
+    print()
+
+    # 4. identifier 인 경우 closure 안 정의 찾기
+    if ident_targets:
+        print(f"[Q5] columnDefs={{X}} 의 X 가 identifier — closure 안 정의 검색:")
+        for ident in set(ident_targets):
+            found_files = []
+            for f in closure.files:
+                try:
+                    tree, source, _ = parse_file(f.abs_path)
+                except Exception:
+                    continue
+                if tree is None:
+                    continue
+                for n in find_by_type(tree.root_node, "variable_declarator"):
+                    nm = child_by_field(n, "name")
+                    if nm and text_of(nm, source).strip() == ident:
+                        val = child_by_field(n, "value")
+                        vtype = val.type if val else "?"
+                        found_files.append(f"{f.rel_path} (value={vtype})")
+                        break
+            if found_files:
+                print(f"  {ident} 정의: {found_files}")
+                # 어떤 value type 인지 — array literal 면 정상 해석, call/member 면 동적
+                first = found_files[0]
+                if "value=array" in first:
+                    print(f"    → 정상 — 우리 파서가 잡아야 함 (의문)")
+                else:
+                    print(f"    ⚠ 동적 정의 (array 아님) — 우리 파서가 못 잡음")
+            else:
+                print(f"  {ident}: closure 안에서 정의 못 찾음")
+                print(f"    → import 경로 해석 실패 (alias?) — 그 파일이 closure 에 안 들어옴")
+    return 0
+
+
 def diagnose(frontend_dir: Path, limit: int, screen_file: Path | None = None):
     if screen_file is not None:
-        files = [screen_file]
-    else:
-        files = _walk_react_files(frontend_dir, limit)
+        # closure-level 진단 모드
+        return _closure_level_diagnose(screen_file, frontend_dir)
+
+    files = _walk_react_files(frontend_dir, limit)
     if not files:
         print(f"✗ 스캔 가능한 React 파일 0건 — 경로 확인: {frontend_dir}")
         return 1
