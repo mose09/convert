@@ -687,6 +687,21 @@ def cmd_grid_labels(args):
     print(f"\n  Excel: {os.path.abspath(xlsx_path)}")
 
 
+def cmd_docs(args):
+    """README.md → 단일 HTML 설명서 (사이드바 TOC + 검색)."""
+    from oracle_embeddings.docs_builder import build_docs
+
+    if not os.path.isfile(args.readme):
+        print(f"Error: README not found: {args.readme}")
+        return
+
+    print(f"=== HTML 설명서 빌드 ===")
+    print(f"  source: {args.readme}")
+    out_abs = build_docs(args.readme, args.output, args.title)
+    print(f"  output: {out_abs}")
+    print(f"  브라우저로 위 파일 직접 열면 됩니다 (오프라인 OK).")
+
+
 def cmd_enrich_schema(args):
     """Enrich schema .md with LLM-generated comments for empty descriptions."""
     from oracle_embeddings.md_parser import parse_schema_md
@@ -2252,6 +2267,18 @@ def main():
         help="React source root (recursive scan)",
     )
 
+    # docs command — README.md (또는 임의 md) → 단일 HTML 설명서
+    docs_parser = subparsers.add_parser(
+        "docs",
+        help="Build single-file HTML docs from README.md (sidebar TOC + search, no CDN)",
+    )
+    docs_parser.add_argument("--readme", default="README.md",
+                             help="Source markdown (default: README.md)")
+    docs_parser.add_argument("--output", default="docs/site/index.html",
+                             help="Output HTML path (default: docs/site/index.html)")
+    docs_parser.add_argument("--title", default=None,
+                             help="Override page title (default: 첫 H1 텍스트)")
+
     # standardize command
     std_parser = subparsers.add_parser("standardize", help="Generate standardization analysis report")
     std_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
@@ -2702,6 +2729,8 @@ def main():
         cmd_terms(args)
     elif args.command == "grid-labels":
         cmd_grid_labels(args)
+    elif args.command == "docs":
+        cmd_docs(args)
     elif args.command == "standardize":
         cmd_standardize(args)
     elif args.command == "enrich-schema":

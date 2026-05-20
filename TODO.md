@@ -23,6 +23,20 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: `docs` — README → 단일 HTML 설명서 (사이드바 + 검색)
+
+README.md 가 1685줄로 비대해져서 GitHub 렌더로 탐색 어려움. 좌측 사이드바
+TOC + 검색 + 다크모드를 갖춘 **단일 HTML 파일** 빌더 추가. 폐쇄망 친화
+위해 stdlib 만 사용 — CDN/외부 라이브러리 의존 0.
+
+- [x] `oracle_embeddings/docs_builder.py` — 자체 markdown→HTML 파서
+      (H1-H4 / 표 / 코드펜스 / 리스트 / blockquote / 인라인 코드·링크·
+      bold·italic) + inline CSS/JS 템플릿 (sidebar / search / theme)
+- [x] `main.py docs` 커맨드 — `--readme` / `--output` / `--title`
+- [x] 첫 빌드: README 1685줄 → `docs/site/index.html` 128 KB,
+      H2=9 H3=20 표=20 코드블록=54 모두 정상 변환
+- [x] README 상단에 HTML 설명서 안내 1 줄
+
 ### 진행 중: 출력 경로 규약 통일 — `output/<영역>/<일자>/<파일>`
 
 각 커맨드가 산출물을 다른 깊이/이름으로 떨어뜨려서 (`output/스키마.md` /
