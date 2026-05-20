@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v5"   # v5: data_table_columns 9컬럼 (필드명/설명/타입/필수/속성/UI타입/설명/동작) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v6"   # v6: search_panel events / required / search-area boundary — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -45,6 +45,8 @@ class ScreenField:
     component: str = ""
     default: str = ""
     options: str = ""
+    events: str = ""         # "onChange / onClick" 등 (공백 구분)
+    required: bool = False   # 필수 여부 (label className required 또는 required prop)
 
 
 @dataclass
@@ -165,14 +167,26 @@ React 코드 텍스트만 보고 추출.
   오지 않고, 형제 element 의 text child 인 경우가 많음. 예::
 
       <div className="search-item">
-        <span className="search-label">FAB</span>
-        <Select defaultValue="Select 하세요." onChange={...}/>
+        <span className="search-label required">Team</span>
+        <Select defaultValue="Select 하세요." onChange={...}>
+          <Option value="Y">Yes</Option>
+          <Option value="N">No</Option>
+        </Select>
       </div>
 
-  → 라벨은 ``"FAB"`` (형제 ``<span className="search-label">`` 의 text).
-  ``"Select 하세요."`` 는 default 값이지 라벨이 아님 — **혼동 금지**.
-- prop 라벨이 비어있으면 형제 / ancestor 의 ``className`` 에 'label' 이
-  포함된 span/div/label 의 text child 를 라벨로 사용.
+  → 라벨은 ``"Team"`` (형제 ``<span className="search-label">`` 의 text),
+  컴포넌트는 ``"Select"``, default 는 ``"Select 하세요."``, options 는
+  ``"Y, N"`` (Option 자식 value), events 는 ``"onChange"``, 라벨
+  className 에 'required' 토큰 있으면 required=true.
+- ``"Select 하세요."`` 는 default 값이지 라벨이 아님 — **혼동 금지**.
+- prop 라벨이 비어있으면 형제 / ancestor (최대 5단계) 의 ``className`` 에
+  'label' 이 포함된 span/div/label 의 text child 를 라벨로 사용.
+
+**검색 영역 boundary**:
+- 검색 패널 필드는 ``<section className="search-area">`` (또는
+  ``search-form`` / ``filter-area`` / ``criteria-area``) 안의 input 컴포넌트
+  **만** 포함. 그리드 inline filter / edit modal / 페이지네이션 등 다른
+  영역의 input 은 search_panel 에서 제외.
 
 **DataTable 컬럼 추출 규칙** (화면정의서 9컬럼 표 양식):
 - 컬럼 정의 prop 이름은 라이브러리별로 다름:
@@ -203,8 +217,12 @@ React 코드 텍스트만 보고 추출.
 {
   "page_title": "string — 화면 상단 제목",
   "search_panel": [
-    {"label": "필드 라벨", "component": "DatePicker | Select | Input | ...",
-     "default": "기본값 설명", "options": "옵션/리스트 설명"}
+    {"label": "필드 라벨 (예: Team)",
+     "component": "원본 JSX 컴포넌트 이름 (Select / DatePicker / Input / ...)",
+     "default": "defaultValue / value (예: Select 하세요.)",
+     "options": "드롭다운 자식 Option value 콤마 구분 (예: Y, N)",
+     "events": "onChange / onClick / onBlur 등 (공백 구분)",
+     "required": false}
   ],
   "data_table_columns": [
     {"field": "영문 데이터 키 / dataIndex (예: org)",
@@ -473,7 +491,9 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 label=(f.label or f.name or ""),
                 component=(f.jsx_tag or f.field_type or ""),
                 default=f.default or "",
-                options="",
+                options=f.options or "",
+                events=f.events or "",
+                required=f.required,
             )
             for f in fields
         ]
@@ -587,6 +607,8 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                     component=str(f.get("component", "")),
                     default=str(f.get("default", "")),
                     options=str(f.get("options", "")),
+                    events=str(f.get("events", "")),
+                    required=bool(f.get("required", False)),
                 ))
         return out
 
@@ -850,6 +872,9 @@ _HTML_TEMPLATE = """<!doctype html>
   table.grid-def td {{ vertical-align: top; }}
   table.grid-def td.no {{ text-align: center; color: #777; width: 36px; }}
   table.grid-def code {{ font-size: 12px; color: #2c3e50; }}
+  .req-badge {{ display: inline-block; font-size: 10px; padding: 1px 6px;
+              background: #c0392b; color: #fff; border-radius: 2px;
+              margin-left: 6px; vertical-align: middle; }}
   th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: left; }}
   th {{ background: #f0f0f0; }}
   td.placeholder {{ color: #bbb; font-style: italic; }}
@@ -947,13 +972,13 @@ def _esc(s: str) -> str:
 
 
 def _render_field_list(fields: List[ScreenField]) -> str:
-    """필드 목록 → 텍스트 bullet 리스트 (사용자 요청 — input mock-form 대신
-    설명 형태). 항목당:
+    """필드 목록 → 텍스트 bullet 리스트. 항목당::
 
-      <strong>라벨</strong>
-        - 사용 컴포넌트: ...
-        - Default: ...
-        - Options: ...
+        <strong>라벨</strong> [필수]
+          - 사용 컴포넌트: Select
+          - Default: ...
+          - 리스트: Y, N
+          - 이벤트: onChange
     """
     items = []
     for f in fields:
@@ -963,10 +988,14 @@ def _render_field_list(fields: List[ScreenField]) -> str:
         if f.default:
             sub.append(f"<li>Default: {_esc(f.default)}</li>")
         if f.options:
-            sub.append(f"<li>Options: {_esc(f.options)}</li>")
+            sub.append(f"<li>리스트: {_esc(f.options)}</li>")
+        if f.events:
+            sub.append(f"<li>이벤트: {_esc(f.events)}</li>")
         sub_html = f"<ul>{''.join(sub)}</ul>" if sub else ""
+        req_badge = (" <span class='req-badge'>필수</span>" if f.required else "")
         items.append(
-            f"<li><strong>{_esc(f.label or '(no label)')}</strong>{sub_html}</li>"
+            f"<li><strong>{_esc(f.label or '(no label)')}</strong>"
+            f"{req_badge}{sub_html}</li>"
         )
     return f"<ol>{''.join(items)}</ol>" if items else ""
 

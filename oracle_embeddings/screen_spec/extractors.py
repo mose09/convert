@@ -55,6 +55,16 @@ DEFAULT_TAB_ITEM_COMPONENTS = ("Tab", "TabPanel", "TabPane")
 
 DEFAULT_BUTTON_COMPONENTS = ("button", "Button", "IconButton", "LinkButton")
 
+# 검색 패널 컨테이너 className (한국 SI 컨벤션) — patterns.yaml 로 확장 가능.
+DEFAULT_SEARCH_CONTAINERS = (
+    "search-area", "search-form", "search-section",
+    "filter-area", "filter-section", "criteria-area",
+)
+
+# 드롭다운 자식 Option 컴포넌트 이름
+DEFAULT_OPTION_COMPONENTS = ("Option", "MenuItem", "SelectOption", "OptGroup",
+                              "option")
+
 DEFAULT_NAV_FUNCS = (
     "navigate", "push", "replace", "router.push", "history.push",
     "window.open", "location.assign", "location.replace",
@@ -215,9 +225,13 @@ def _format_inline_validation(attrs: dict[str, str]) -> str:
     return "; ".join(parts)
 
 
-def _find_label_text_in_children(parent, exclude, source: bytes) -> str:
+def _find_label_text_in_children(parent, exclude, source: bytes
+                                 ) -> tuple[str, str]:
     """parent 의 자식 element 중 ``className`` 에 'label' 포함된 element 의
     text child 반환 (exclude 노드는 제외).
+
+    Returns ``(text, label_classname)`` — text 빈 문자열이면 매칭 없음.
+    classname 은 호출자가 'required' 토큰 같은 부가 정보 추출용.
     """
     for child in parent.children:
         if child is exclude:
@@ -241,8 +255,79 @@ def _find_label_text_in_children(parent, exclude, source: bytes) -> str:
             if c.type == "jsx_text":
                 txt = text_of(c, source).strip()
                 if txt:
-                    return txt
-    return ""
+                    return txt, cls
+    return "", ""
+
+
+def _find_search_containers(tree, source: bytes,
+                            container_class_tokens: set[str]) -> list:
+    """``className`` 에 search-area / filter-area 등 토큰 포함된 JSX element
+    노드 반환. byte offset 으로 안에 든 input 식별용 boundary."""
+    out: list = []
+    for n in find_by_type(tree.root_node, "jsx_element"):
+        opening = next((c for c in n.children if c.type == "jsx_opening_element"), None)
+        if opening is None:
+            continue
+        attrs = _jsx_attributes(opening, source)
+        cls = (attrs.get("className") or "").lower()
+        if not cls:
+            continue
+        if any(token.lower() in cls for token in container_class_tokens):
+            out.append(n)
+    return out
+
+
+def _node_contains(parent, child) -> bool:
+    """child 의 byte offset 이 parent 안에 들어있는지."""
+    return parent.start_byte <= child.start_byte and child.end_byte <= parent.end_byte
+
+
+def _extract_event_props(attrs: dict[str, str]) -> str:
+    """``onChange`` / ``onClick`` / ``onBlur`` 등 React event prop 만 모아
+    ``"onChange / onClick"`` 형식. boolean prop 으로 잡힌 ``on*`` 도 포함."""
+    evts = [k for k in attrs if k.startswith("on") and len(k) > 2 and k[2].isupper()]
+    return " / ".join(sorted(evts))
+
+
+def _extract_dropdown_options(input_element_node, source: bytes,
+                              option_comps: set[str]) -> str:
+    """드롭다운(Select 등) 의 children 중 ``<Option value=...>`` 의 value
+    (또는 text child) 모아 ``"Y, N"`` 형식. children 이 없으면 빈 문자열.
+
+    ``input_element_node`` 가 jsx_opening_element 이면 wrapping element 까지
+    올라가서 children 탐색. self-closing 이면 children 없음 → "".
+    """
+    cur = input_element_node
+    if cur.type == "jsx_opening_element" and cur.parent is not None:
+        cur = cur.parent
+    if cur.type != "jsx_element":
+        return ""
+    values: list[str] = []
+    for n in walk(cur):
+        if n is cur:
+            continue
+        if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+            continue
+        nm = child_by_field(n, "name")
+        if nm is None:
+            continue
+        tag = text_of(nm, source).strip()
+        if tag not in option_comps:
+            continue
+        attrs = _jsx_attributes(n, source)
+        val = (attrs.get("value") or attrs.get("key") or "").strip()
+        if not val:
+            # text child 사용 — <Option>Yes</Option>
+            if n.type == "jsx_opening_element" and n.parent is not None:
+                for c in n.parent.children:
+                    if c.type == "jsx_text":
+                        t = text_of(c, source).strip()
+                        if t:
+                            val = t
+                            break
+        if val and val not in values:
+            values.append(val)
+    return ", ".join(values)
 
 
 def _sibling_label(input_node, source: bytes) -> str:
@@ -265,6 +350,13 @@ def _sibling_label(input_node, source: bytes) -> str:
     각 단계의 direct children 만 — descendant 까지 가면 다른 input 의
     라벨 오인 위험.
     """
+    text, _ = _sibling_label_info(input_node, source)
+    return text
+
+
+def _sibling_label_info(input_node, source: bytes) -> tuple[str, str]:
+    """``_sibling_label`` 동일 로직이지만 (text, label_classname) 반환.
+    classname 에 'required' 토큰 있으면 호출자가 필수 여부 추출."""
     cur = input_node
     if cur.type == "jsx_opening_element" and cur.parent is not None:
         cur = cur.parent
@@ -272,45 +364,67 @@ def _sibling_label(input_node, source: bytes) -> str:
         parent = cur.parent
         if parent is None or parent.type not in ("jsx_element", "jsx_fragment"):
             break
-        text = _find_label_text_in_children(parent, exclude=cur, source=source)
+        text, cls = _find_label_text_in_children(parent, exclude=cur, source=source)
         if text:
-            return text
+            return text, cls
         cur = parent
-    return ""
+    return "", ""
 
 
 def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
-    """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트."""
+    """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트.
+
+    ``<section className="search-area">`` (또는 alias) 가 closure 안에
+    하나라도 있으면 그 컨테이너 안 input 만 추출 (검색영역 경계).
+    없으면 기존처럼 전체 input (회귀 0).
+    """
     pat = _patterns_section(patterns)
     input_comps = _comp_list(pat, "input_components", DEFAULT_INPUT_COMPONENTS)
+    container_tokens = _comp_list(pat, "search_containers",
+                                  DEFAULT_SEARCH_CONTAINERS)
+    option_comps = _comp_list(pat, "option_components",
+                              DEFAULT_OPTION_COMPONENTS)
 
-    fields: list[FormField] = []
-    order = 0
+    # Phase 1: 모든 파일 파싱 + search container 식별
+    from ..legacy_react_ast import parse_file
+    file_data = []
+    any_container = False
     for f in closure.files:
-        # parse_file 결과를 재사용하지 않고 closure 의 content 기반 재파싱은
-        # 비효율 → build_closure 안에서 모은 source 를 다시 파싱하는 대신,
-        # 화면 단위로 다시 parse_file 호출. closure.entry_file/files[i].abs_path
-        # 가 실제 디스크 경로이므로 그걸로 다시 파싱.
-        from ..legacy_react_ast import parse_file
         tree, source, _ = parse_file(f.abs_path)
         if tree is None:
+            continue
+        containers = _find_search_containers(tree, source, container_tokens)
+        if containers:
+            any_container = True
+        file_data.append((f, tree, source, containers))
+
+    # Phase 2: input 추출 — boundary 있으면 container 안만, 없으면 전체
+    fields: list[FormField] = []
+    order = 0
+    for f, tree, source, containers in file_data:
+        if any_container and not containers:
             continue
         for el, tag in _jsx_open_elements(tree, source):
             if tag not in input_comps:
                 continue
+            if any_container and not any(
+                _node_contains(c, el) for c in containers
+            ):
+                continue
             attrs = _jsx_attributes(el, source)
             # 우선순위: label prop > 한국 SI 형제 라벨 (className "label")
-            # > placeholder / title / aria-label. placeholder 가 sibling
-            # label 보다 우선이면 ``<Input placeholder="사번 입력"/>`` 옆
-            # ``<span className="search-label">사번</span>`` 의 정확한
-            # 라벨이 무시되는 버그 — sibling 을 placeholder 위로.
+            # > placeholder / title / aria-label.
+            sibling_text, sibling_cls = _sibling_label_info(el, source)
             label = (attrs.get("label")
-                     or _sibling_label(el, source)
+                     or sibling_text
                      or attrs.get("placeholder")
                      or attrs.get("title")
                      or attrs.get("aria-label")
                      or "")
+            # sibling label 의 className 에 'required' 토큰이 있으면 필수
+            # (예: <span className="search-label required">Team</span>).
+            sibling_required = "required" in sibling_cls.split()
             name = (attrs.get("name")
                     or attrs.get("id")
                     or attrs.get("field")
@@ -321,12 +435,16 @@ def extract_form_fields(closure: ScreenClosure,
                 label=label,
                 name=name,
                 field_type=_classify_field_type(tag, attrs),
-                required=attrs.get("required") == "true",
+                required=(attrs.get("required") == "true"
+                          or "required" in (attrs.get("className") or "").lower()
+                          or sibling_required),
                 default=(attrs.get("defaultValue")
                          or attrs.get("value") or ""),
                 validation=_format_inline_validation(attrs),
                 source_file=f.rel_path,
                 jsx_tag=tag,
+                events=_extract_event_props(attrs),
+                options=_extract_dropdown_options(el, source, option_comps),
             ))
     return fields
 
