@@ -2491,8 +2491,13 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if screen_layout_map:
                 from datetime import datetime as _dt
                 ts = _dt.now().strftime("%H%M%S")
+                reponame = (
+                    re.sub(r"[^A-Za-z0-9_.-]+", "_",
+                           os.path.basename((frontend_dir or "").rstrip(os.sep) or "frontend"))
+                    or "frontend"
+                )
                 screens_dir = os.path.join(
-                    output_dir or "output/legacy_analysis", "screens", ts
+                    output_dir or "output/legacy_analysis", "screens", f"{reponame}_{ts}"
                 )
                 screen_html_paths = screen_ext.write_screen_html_files(
                     screens_dir, screen_layout_map
