@@ -105,7 +105,7 @@ class ScreenClosure:
 # 기본값 (patterns.yaml.react.* 미주입 시)
 # ─────────────────────────────────────────────────────────────────
 
-DEFAULT_DEPTH_MODE = {0: "full", 1: "full", 2: "signature", 3: "meta", 4: "meta"}
+DEFAULT_DEPTH_MODE = {0: "full", 1: "full", 2: "full", 3: "signature", 4: "meta"}
 DEFAULT_API_WRAPPERS = ("apiClient", "http", "axios", "request", "api")
 DEFAULT_API_METHODS = ("get", "post", "put", "delete", "patch")
 DEFAULT_POPUP = {

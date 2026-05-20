@@ -308,6 +308,43 @@ def _resolve_array_of_objects(value_node, tree, source: bytes
     return []
 
 
+def _resolve_array_in_closure(value_node, tree, source: bytes,
+                              closure: ScreenClosure, current_abs_path
+                              ) -> list[tuple[Any, bytes]]:
+    """``columns={X}`` 의 X 가 다른 파일에서 import 한 const 일 때, closure
+    전체를 훑어 ``[export ]const X = [...]`` 정의를 찾아 array 반환.
+
+    Returns list of ``(object_node, source_bytes)`` pairs — object 노드와
+    그 노드가 속한 파일의 source bytes (downstream parse 에 필요).
+    same-file resolution 이 성공하면 그 결과만 반환, 실패 시 closure
+    전체 fallback. closure 가 None 이면 same-file 만 시도.
+    """
+    if value_node is None:
+        return []
+    if value_node.type == "array":
+        return [(c, source) for c in value_node.children if c.type == "object"]
+    if value_node.type != "identifier":
+        return []
+    ident = text_of(value_node, source).strip()
+    resolved = _resolve_identifier_literal(ident, tree, source)
+    if resolved is not None and resolved.type == "array":
+        return [(c, source) for c in resolved.children if c.type == "object"]
+    if closure is None:
+        return []
+    # closure-wide fallback — 다른 파일에 정의된 const
+    from ..legacy_react_ast import parse_file
+    for f in closure.files:
+        if str(f.abs_path) == str(current_abs_path):
+            continue
+        tree_x, source_x, _ = parse_file(f.abs_path)
+        if tree_x is None:
+            continue
+        resolved_x = _resolve_identifier_literal(ident, tree_x, source_x)
+        if resolved_x is not None and resolved_x.type == "array":
+            return [(c, source_x) for c in resolved_x.children if c.type == "object"]
+    return []
+
+
 def _truthy(s: str) -> bool:
     return s.strip().lower() in ("true", "yes", "1", "y")
 
@@ -343,8 +380,13 @@ def extract_grid_columns(closure: ScreenClosure,
                                or _find_attr_expression(el, "schema", source))
             if cols_value_node is None:
                 continue
-            for obj in _resolve_array_of_objects(cols_value_node, tree, source):
-                d = _parse_object_literal(obj, source)
+            # same-file 식별자 해석이 실패하면 closure 전체 fallback —
+            # ``columns={COLUMNS}`` 의 COLUMNS 가 별도 파일에서 import 된 const
+            # 인 케이스 (사용자 실무 패턴) 도 해석.
+            for obj, src in _resolve_array_in_closure(
+                cols_value_node, tree, source, closure, f.abs_path
+            ):
+                d = _parse_object_literal(obj, src)
                 order += 1
                 cols.append(GridColumn(
                     order=order,
