@@ -80,7 +80,17 @@ _진행 중 없음_
 
 ## 5. terms — 용어사전 자동 생성
 
-_진행 중 없음_
+### 진행 중: `grid-labels` — AG Grid 의 (field, headerName) 페어 추출 커맨드
+
+`analyze-legacy` / `screen-spec` 의 closure 기반 그리드 추출은 화면 단위.
+별도로 **repo 통째로** scan 해서 `columnDefs` 의 (physical_name, label) 만
+모아주는 deterministic 커맨드가 필요. AG Grid 의 `headerName + field`
+관용에 맞춰 regex 로 추출 (AST·LLM 의존 없음).
+
+- [x] `oracle_embeddings/grid_labels_extractor.py` — walk + regex pair
+- [x] `main.py` — `grid-labels` subparser + `cmd_grid_labels()`
+- [x] 출력: `output/grid-labels/<YYYYMMDD>/grid_labels_<HHMMSS>.xlsx`
+- [x] README — 명령 표 한 줄 추가
 
 ---
 

@@ -659,6 +659,34 @@ def cmd_terms(args):
     print(f"\n  Total: {len(merged)} words, Enriched: {enriched_count}")
 
 
+def cmd_grid_labels(args):
+    """AG Grid columnDefs 의 (field, headerName) 페어 추출 → xlsx."""
+    from oracle_embeddings.grid_labels_extractor import (
+        extract_grid_labels, save_grid_labels_excel,
+    )
+
+    load_dotenv()
+    config = load_config(args.config)
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = _build_dated_output_dir(base_output, "grid-labels")
+
+    if not os.path.isdir(args.react_dir):
+        print(f"Error: Directory not found: {args.react_dir}")
+        return
+
+    print(f"=== AG Grid columnDefs 추출 ===")
+    print(f"  react-dir: {args.react_dir}")
+    rows = extract_grid_labels(args.react_dir)
+    print(f"  pairs: {len(rows)} unique (field, label)")
+
+    if not rows:
+        print("  추출된 페어 0건 — AG Grid 사용 여부 / 키 이름 (headerName, field) 확인.")
+        return
+
+    xlsx_path = save_grid_labels_excel(rows, output_dir)
+    print(f"\n  Excel: {os.path.abspath(xlsx_path)}")
+
+
 def cmd_enrich_schema(args):
     """Enrich schema .md with LLM-generated comments for empty descriptions."""
     from oracle_embeddings.md_parser import parse_schema_md
@@ -2214,6 +2242,16 @@ def main():
     terms_parser.add_argument("--skip-llm", action="store_true",
                               help="Skip LLM enrichment (collect words only)")
 
+    # grid-labels command — AG Grid columnDefs (field, headerName) 페어 추출
+    grid_labels_parser = subparsers.add_parser(
+        "grid-labels",
+        help="Extract (field, headerName) pairs from AG Grid columnDefs (regex, no LLM)",
+    )
+    grid_labels_parser.add_argument(
+        "--react-dir", required=True,
+        help="React source root (recursive scan)",
+    )
+
     # standardize command
     std_parser = subparsers.add_parser("standardize", help="Generate standardization analysis report")
     std_parser.add_argument("--schema-md", required=True, help="Path to schema .md file")
@@ -2662,6 +2700,8 @@ def main():
         cmd_review_sql(args)
     elif args.command == "terms":
         cmd_terms(args)
+    elif args.command == "grid-labels":
+        cmd_grid_labels(args)
     elif args.command == "standardize":
         cmd_standardize(args)
     elif args.command == "enrich-schema":
