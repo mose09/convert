@@ -548,18 +548,21 @@ def extract_form_fields(closure: ScreenClosure,
                 order += 1
         return fields
 
-    # Phase 2b: search-item 없으면 search-area boundary 안 default input
+    # Phase 2b: search-item 없으면 search-area boundary 안 default input.
+    # search-area 자체도 없으면 search_panel 빈 채로 반환 — 팝업 / 조회조건
+    # 없는 화면이 closure transitive import 로 다른 input 까지 끌어오는 false
+    # positive 방지. (이전 Phase C: closure 전체 default input — 제거됨)
+    if not any_container:
+        return []
     fields = []
     order = 0
     for f, tree, source, containers, _ in file_data:
-        if any_container and not containers:
+        if not containers:
             continue
         for el, tag in _jsx_open_elements(tree, source):
             if tag not in input_comps:
                 continue
-            if any_container and not any(
-                _node_contains(c, el) for c in containers
-            ):
+            if not any(_node_contains(c, el) for c in containers):
                 continue
             attrs = _jsx_attributes(el, source)
             # 우선순위: label prop > 한국 SI 형제 라벨 (className "label")

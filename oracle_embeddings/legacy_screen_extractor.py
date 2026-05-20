@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v7"   # v7: search-item 단위 추출 (Popover/Custom 등 자동 흡수) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v8"   # v8: search-area boundary 없는 화면 search_panel 빈 채 (팝업 false positive 제거) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
