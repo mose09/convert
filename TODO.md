@@ -129,6 +129,29 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: sibling label depth 5 + 우선순위 + JSX tag 보존
+
+PR #228/#232 후속 — 사용자 환경에서 검색 라벨 여전히 "Select 하세요"
+로 나옴. 두 가지 원인:
+1. `_sibling_label` ancestor depth 가 2 라 `<div.search-item ><span.search
+   -label> + <div.search-input-wrap><span.search-select><Select/>` 같이
+   3단계 wrap 케이스 못 잡음.
+2. placeholder 가 sibling label 보다 우선이라 `<Input placeholder="사번
+   입력"/>` 옆에 `<span className="search-label">사번</span>` 정확한
+   라벨이 무시됨.
+3. ScreenField.component 에 `field_type` (소문자 분류) 가 들어가서 화면
+   에 "select" 로 표시. 사용자가 보고 싶은 건 원본 JSX tag "Select".
+
+- [x] `_sibling_label` ancestor depth 2 → 5
+- [x] 라벨 우선순위 재정렬 — label prop > sibling label > placeholder /
+      title / aria-label
+- [x] `FormField.jsx_tag` 신규 — 원본 JSX 컴포넌트 이름 보존
+- [x] `_parser_fill_layout` 변환 — ScreenField.component 에 jsx_tag
+      우선 매핑 (fallback: field_type)
+- [x] fixture (depth 3 wrap + sibling > placeholder + placeholder
+      fallback) E2E + 기존 회귀 OK
+- [ ] PR + squash-merge
+
 ### 진행 중: 그리드 HTML/xlsx 9컬럼 화면정의서 양식
 
 PR #231 후속 — 그리드 추출은 되는데 사용자가 화면정의서 표 양식
