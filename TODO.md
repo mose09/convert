@@ -119,6 +119,21 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: `diag_screen_pattern.py` — 화면 패턴 자가진단 스크립트
+
+PR #228 후속. 사용자 환경에서 PR #226~#228 fix 후에도 그리드 / 조회영역
+0건 — 단방향 폐쇄망이라 진단 출력 받기 어려움. 사용자가 진단 스크립트
+한 번 돌리면 프로젝트 패턴을 알파벳 선택지 (a/b/c/d) 로 정리, 사용자가
+`Q1=c, Q2=a, Q3=b` 같은 단답만 회신.
+
+- [x] root 에 `diag_screen_pattern.py` — argparse + 프로젝트 walk + JSX
+      컴포넌트 frequency + table/input 분류 + 컬럼 prop alias 통계 +
+      라벨 패턴 (prop / sibling-class / text-sibling / none) frequency
+- [x] Q1 그리드 / Q2 컬럼 prop / Q3 라벨 / Q4 entry 구조 4개 질문
+- [x] fixture 3종 (sibling-label / ag-grid columnDefs / RealGridReact +
+      커스텀 MyInput) 진단 결과 정확 식별 확인
+- [ ] PR + squash-merge
+
 ### 진행 중: 한국 SI sibling-label 패턴 + 진단 로그
 
 PR #226/#227 후속. 사용자 추가 케이스 — 검색 라벨이 별도 형제 span
