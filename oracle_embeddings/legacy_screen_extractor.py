@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v4"   # v4: search_panel / data_table_columns 가 파서 기반으로 채워짐 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v5"   # v5: data_table_columns 9컬럼 (필드명/설명/타입/필수/속성/UI타입/설명/동작) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -59,10 +59,17 @@ class ScreenEvent:
 
 @dataclass
 class TableColumn:
-    title: str = ""          # 사용자에게 보여지는 컬럼 헤더 (예: "LOT")
-    field: str = ""          # 실제 데이터 키 / dataIndex (예: "lotId")
-    width: str = ""          # 폭 (CSS / px / 숫자). 빈 값이면 hide 후보
+    title: str = ""          # 필드설명 (한글 header, 예: "조직명")
+    field: str = ""          # 필드명 (영문 dataIndex, 예: "org")
+    width: str = ""          # 폭
     hide: bool = False       # 명시적 hidden=true / display:none
+    # 화면정의서 9컬럼 표 양식
+    data_type: str = ""      # 타입 (String / Number / Date)
+    required: bool = False   # 필수여부
+    attribute: str = ""      # 속성 (I/O/R/E/H 조합, 예: "O/R")
+    ui_type: str = ""        # UI타입 (Text Field(Basic) / Dropdown / ...)
+    description: str = ""    # 설명 (반환값)
+    action: str = ""         # 동작 (예: "클릭시 [UI ID] 호출")
 
 
 @dataclass
@@ -167,18 +174,30 @@ React 코드 텍스트만 보고 추출.
 - prop 라벨이 비어있으면 형제 / ancestor 의 ``className`` 에 'label' 이
   포함된 span/div/label 의 text child 를 라벨로 사용.
 
-**DataTable 컬럼 추출 규칙**:
+**DataTable 컬럼 추출 규칙** (화면정의서 9컬럼 표 양식):
 - 컬럼 정의 prop 이름은 라이브러리별로 다름:
   ``columns`` (antd / react-table / generic) / ``columnDefs`` (ag-grid) /
-  ``schema`` (RealGrid 등) — 어느 prop 이든 발견 시 처리.
-- 컬럼 객체의 헤더 키도 ``header`` / ``title`` / ``label`` / ``headerName``
-  (ag-grid) 등 union 으로 인식. data 키도 ``dataIndex`` / ``field`` /
-  ``accessor`` / ``key`` / ``dataField`` 등.
-- title (헤더에 표시되는 한글 이름) 과 field (dataIndex / key — 실제 데이터
-  매핑 키, 영문) 둘 다 채우세요.
-- ``width`` 가 명시되지 않은 컬럼, ``hidden: true`` / ``hide: true`` /
-  ``visible: false`` / ``display: none`` 인 컬럼은 ``hide: true`` 로 표시.
-  나머지는 ``hide: false``.
+  ``schema`` (RealGrid 등). React class state ``this.state.columnDefs`` 도
+  처리 (state 객체 안 array 찾기).
+- 컬럼 객체의 헤더 키 union: ``header`` / ``title`` / ``label`` /
+  ``headerName`` (ag-grid). data 키 union: ``dataIndex`` / ``field`` /
+  ``accessor`` / ``key`` / ``dataField``.
+- 각 컬럼 한 행 — 9개 필드:
+  - ``field`` — 영문 데이터 키 (예: "org")
+  - ``title`` — 한글 필드설명 (예: "조직명")
+  - ``data_type`` — String / Number / Date / Boolean 등
+  - ``required`` — true/false (보통 그리드는 false, 검색폼은 true 많음)
+  - ``attribute`` — I/O/R/E/H 조합 한 글자씩 슬래시 구분 (예: "O/R" /
+    "O/E" / "H"). 기본은 "O/R" (Output + ReadOnly), ``editable: true`` →
+    "O/E", ``hidden: true`` / ``hide: true`` → "H"
+  - ``ui_type`` — "Text Field(Basic)" 기본, ``cellRenderer``/``cellEditor`` /
+    ``type`` 단서로 "Dropdown" / "DatePicker" / "Number Field" / "Checkbox" /
+    "Link/Button" 매핑
+  - ``description`` — ``description`` / ``tooltipField`` / ``comment``
+    prop 의 값 (반환값 / 데이터 설명). 없으면 빈 문자열
+  - ``action`` — ``onCellClicked`` / ``onClick`` 등의 동작 요약 (예:
+    "클릭시 [UI ID] 호출"). 없으면 빈 문자열
+  - ``hide`` — bool (위 ``attribute`` 'H' 와 redundancy)
 
 반환 schema (JSON):
 {
@@ -188,9 +207,15 @@ React 코드 텍스트만 보고 추출.
      "default": "기본값 설명", "options": "옵션/리스트 설명"}
   ],
   "data_table_columns": [
-    {"title": "컬럼 헤더 (사용자에게 보이는 이름, 예: LOT)",
-     "field": "실제 데이터 키 / dataIndex (예: lotId)",
-     "width": "폭 표현 (예: '100', '100px', '20%') — 없으면 빈 문자열",
+    {"field": "영문 데이터 키 / dataIndex (예: org)",
+     "title": "한글 필드설명 (예: 조직명)",
+     "data_type": "String | Number | Date | Boolean | ...",
+     "required": false,
+     "attribute": "O/R | O/E | H | I/O 등 슬래시 조합",
+     "ui_type": "Text Field(Basic) | Dropdown | DatePicker | Number Field | Checkbox | Link/Button",
+     "description": "반환값/데이터 설명 (예: 피평가자 조직 데이터)",
+     "action": "동작 요약 (예: 클릭시 [UI ID] 호출(브라우저팝업)) — 없으면 빈 문자열",
+     "width": "폭 표현 — 없으면 빈 문자열",
      "hide": false}
   ],
   "edit_mode_fields": [
@@ -450,12 +475,19 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
             for f in fields
         ]
     if cols:
+        from .screen_spec.extractors import _compose_attribute
         layout.data_table_columns = [
             TableColumn(
                 title=c.header or "",
                 field=c.data_key or "",
                 width=c.width or "",
                 hide=(not c.visible),
+                data_type=(c.data_type or "").capitalize() or "String",
+                required=c.required,
+                attribute=_compose_attribute(c.visible, c.editable),
+                ui_type=c.ui_type or "Text Field(Basic)",
+                description=c.description or "",
+                action=c.action or "",
             )
             for c in cols
         ]
@@ -571,6 +603,12 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                 field=str(c.get("field", "")),
                 width=str(c.get("width", "")),
                 hide=bool(c.get("hide", False)),
+                data_type=str(c.get("data_type", "")),
+                required=bool(c.get("required", False)),
+                attribute=str(c.get("attribute", "")),
+                ui_type=str(c.get("ui_type", "")),
+                description=str(c.get("description", "")),
+                action=str(c.get("action", "")),
             ))
         else:
             # 옛 형식 (단순 string) 호환
@@ -805,6 +843,10 @@ _HTML_TEMPLATE = """<!doctype html>
             background: #fafafa; min-width: 140px; }}
   .field .note {{ font-size: 11px; color: #999; margin-left: 4px; }}
   table {{ width: 100%; border-collapse: collapse; font-size: 13px; }}
+  table.grid-def th {{ font-size: 12px; background: #2c3e50; color: #fff; }}
+  table.grid-def td {{ vertical-align: top; }}
+  table.grid-def td.no {{ text-align: center; color: #777; width: 36px; }}
+  table.grid-def code {{ font-size: 12px; color: #2c3e50; }}
   th, td {{ border: 1px solid #ddd; padding: 6px 8px; text-align: left; }}
   th {{ background: #f0f0f0; }}
   td.placeholder {{ color: #bbb; font-style: italic; }}
@@ -934,52 +976,43 @@ def _render_search(fields: List[ScreenField]) -> str:
 
 
 def _render_table(cols: List[TableColumn]) -> str:
+    """화면정의서 표 양식 — NO / 필드명(영문) / 필드설명 / 타입 / 필수여부 /
+    속성 / UI타입 / 설명 / 동작 9컬럼.
+
+    hide 컬럼은 attribute='H' 로 표시하되 같은 표에 emit (별도 분리 X).
+    """
     if not cols:
         return ""
 
-    # hide 분류: 명시적 hide=true OR width 빈 값 (사용자 요청).
-    visible = [c for c in cols if (not c.hide) and c.width]
-    hidden = [c for c in cols if c.hide or not c.width]
-
-    out = "<section><h2>DataTable</h2>"
-
-    if visible:
-        title_row = "".join(f"<th>{_esc(c.title or c.field or '?')}</th>" for c in visible)
-        field_row = "".join(
-            f"<td class='field-row'><code>{_esc(c.field) or '<em>(no field)</em>'}</code></td>"
-            for c in visible
+    headers = ["NO", "필드명(영문)", "필드설명", "타입", "필수여부",
+               "속성", "UI타입", "설명", "동작"]
+    head_row = "".join(f"<th>{h}</th>" for h in headers)
+    body_rows = []
+    for i, c in enumerate(cols, start=1):
+        attribute = c.attribute or ("H" if c.hide else "O/R")
+        ui = c.ui_type or "Text Field(Basic)"
+        dtype = (c.data_type or "String").capitalize()
+        required = "필수" if c.required else ""
+        row = (
+            f"<tr>"
+            f"<td class='no'>{i}</td>"
+            f"<td><code>{_esc(c.field) or '<em>(no field)</em>'}</code></td>"
+            f"<td>{_esc(c.title)}</td>"
+            f"<td>{_esc(dtype)}</td>"
+            f"<td>{_esc(required)}</td>"
+            f"<td>{_esc(attribute)}</td>"
+            f"<td>{_esc(ui)}</td>"
+            f"<td>{_esc(c.description)}</td>"
+            f"<td>{_esc(c.action)}</td>"
+            f"</tr>"
         )
-        sample = "".join("<td class='placeholder'>...</td>" for _ in visible)
-        sample_rows = "".join(f"<tr>{sample}</tr>" for _ in range(3))
-        out += (
-            f"<table><thead><tr>{title_row}</tr></thead>"
-            f"<tbody><tr>{field_row}</tr>{sample_rows}</tbody></table>"
-        )
-
-    if hidden:
-        items = []
-        for c in hidden:
-            label_parts = []
-            if c.title:
-                label_parts.append(_esc(c.title))
-            if c.field:
-                label_parts.append(f"<code>{_esc(c.field)}</code>")
-            note = " ".join(label_parts) or "(unknown)"
-            if c.hide and not c.width:
-                reason = "hide=true, no width"
-            elif c.hide:
-                reason = "hide=true"
-            else:
-                reason = "no width"
-            items.append(f"<li>{note} <small>({reason})</small></li>")
-        out += (
-            "<div class='hidden-cols'><strong>Hide 항목 "
-            f"({len(hidden)}개):</strong><ul>"
-            + "".join(items) + "</ul></div>"
-        )
-
-    out += "</section>"
-    return out
+        body_rows.append(row)
+    return (
+        "<section><h2>DataTable (그리드 정의)</h2>"
+        f"<table class='grid-def'><thead><tr>{head_row}</tr></thead>"
+        f"<tbody>{''.join(body_rows)}</tbody></table>"
+        "</section>"
+    )
 
 
 def _render_edit(fields: List[ScreenField]) -> str:

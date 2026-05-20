@@ -331,8 +331,60 @@ _COL_HEADER_KEYS = ("header", "title", "label", "headerName", "text", "headerTex
 _COL_DATA_KEYS = ("dataIndex", "field", "accessor", "key", "name", "dataField")
 _COL_WIDTH_KEYS = ("width", "minWidth", "maxWidth", "flex")
 _COL_HIDDEN_KEYS = ("hidden", "visible", "show", "display")
-_COL_TYPE_KEYS = ("type", "dataType", "renderType")
+_COL_TYPE_KEYS = ("type", "dataType", "renderType", "cellDataType")
 _COL_SORT_KEYS = ("sorter", "sortable", "sort", "allowSort")
+_COL_DESC_KEYS = ("description", "tooltipField", "tooltip", "headerTooltip",
+                  "comment", "note")
+_COL_ACTION_KEYS = ("onCellClicked", "onCellDoubleClicked", "onClick",
+                    "action", "clickAction")
+
+
+def _infer_ui_type(d: dict[str, str]) -> str:
+    """ag-grid columnDef object → UI 타입 라벨.
+
+    cellRenderer / cellEditor / type / cellDataType 우선 매핑, 없으면
+    "Text Field(Basic)" default.
+    """
+    cr = (d.get("cellRenderer") or "").strip().strip("'\"`")
+    ce = (d.get("cellEditor") or "").strip().strip("'\"`")
+    t = (_first_present(d, _COL_TYPE_KEYS) or "").strip().strip("'\"`").lower()
+    crl = cr.lower(); cel = ce.lower()
+    # cellRenderer / cellEditor 휴리스틱
+    if "checkbox" in crl or "checkbox" in cel:
+        return "Checkbox"
+    if "select" in crl or "select" in cel or "combo" in crl or "combo" in cel:
+        return "Dropdown"
+    if "date" in crl or "date" in cel:
+        return "DatePicker"
+    if "number" in crl or "number" in cel or "numeric" in crl or "numeric" in cel:
+        return "Number Field"
+    if "link" in crl or "anchor" in crl or "button" in crl:
+        return "Link/Button"
+    # type / cellDataType 휴리스틱
+    if t in ("number", "numericcolumn", "numeric"):
+        return "Number Field"
+    if t in ("date", "datestring", "datetime"):
+        return "DatePicker"
+    if t in ("boolean", "bool"):
+        return "Checkbox"
+    # cellRenderer / cellEditor 가 있긴 한데 매핑 안 된 케이스 — 원본 표기
+    if cr:
+        return cr
+    if ce:
+        return ce
+    return "Text Field(Basic)"
+
+
+def _compose_attribute(visible: bool, editable: bool) -> str:
+    """필수여부/속성 — I/O/R/E/H 조합.
+
+    hide → "H" (단독), editable=true → "O/E", default → "O/R".
+    그리드는 기본 output (백엔드 데이터 표시), input 컬럼 (검색폼) 은
+    별도 form_fields 트랙.
+    """
+    if not visible:
+        return "H"
+    return "O/E" if editable else "O/R"
 
 
 def _parse_object_literal(node, source: bytes) -> dict[str, str]:
@@ -563,6 +615,12 @@ def extract_grid_columns(closure: ScreenClosure,
                     visible=_is_visible(d),
                     sortable=_truthy(_first_present(d, _COL_SORT_KEYS) or ""),
                     source_file=f.rel_path,
+                    required=_truthy(d.get("required", "")),
+                    editable=_truthy(d.get("editable", "")),
+                    ui_type=_infer_ui_type(d),
+                    description=_strip_quotes(
+                        _first_present(d, _COL_DESC_KEYS) or ""),
+                    action=_strip_quotes(_first_present(d, _COL_ACTION_KEYS) or ""),
                 ))
     return cols
 
@@ -598,7 +656,10 @@ def _first_present(d: dict[str, str], keys) -> str | None:
 
 
 def _is_visible(d: dict[str, str]) -> bool:
-    """hidden:true / visible:false / show:false / display:'none' → False, else True."""
+    """hide:true (ag-grid) / hidden:true / visible:false / show:false /
+    display:'none' → False, else True."""
+    if "hide" in d and _truthy(d["hide"]):
+        return False
     if "hidden" in d and _truthy(d["hidden"]):
         return False
     if "visible" in d and not _truthy(d["visible"]):

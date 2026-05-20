@@ -27,13 +27,19 @@ class FormField:
 class GridColumn:
     """그리드 컬럼 한 건 (columns=[{...}] 배열의 element)."""
     order: int                        # 순번
-    header: str                       # 표시 헤더
+    header: str                       # 표시 헤더 (= 필드설명)
     data_key: str                     # 물리명 / 매핑 (dataIndex / field / accessor)
     data_type: str                    # string / number / date / ... (있으면)
     width: str                        # px 또는 '*'
     visible: bool                     # hidden:true / visible:false / display:none
     sortable: bool                    # sorter / sortable
     source_file: str
+    # 화면정의서 표 양식 (ag-grid columnDef 추가 prop 매핑)
+    required: bool = False            # 필수 여부 (custom prop)
+    editable: bool = False            # editable: true → 'E', false → 'R'
+    ui_type: str = ""                 # cellRenderer / cellEditor → "Text Field(Basic)" 등
+    description: str = ""             # description / tooltipField (반환값 설명)
+    action: str = ""                  # onCellClicked → "클릭시 X 호출" 등
 
 
 @dataclass
