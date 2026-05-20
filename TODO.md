@@ -23,19 +23,27 @@
 
 ## 0. 공통 / 인프라
 
-### 진행 중: `docs` — README → 단일 HTML 설명서 (사이드바 + 검색)
+### 진행 중: `docs` — 기능 카탈로그 형태로 재설계
 
-README.md 가 1685줄로 비대해져서 GitHub 렌더로 탐색 어려움. 좌측 사이드바
-TOC + 검색 + 다크모드를 갖춘 **단일 HTML 파일** 빌더 추가. 폐쇄망 친화
-위해 stdlib 만 사용 — CDN/외부 라이브러리 의존 0.
+기존 빌더가 README 를 그냥 한 페이지에 다 쏟아붓는 형태였는데 사용자가
+**기능 목록 → 클릭 → 상세** 의 진짜 설명서 UX 를 원함. 좌측 사이드바
+카테고리별 커맨드 + 우측 상세 패널 + JS 라우팅 (#cmd/<name>, #topic/<id>)
+형태로 리팩토링.
 
-- [x] `oracle_embeddings/docs_builder.py` — 자체 markdown→HTML 파서
-      (H1-H4 / 표 / 코드펜스 / 리스트 / blockquote / 인라인 코드·링크·
-      bold·italic) + inline CSS/JS 템플릿 (sidebar / search / theme)
-- [x] `main.py docs` 커맨드 — `--readme` / `--output` / `--title`
-- [x] 첫 빌드: README 1685줄 → `docs/site/index.html` 128 KB,
-      H2=9 H3=20 표=20 코드블록=54 모두 정상 변환
-- [x] README 상단에 HTML 설명서 안내 1 줄
+- [x] README 의 `## 기능 요약` 표 파싱 → 25개 커맨드 메타 (name / desc /
+      oracle / llm)
+- [x] `## 산출물 경로 규약` 표 파싱 → 커맨드별 경로 lookup
+- [x] `### N. ...` H3 섹션 번호 별 본문 추출 → 커맨드 detail 매핑
+      (`SECTION_MAP`)
+- [x] 카테고리 그룹 (`CATEGORY_MAP`) — 스키마 / 용어 / AS-IS / 마이그레
+      이션 4 종 분류
+- [x] 토픽 (설치 / 설정 / 워크플로우 / 산출물 / 프로젝트 구조 / ERD 렌더링)
+      별도 사이드바 그룹
+- [x] HTML 템플릿: brand / search / nav / 메인 패널 (배지·산출물경로
+      ·detail HTML) / 홈 카드 / 모바일 햄버거
+- [x] JS hash routing + 검색 필터링 + 테마 토글
+- [x] embed/grid-labels 같이 README 에 별도 섹션 없는 커맨드는 graceful
+      fallback (`--help` 안내 1줄)
 
 ### 진행 중: 출력 경로 규약 통일 — `output/<영역>/<일자>/<파일>`
 
