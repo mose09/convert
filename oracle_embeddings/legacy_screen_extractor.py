@@ -153,7 +153,27 @@ _SYSTEM_PROMPT = """당신은 React 화면 분석 전문가입니다. 주어진 
 화면 layout / search_panel / data_table_columns 추출과는 무관 — 그 필드들은
 React 코드 텍스트만 보고 추출.
 
+**검색 필드 라벨 추출 규칙** (한국 SI 흔한 패턴):
+- 라벨은 JSX prop (``label`` / ``placeholder`` / ``title``) 으로 직접 들어
+  오지 않고, 형제 element 의 text child 인 경우가 많음. 예::
+
+      <div className="search-item">
+        <span className="search-label">FAB</span>
+        <Select defaultValue="Select 하세요." onChange={...}/>
+      </div>
+
+  → 라벨은 ``"FAB"`` (형제 ``<span className="search-label">`` 의 text).
+  ``"Select 하세요."`` 는 default 값이지 라벨이 아님 — **혼동 금지**.
+- prop 라벨이 비어있으면 형제 / ancestor 의 ``className`` 에 'label' 이
+  포함된 span/div/label 의 text child 를 라벨로 사용.
+
 **DataTable 컬럼 추출 규칙**:
+- 컬럼 정의 prop 이름은 라이브러리별로 다름:
+  ``columns`` (antd / react-table / generic) / ``columnDefs`` (ag-grid) /
+  ``schema`` (RealGrid 등) — 어느 prop 이든 발견 시 처리.
+- 컬럼 객체의 헤더 키도 ``header`` / ``title`` / ``label`` / ``headerName``
+  (ag-grid) 등 union 으로 인식. data 키도 ``dataIndex`` / ``field`` /
+  ``accessor`` / ``key`` / ``dataField`` 등.
 - title (헤더에 표시되는 한글 이름) 과 field (dataIndex / key — 실제 데이터
   매핑 키, 영문) 둘 다 채우세요.
 - ``width`` 가 명시되지 않은 컬럼, ``hidden: true`` / ``hide: true`` /
@@ -337,6 +357,59 @@ def _serialize_closure_md(closure) -> Optional[str]:
     except Exception as e:
         logger.warning("closure serialize 실패: %s", e)
         return None
+
+
+def _dump_screen_diagnostic(rel: str, closure) -> None:
+    """search_panel / data_table_columns 둘 다 0 인 화면 — 사용자가 직접
+    원인 추적할 수 있도록 closure 안 JSX 후보 1줄 dump.
+
+    출력: ``[empty] <rel>: closure_files=N, table_candidates=[X(file:line) ...],
+    input_candidates=[Y(file:line) ...]`` — 후보 tag 이름이 default
+    패턴에 없으면 ``patterns.yaml`` 에 추가하면 됨.
+    """
+    try:
+        from .legacy_react_ast import parse_file
+    except Exception:
+        return
+    table_set = set(("Table", "DataTable", "Grid", "DataGrid", "AgGridReact",
+                     "MaterialTable"))
+    input_set = set(("input", "TextField", "TextInput", "Input", "Select",
+                     "Dropdown", "DatePicker"))
+    # closure 안 JSX tag 들 — table-like / input-like 후보만 count
+    table_cands: list[str] = []
+    input_cands: list[str] = []
+    other_cap_cands: dict[str, int] = {}
+    for f in closure.files:
+        try:
+            tree, source, _ = parse_file(f.abs_path)
+        except Exception:
+            continue
+        if tree is None:
+            continue
+        from .legacy_react_ast import find_by_type, child_by_field, text_of
+        for n in find_by_type(tree.root_node,
+                              {"jsx_opening_element",
+                               "jsx_self_closing_element"}):
+            name_node = child_by_field(n, "name")
+            if name_node is None:
+                continue
+            tag = text_of(name_node, source).strip()
+            if not tag:
+                continue
+            line = n.start_point[0] + 1
+            if tag in table_set:
+                table_cands.append(f"{tag}({f.rel_path}:{line})")
+            elif tag in input_set:
+                input_cands.append(f"{tag}({f.rel_path}:{line})")
+            elif tag and tag[0].isupper():
+                # 대문자 시작 컴포넌트 — patterns.yaml 후보 (frequency 만)
+                other_cap_cands[tag] = other_cap_cands.get(tag, 0) + 1
+    others_top = sorted(other_cap_cands.items(), key=lambda x: -x[1])[:5]
+    others_str = ", ".join(f"{n}({c})" for n, c in others_top) if others_top else "(none)"
+    print(f"  [empty] {rel}: closure_files={len(closure.files)}, "
+          f"tables={table_cands or '(none)'}, "
+          f"inputs={(input_cands[:5] + ['...']) if len(input_cands) > 5 else (input_cands or ['(none)'])}, "
+          f"other_custom_top5=[{others_str}]")
 
 
 def _parser_fill_layout(layout: "ScreenLayout", closure,
@@ -604,6 +677,7 @@ def extract_screen_layouts(
     parser_fields_total = 0
     parser_grids_total = 0
     parser_screens = 0
+    empty_screens = 0
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
     sample_image = _find_flowchart_sample()
@@ -682,6 +756,14 @@ def extract_screen_layouts(
             parser_fields_total += f_n
             parser_grids_total += c_n
 
+        # 진단: 파서 + LLM 모두 0 인 화면 — 사용자가 "그리드/조회영역 안
+        # 나옴" 의심할 때 어디서 빠졌는지 보이도록 closure 안 JSX 후보를
+        # 1줄 dump. closure 가 None 이면 (tree-sitter 미설치) skip.
+        if (not layout.search_panel and not layout.data_table_columns
+                and closure_obj is not None):
+            empty_screens += 1
+            _dump_screen_diagnostic(rel, closure_obj)
+
         out[rel] = layout
         _cache_put(cache_key, layout, use_cache)
 
@@ -694,9 +776,10 @@ def extract_screen_layouts(
         f"parser_fields={parser_fields_total}, parser_grids={parser_grids_total}"
         if parser_screens else ""
     )
+    empty_stats = f", empty={empty_screens}" if empty_screens else ""
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
           f"fallback={fallback_calls}, total={len(out)}"
-          f"{closure_stats}{parser_stats}")
+          f"{closure_stats}{parser_stats}{empty_stats}")
     return out
 
 

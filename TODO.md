@@ -119,6 +119,26 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: 한국 SI sibling-label 패턴 + 진단 로그
+
+PR #226/#227 후속. 사용자 추가 케이스 — 검색 라벨이 별도 형제 span
+(`<span className="search-label">FAB</span> + <Select defaultValue="Select
+하세요." .../>`) 에 있을 때 파서가 label="" 로 추출 → LLM 이 default 값을
+라벨로 오인. 그리드 못 잡는 화면에서 어디서 빠지는지 visibility 부족.
+
+- [x] `extract_form_fields` — `_sibling_label()` 휴리스틱 추가 (1-2단계
+      ancestor 안에서 ``className`` 에 'label' 포함된 형제 element 의
+      text child 를 라벨로). props label 비어있을 때만.
+- [x] LLM `_SYSTEM_PROMPT` — 한국 SI 형제 라벨 컨벤션 hint + ag-grid
+      columnDefs / RealGrid schema 등 컬럼 prop alias 명시 + default 를
+      라벨로 혼동 금지 룰
+- [x] `_dump_screen_diagnostic` — search/grid 둘 다 0 인 화면에서 closure
+      안 발견된 table-like / input-like 후보 + 커스텀 대문자 컴포넌트
+      top5 frequency 콘솔 1줄 dump (사용자가 patterns.yaml 에 추가할
+      후보 즉시 식별)
+- [x] 통계 로그에 `empty=N` 추가
+- [ ] PR + squash-merge
+
 ### 진행 중: `extract-screen-layout` 출력 경로 — `<reponame>_<시분초>/` 평탄화
 
 `screens/<시분초>/src/*.html` → `screens/<reponame>_<시분초>/*.html`.
