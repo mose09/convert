@@ -119,6 +119,16 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: `extract-screen-layout` 출력 경로 — `<reponame>_<시분초>/` 평탄화
+
+`screens/<시분초>/src/*.html` → `screens/<reponame>_<시분초>/*.html`.
+`write_screen_html_files` 의 top-folder 분리 (file_rel 첫 segment) 제거 +
+frontend_dir basename 을 timestamp dir 에 prefix.
+
+- [x] `main.py` `_run_frontend_only` — `screens_dir` 에 reponame 합성
+- [x] `oracle_embeddings/legacy_analyzer.py` — 동일 합성
+- [x] `write_screen_html_files` — top-folder 분리 제거, flat 저장
+
 ### 진행 중: catch-all SPA — Layer 2 base prefix 매칭 fallback
 
 사용자 환경 4: 라우터가 메인 (Layer 2 routes/index.js) 에만 1개 존재하고

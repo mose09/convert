@@ -1848,7 +1848,12 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
         if layouts:
             from datetime import datetime as _dt
             ts = _dt.now().strftime("%H%M%S")
-            screens_dir = os.path.join(screens_root, "screens", ts)
+            reponame = (
+                re.sub(r"[^A-Za-z0-9_.-]+", "_",
+                       os.path.basename(frontend_dir.rstrip(os.sep) or "frontend"))
+                or "frontend"
+            )
+            screens_dir = os.path.join(screens_root, "screens", f"{reponame}_{ts}")
             written = screen_ext.write_screen_html_files(screens_dir, layouts)
             print(f"  screen layout: {len(written)} HTML mockup → {screens_dir}")
             if getattr(args, "export_flowchart_pptx", False):
