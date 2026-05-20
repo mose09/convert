@@ -28,8 +28,9 @@ _HEADERS = {
             "팝업 ref 수"],
     "검색조건": ["화면명", "순번", "라벨", "필드명", "타입",
                 "필수", "기본값", "검증규칙", "소스파일"],
-    "그리드컬럼": ["화면명", "순번", "헤더", "물리명", "데이터타입",
-                  "너비", "표시", "정렬", "소스파일"],
+    "그리드컬럼": ["화면명", "NO", "필드명(영문)", "필드설명", "타입",
+                  "필수여부", "속성", "UI타입", "설명", "동작",
+                  "너비", "정렬", "소스파일"],
     "탭": ["화면명", "순번", "탭명", "컨텐츠 컴포넌트", "소스파일"],
     "이벤트": ["화면명", "트리거(라벨)", "종류", "핸들러", "API 호출",
               "화면 호출", "비고", "소스파일"],
@@ -64,10 +65,15 @@ def _rows_for_form_fields(s: ScreenSpec):
 
 
 def _rows_for_grid_columns(s: ScreenSpec):
+    from .extractors import _compose_attribute
     for c in s.grid_columns:
-        yield [s.screen_id, c.order, c.header, c.data_key, c.data_type,
-               c.width, "Y" if c.visible else "N",
-               "Y" if c.sortable else "N", c.source_file]
+        attribute = _compose_attribute(c.visible, c.editable)
+        yield [s.screen_id, c.order, c.data_key, c.header, c.data_type,
+               "필수" if c.required else "",
+               attribute,
+               c.ui_type or "Text Field(Basic)",
+               c.description, c.action,
+               c.width, "Y" if c.sortable else "N", c.source_file]
 
 
 def _rows_for_tabs(s: ScreenSpec):

@@ -119,6 +119,32 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: 그리드 HTML/xlsx 9컬럼 화면정의서 양식
+
+PR #231 후속 — 그리드 추출은 되는데 사용자가 화면정의서 표 양식
+요청. 9컬럼: NO / 필드명(영문) / 필드설명 / 타입 / 필수여부 / 속성 /
+UI타입 / 설명 / 동작.
+
+- [x] `GridColumn` 모델 + `extract_grid_columns` 매핑에 required /
+      editable / ui_type / description / action 5개 필드 추가 (default
+      값으로 backwards-compat)
+- [x] `_infer_ui_type()` — cellRenderer / cellEditor / type / cellDataType
+      휴리스틱 union 매핑 (Dropdown / DatePicker / Number Field /
+      Checkbox / Link-Button / Text Field(Basic))
+- [x] `_compose_attribute()` — visible + editable → I/O/R/E/H 조합
+      (기본 "O/R", editable=true → "O/E", hide → "H")
+- [x] `_is_visible` 에 ag-grid `hide` 키도 인식 추가
+- [x] `_COL_DESC_KEYS` / `_COL_ACTION_KEYS` alias union
+- [x] `legacy_screen_extractor.TableColumn` 7개 필드 추가
+- [x] `_render_table` — 9컬럼 표 (NO/영문/한글/타입/필수/속성/UI/설명/동작)
+- [x] `_SYSTEM_PROMPT` 9컬럼 schema + ag-grid prop 매핑 가이드
+- [x] `_parse_layout_dict` LLM 응답 새 필드 파싱
+- [x] `screen-spec` xlsx "그리드컬럼" 시트 13컬럼 (기존 9 → 새 양식)
+- [x] `SCREEN_SCHEMA_VERSION v4 → v5` 캐시 무효화
+- [x] fixture (`org/score/evalDate/remark` 4컬럼 RichScreen) E2E +
+      sibling label / identifier const / state.columnDefs 회귀 OK
+- [ ] PR + squash-merge
+
 ### 진행 중: React class state.columnDefs 패턴 해석
 
 PR #229/#230 진단 스크립트로 사용자 케이스 확정 — `<AgGridReact
