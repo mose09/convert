@@ -366,7 +366,10 @@ def extract_grid_columns(closure: ScreenClosure,
             if tag not in table_comps:
                 continue
             attrs = _jsx_attributes(el, source)
-            cols_expr = attrs.get("columns") or attrs.get("schema") or ""
+            # ag-grid: columnDefs / antd, generic: columns / RealGrid 등: schema.
+            # 라이브러리별 prop 이름 union.
+            cols_expr = (attrs.get("columns") or attrs.get("columnDefs")
+                         or attrs.get("schema") or "")
             if not cols_expr:
                 # 컬럼 정의가 children (<TableColumn ...> 형태) 인 케이스 처리
                 cols.extend(_extract_table_column_children(el, source, f.rel_path,
@@ -377,6 +380,7 @@ def extract_grid_columns(closure: ScreenClosure,
             # _jsx_attributes 가 value 만 string 으로 줘서 노드 손실
             # → 직접 attribute AST 에서 expression 노드 재추출
             cols_value_node = (_find_attr_expression(el, "columns", source)
+                               or _find_attr_expression(el, "columnDefs", source)
                                or _find_attr_expression(el, "schema", source))
             if cols_value_node is None:
                 continue
