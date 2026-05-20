@@ -119,6 +119,24 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: React class state.columnDefs 패턴 해석
+
+PR #229/#230 진단 스크립트로 사용자 케이스 확정 — `<AgGridReact
+columnDefs={this.state.columnDefs}/>` 패턴. React class component 의
+``state = { columnDefs: [...] }`` 또는 ``constructor`` 의 ``this.state
+= { columnDefs: [...] }`` 안에서 array literal 을 추출해야 함. 우리
+파서가 array literal / identifier 만 잡고 member_expression 미지원이라
+0건.
+
+- [x] `_member_chain()` — member_expression chain → 식별자 list
+- [x] `_resolve_class_state_key()` — class field 또는 constructor 의
+      assignment 에서 state 안 key 의 RHS array literal 노드
+- [x] `_object_pair_value()` — object literal key 검색 헬퍼
+- [x] `_resolve_array_in_closure` 에 member_expression 분기 추가
+- [x] fixture 2종 (class field state / constructor this.state) E2E OK
+- [x] 회귀 (sibling label / identifier const) OK
+- [ ] PR + squash-merge
+
 ### 진행 중: `diag_screen_pattern.py` — 화면 패턴 자가진단 스크립트
 
 PR #228 후속. 사용자 환경에서 PR #226~#228 fix 후에도 그리드 / 조회영역

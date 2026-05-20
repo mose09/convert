@@ -370,11 +370,101 @@ def _resolve_array_of_objects(value_node, tree, source: bytes
     return []
 
 
+def _member_chain(node, source: bytes) -> list[str]:
+    """member_expression chain → ``['this', 'state', 'columnDefs']``.
+
+    예: ``this.state.columnDefs`` / ``state.columnDefs`` /
+    ``this.props.cols`` 모두 leaf 부터 root 까지 식별자 chain 으로 변환.
+    """
+    parts: list[str] = []
+    cur = node
+    while cur is not None and cur.type == "member_expression":
+        prop = child_by_field(cur, "property")
+        if prop is None:
+            break
+        parts.append(text_of(prop, source).strip())
+        cur = child_by_field(cur, "object")
+    if cur is not None:
+        parts.append(text_of(cur, source).strip())
+    parts.reverse()
+    return parts
+
+
+def _resolve_class_state_key(key_name: str, tree, source: bytes):
+    """class 안 ``state = {...}`` 또는 ``constructor`` 의 ``this.state = {...}``
+    안에서 ``key_name`` 키의 RHS 노드 반환. 못 찾으면 None.
+
+    React class component 의 흔한 패턴::
+
+        class Screen extends React.Component {
+          state = { columnDefs: [...] };          ← class field
+          // 또는
+          constructor(props) {
+            super(props);
+            this.state = { columnDefs: [...] };   ← constructor assignment
+          }
+        }
+    """
+    for cls in find_by_type(tree.root_node, "class_declaration"):
+        body = next((c for c in cls.children if c.type == "class_body"), None)
+        if body is None:
+            continue
+        for member in body.children:
+            # 1) class field: state = {...} 또는 public state: State = {...}
+            if member.type in ("field_definition", "public_field_definition",
+                               "class_property"):
+                nm = child_by_field(member, "name") or child_by_field(member, "property")
+                if nm is None:
+                    continue
+                if text_of(nm, source).strip() != "state":
+                    continue
+                val = child_by_field(member, "value")
+                hit = _object_pair_value(val, key_name, source)
+                if hit is not None:
+                    return hit
+            # 2) method: constructor() { this.state = {...} }
+            if member.type == "method_definition":
+                nm = child_by_field(member, "name")
+                if nm is None or text_of(nm, source).strip() != "constructor":
+                    continue
+                for asn in find_by_type(member, "assignment_expression"):
+                    left = child_by_field(asn, "left")
+                    if left is None or left.type != "member_expression":
+                        continue
+                    if _member_chain(left, source)[-2:] != ["this", "state"]:
+                        continue
+                    right = child_by_field(asn, "right")
+                    hit = _object_pair_value(right, key_name, source)
+                    if hit is not None:
+                        return hit
+    return None
+
+
+def _object_pair_value(obj_node, key_name: str, source: bytes):
+    """object literal 안 ``key_name: value`` 의 value 노드 반환. 못 찾으면 None."""
+    if obj_node is None or obj_node.type != "object":
+        return None
+    for pair in obj_node.children:
+        if pair.type != "pair":
+            continue
+        k = child_by_field(pair, "key")
+        if k is None:
+            continue
+        kn = text_of(k, source).strip().strip("'\"`")
+        if kn == key_name:
+            return child_by_field(pair, "value")
+    return None
+
+
 def _resolve_array_in_closure(value_node, tree, source: bytes,
                               closure: ScreenClosure, current_abs_path
                               ) -> list[tuple[Any, bytes]]:
     """``columns={X}`` 의 X 가 다른 파일에서 import 한 const 일 때, closure
     전체를 훑어 ``[export ]const X = [...]`` 정의를 찾아 array 반환.
+
+    또한 ``columnDefs={this.state.columnDefs}`` 처럼 React class state 에서
+    동적 할당된 케이스도 같은 파일 class 안에서 ``state = { columnDefs: [...] }``
+    또는 ``constructor`` 의 ``this.state = {...}`` 를 찾아 해석.
 
     Returns list of ``(object_node, source_bytes)`` pairs — object 노드와
     그 노드가 속한 파일의 source bytes (downstream parse 에 필요).
@@ -385,6 +475,16 @@ def _resolve_array_in_closure(value_node, tree, source: bytes,
         return []
     if value_node.type == "array":
         return [(c, source) for c in value_node.children if c.type == "object"]
+    # member_expression: this.state.X / state.X — class state 에서 해석
+    if value_node.type == "member_expression":
+        chain = _member_chain(value_node, source)
+        # this.state.X / state.X 둘 다 지원
+        if len(chain) >= 2 and chain[-2] == "state":
+            key = chain[-1]
+            resolved = _resolve_class_state_key(key, tree, source)
+            if resolved is not None and resolved.type == "array":
+                return [(c, source) for c in resolved.children if c.type == "object"]
+        return []
     if value_node.type != "identifier":
         return []
     ident = text_of(value_node, source).strip()
