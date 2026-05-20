@@ -61,6 +61,13 @@ DEFAULT_SEARCH_CONTAINERS = (
     "filter-area", "filter-section", "criteria-area",
 )
 
+# 검색 1개 조건 단위 className — search-item 이 있으면 default input pattern
+# 의존 없이 item 단위로 1 field 추출 (custom Popover 등 자동 흡수).
+DEFAULT_SEARCH_ITEMS = (
+    "search-item", "filter-item", "criteria-item",
+    "search-row", "form-item", "form-row",
+)
+
 # 드롭다운 자식 Option 컴포넌트 이름
 DEFAULT_OPTION_COMPONENTS = ("Option", "MenuItem", "SelectOption", "OptGroup",
                               "option")
@@ -282,6 +289,119 @@ def _node_contains(parent, child) -> bool:
     return parent.start_byte <= child.start_byte and child.end_byte <= parent.end_byte
 
 
+def _has_class_token(cls: str, tokens) -> bool:
+    """공백 분리 정확 토큰 매칭. ``"search-item"`` 토큰이 ``"search-item-area"``
+    의 substring 매치로 잡히는 false-positive 방지."""
+    parts = cls.lower().split()
+    return any(t.lower() in parts for t in tokens)
+
+
+def _find_search_items(tree, source: bytes, item_class_tokens) -> list:
+    """``className`` 에 search-item / filter-item 토큰 포함된 jsx_element."""
+    out = []
+    for n in find_by_type(tree.root_node, "jsx_element"):
+        opening = next((c for c in n.children if c.type == "jsx_opening_element"), None)
+        if opening is None:
+            continue
+        attrs = _jsx_attributes(opening, source)
+        cls = attrs.get("className") or ""
+        if not cls:
+            continue
+        if _has_class_token(cls, item_class_tokens):
+            out.append(n)
+    return out
+
+
+_INPUT_EXCLUDE_TAGS = {"Button", "IconButton", "LinkButton"}
+
+
+def _find_label_in_item(item_node, source: bytes) -> tuple[str, str]:
+    """search-item descendant 중 className 에 'label' substring 포함된
+    element 의 text child. ``search-label`` / ``form-label`` 등 매칭.
+    Returns (text, full_classname). classname split 에 'required' 있으면
+    호출자가 필수 인식.
+    """
+    for n in walk(item_node):
+        if n is item_node:
+            continue
+        if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+            continue
+        attrs = _jsx_attributes(n, source)
+        cls = (attrs.get("className") or "").lower()
+        if "label" not in cls:
+            continue
+        parent_el = n.parent if n.type == "jsx_opening_element" else n
+        if parent_el is None or parent_el.type != "jsx_element":
+            continue
+        for c in parent_el.children:
+            if c.type == "jsx_text":
+                t = text_of(c, source).strip()
+                if t:
+                    return t, cls
+    return "", ""
+
+
+def _find_input_in_item(item_node, source: bytes):
+    """search-item descendant 중 첫 대문자-시작 컴포넌트 (Button / 라벨 wrap
+    제외). default input pattern 의존 없음 — Popover / Custom* 등 자동
+    흡수. Returns (element_node, tag) 또는 (None, "")."""
+    for n in walk(item_node):
+        if n is item_node:
+            continue
+        if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+            continue
+        nm = child_by_field(n, "name")
+        if nm is None:
+            continue
+        tag = text_of(nm, source).strip()
+        if not tag or not tag[0].isupper():
+            continue
+        if tag in _INPUT_EXCLUDE_TAGS:
+            continue
+        attrs = _jsx_attributes(n, source)
+        cls = (attrs.get("className") or "").lower()
+        if "label" in cls:
+            continue
+        return n, tag
+    return None, ""
+
+
+def _extract_field_from_item(item_node, source: bytes,
+                             option_comps,
+                             rel_path: str, order: int):
+    """1 search-item → 1 FormField. label 은 className 'label' 의 text,
+    input 은 item 안 첫 jsx component (label wrap 제외).
+    """
+    label_text, label_cls = _find_label_in_item(item_node, source)
+    input_el, input_tag = _find_input_in_item(item_node, source)
+    if input_el is None and not label_text:
+        return None
+    attrs = _jsx_attributes(input_el, source) if input_el is not None else {}
+    sibling_required = "required" in label_cls.split()
+    return FormField(
+        order=order,
+        label=(label_text
+               or attrs.get("label")
+               or attrs.get("placeholder")
+               or attrs.get("title")
+               or attrs.get("aria-label")
+               or ""),
+        name=(attrs.get("name") or attrs.get("id") or attrs.get("field") or ""),
+        field_type=(_classify_field_type(input_tag, attrs)
+                    if input_tag else ""),
+        required=(attrs.get("required") == "true"
+                  or "required" in (attrs.get("className") or "").lower().split()
+                  or sibling_required),
+        default=(attrs.get("defaultValue") or attrs.get("value") or ""),
+        validation=_format_inline_validation(attrs),
+        source_file=rel_path,
+        jsx_tag=input_tag,
+        events=_extract_event_props(attrs),
+        options=(_extract_dropdown_options(input_el, source, option_comps)
+                 if input_el is not None else ""),
+    )
+
+
 def _extract_event_props(attrs: dict[str, str]) -> str:
     """``onChange`` / ``onClick`` / ``onBlur`` 등 React event prop 만 모아
     ``"onChange / onClick"`` 형식. boolean prop 으로 잡힌 ``on*`` 도 포함."""
@@ -375,21 +495,27 @@ def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
     """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트.
 
-    ``<section className="search-area">`` (또는 alias) 가 closure 안에
-    하나라도 있으면 그 컨테이너 안 input 만 추출 (검색영역 경계).
-    없으면 기존처럼 전체 input (회귀 0).
+    추출 우선순위:
+      1. ``<section className="search-area">`` (또는 alias) 안의
+         ``<div className="search-item">`` 단위로 1 item = 1 field —
+         default input pattern 의존 없음 (Popover / Custom* 등 자동 흡수).
+      2. search-item 없으면 search-area 안의 default input pattern.
+      3. search-area 도 없으면 closure 전체의 default input pattern
+         (회귀 0).
     """
     pat = _patterns_section(patterns)
     input_comps = _comp_list(pat, "input_components", DEFAULT_INPUT_COMPONENTS)
     container_tokens = _comp_list(pat, "search_containers",
                                   DEFAULT_SEARCH_CONTAINERS)
+    item_tokens = _comp_list(pat, "search_items", DEFAULT_SEARCH_ITEMS)
     option_comps = _comp_list(pat, "option_components",
                               DEFAULT_OPTION_COMPONENTS)
 
-    # Phase 1: 모든 파일 파싱 + search container 식별
+    # Phase 1: 모든 파일 파싱 + container / item 식별
     from ..legacy_react_ast import parse_file
     file_data = []
     any_container = False
+    any_item = False
     for f in closure.files:
         tree, source, _ = parse_file(f.abs_path)
         if tree is None:
@@ -397,12 +523,35 @@ def extract_form_fields(closure: ScreenClosure,
         containers = _find_search_containers(tree, source, container_tokens)
         if containers:
             any_container = True
-        file_data.append((f, tree, source, containers))
+        items_all = _find_search_items(tree, source, item_tokens)
+        # container 가 있으면 그 안의 item 만 (다른 영역 form-item 제외)
+        if containers:
+            items = [i for i in items_all
+                     if any(_node_contains(c, i) for c in containers)]
+        else:
+            items = items_all
+        if items:
+            any_item = True
+        file_data.append((f, tree, source, containers, items))
 
-    # Phase 2: input 추출 — boundary 있으면 container 안만, 없으면 전체
-    fields: list[FormField] = []
+    # Phase 2a: search-item 우선 — 1 item = 1 field (Popover 등 자동 흡수)
+    if any_item:
+        fields: list[FormField] = []
+        order = 0
+        for f, tree, source, containers, items in file_data:
+            for item in items:
+                fd = _extract_field_from_item(
+                    item, source, option_comps, f.rel_path, order + 1)
+                if fd is None:
+                    continue
+                fields.append(fd)
+                order += 1
+        return fields
+
+    # Phase 2b: search-item 없으면 search-area boundary 안 default input
+    fields = []
     order = 0
-    for f, tree, source, containers in file_data:
+    for f, tree, source, containers, _ in file_data:
         if any_container and not containers:
             continue
         for el, tag in _jsx_open_elements(tree, source):
