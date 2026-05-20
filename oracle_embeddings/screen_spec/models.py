@@ -22,6 +22,8 @@ class FormField:
     validation: str                   # required / pattern / min / max 인라인 props 요약
     source_file: str                  # closure rel_path
     jsx_tag: str = ""                 # 원본 JSX 컴포넌트 이름 (예: "Select", "DatePicker")
+    events: str = ""                  # onChange / onClick / onBlur 등 (공백 구분)
+    options: str = ""                 # 드롭다운 Option 자식 value 목록 (예: "Y, N")
 
 
 @dataclass
