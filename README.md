@@ -14,6 +14,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `erd-md` | .md 파일에서 Mermaid ERD 생성 | X | X |
 | `erd-group` | 관계 기반 주제영역별 ERD 분할 생성 | X | X |
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
+| `grid-labels` | AG Grid `columnDefs` 의 `(field, headerName)` 페어 추출 (regex, deterministic) | X | X |
 | `morpheme` | 형태소분석 — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일 시트 xlsx + md 요약) | X | O |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
