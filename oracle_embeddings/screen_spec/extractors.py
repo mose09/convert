@@ -215,6 +215,67 @@ def _format_inline_validation(attrs: dict[str, str]) -> str:
     return "; ".join(parts)
 
 
+def _find_label_text_in_children(parent, exclude, source: bytes) -> str:
+    """parent 의 자식 element 중 ``className`` 에 'label' 포함된 element 의
+    text child 반환 (exclude 노드는 제외).
+    """
+    for child in parent.children:
+        if child is exclude:
+            continue
+        if child.type not in ("jsx_element", "jsx_self_closing_element"):
+            continue
+        if child.type == "jsx_self_closing_element":
+            open_el = child
+        else:
+            open_el = next((c for c in child.children
+                            if c.type == "jsx_opening_element"), None)
+        if open_el is None:
+            continue
+        sib_attrs = _jsx_attributes(open_el, source)
+        cls = (sib_attrs.get("className") or "").lower()
+        if "label" not in cls:
+            continue
+        if child.type != "jsx_element":
+            continue
+        for c in child.children:
+            if c.type == "jsx_text":
+                txt = text_of(c, source).strip()
+                if txt:
+                    return txt
+    return ""
+
+
+def _sibling_label(input_node, source: bytes) -> str:
+    """한국 SI 흔한 패턴: input 컴포넌트의 형제 (또는 가까운 ancestor 의
+    자식) 중 ``className`` 에 'label' 포함된 element 의 text child 를
+    라벨로. props 의 label/placeholder/title 가 모두 비어있을 때만 사용.
+
+    예::
+
+        <div className="search-item">
+          <span className="search-label">FAB</span>     <- 라벨
+          <span className="search-select">
+            <Select .../>                                <- input 컴포넌트
+          </span>
+        </div>
+
+    1-2 단계 ancestor 까지만 탐색 (너무 깊이 가면 다른 input 의 라벨을
+    오인할 위험).
+    """
+    cur = input_node
+    if cur.type == "jsx_opening_element" and cur.parent is not None:
+        cur = cur.parent
+    for _ in range(2):
+        parent = cur.parent
+        if parent is None or parent.type not in ("jsx_element", "jsx_fragment"):
+            break
+        text = _find_label_text_in_children(parent, exclude=cur, source=source)
+        if text:
+            return text
+        cur = parent
+    return ""
+
+
 def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
     """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트."""
@@ -240,6 +301,7 @@ def extract_form_fields(closure: ScreenClosure,
                      or attrs.get("placeholder")
                      or attrs.get("title")
                      or attrs.get("aria-label")
+                     or _sibling_label(el, source)
                      or "")
             name = (attrs.get("name")
                     or attrs.get("id")
