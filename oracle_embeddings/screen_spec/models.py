@@ -21,6 +21,7 @@ class FormField:
     default: str                      # defaultValue / value (literal 만)
     validation: str                   # required / pattern / min / max 인라인 props 요약
     source_file: str                  # closure rel_path
+    jsx_tag: str = ""                 # 원본 JSX 컴포넌트 이름 (예: "Select", "DatePicker")
 
 
 @dataclass

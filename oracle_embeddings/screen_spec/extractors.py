@@ -253,19 +253,22 @@ def _sibling_label(input_node, source: bytes) -> str:
     예::
 
         <div className="search-item">
-          <span className="search-label">FAB</span>     <- 라벨
-          <span className="search-select">
-            <Select .../>                                <- input 컴포넌트
-          </span>
+          <span className="search-label required">Team</span>   ← 라벨
+          <div className="search-input-wrap">
+            <span className="search-select">
+              <Select .../>                                      ← input 컴포넌트
+            </span>
+          </div>
         </div>
 
-    1-2 단계 ancestor 까지만 탐색 (너무 깊이 가면 다른 input 의 라벨을
-    오인할 위험).
+    ancestor 최대 5 단계까지 탐색 (사용자 회사마다 wrap 깊이 다름).
+    각 단계의 direct children 만 — descendant 까지 가면 다른 input 의
+    라벨 오인 위험.
     """
     cur = input_node
     if cur.type == "jsx_opening_element" and cur.parent is not None:
         cur = cur.parent
-    for _ in range(2):
+    for _ in range(5):
         parent = cur.parent
         if parent is None or parent.type not in ("jsx_element", "jsx_fragment"):
             break
@@ -297,11 +300,16 @@ def extract_form_fields(closure: ScreenClosure,
             if tag not in input_comps:
                 continue
             attrs = _jsx_attributes(el, source)
+            # 우선순위: label prop > 한국 SI 형제 라벨 (className "label")
+            # > placeholder / title / aria-label. placeholder 가 sibling
+            # label 보다 우선이면 ``<Input placeholder="사번 입력"/>`` 옆
+            # ``<span className="search-label">사번</span>`` 의 정확한
+            # 라벨이 무시되는 버그 — sibling 을 placeholder 위로.
             label = (attrs.get("label")
+                     or _sibling_label(el, source)
                      or attrs.get("placeholder")
                      or attrs.get("title")
                      or attrs.get("aria-label")
-                     or _sibling_label(el, source)
                      or "")
             name = (attrs.get("name")
                     or attrs.get("id")
@@ -318,6 +326,7 @@ def extract_form_fields(closure: ScreenClosure,
                          or attrs.get("value") or ""),
                 validation=_format_inline_validation(attrs),
                 source_file=f.rel_path,
+                jsx_tag=tag,
             ))
     return fields
 

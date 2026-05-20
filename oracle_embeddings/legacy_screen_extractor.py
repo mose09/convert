@@ -465,10 +465,13 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         logger.warning("파서 기반 화면 추출 실패: %s", e)
         return 0, 0
     if fields:
+        # component 는 원본 JSX tag 우선 (예: "Select", "DatePicker") —
+        # field_type 의 소문자 분류 ("select"/"date") 대신 사용자가 보는
+        # 화면에 실제 컴포넌트 이름이 그대로 표시되도록.
         layout.search_panel = [
             ScreenField(
                 label=(f.label or f.name or ""),
-                component=f.field_type or "",
+                component=(f.jsx_tag or f.field_type or ""),
                 default=f.default or "",
                 options="",
             )
