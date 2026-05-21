@@ -1289,7 +1289,32 @@ def _walk_brace_end(text: str, open_idx: int) -> int:
     return n
 
 
-_LABEL_PROP_RE = re.compile(r"""\b(?:label|placeholder|title)\s*=\s*["']([^"'<>{}]{1,40})["']""")
+# 시스템 이벤트 (컴포넌트 라이프사이클 / 라이브러리 콜백) — trigger 로 보면
+# noise. 사용자 액션 이벤트 (Click / Change / Submit / Blur / Focus / Key* /
+# Mouse* / Touch* / Drag* / Drop / Copy / Paste / Input / Select) 만 trigger.
+_NOISE_EVENT_SUFFIXES = frozenset({
+    # 컴포넌트 라이프사이클
+    "Cancel", "Close", "AfterClose", "BeforeClose",
+    "Ready", "GridReady", "Load", "Loaded", "Error",
+    "Mount", "Unmount", "Init", "Destroy",
+    # ag-grid 콜백
+    "ColumnResize", "ColumnResized", "ColumnVisible", "ColumnPinned",
+    "ColumnMoved", "RowDataChanged", "RowDataUpdated",
+    "FirstDataRendered", "SortChanged", "FilterChanged", "FilterModified",
+    "SelectionChanged", "CellValueChanged", "PaginationChanged",
+    "GridSizeChanged", "RangeSelectionChanged", "ModelUpdated",
+    "BodyScroll", "Resize", "Resized",
+})
+
+
+def _is_noise_event(event_suffix: str) -> bool:
+    return event_suffix in _NOISE_EVENT_SUFFIXES
+
+
+_LABEL_PROP_RE = re.compile(r"""\blabel\s*=\s*["']([^"'<>{}]{1,40})["']""")
+_VALUE_PROP_RE = re.compile(
+    r"""\b(?:aria-label|name)\s*=\s*["']([^"'<>{}]{1,40})["']"""
+)
 _FORM_ITEM_LABEL_RE = re.compile(
     r"""<Form\.Item\b[^>]*?\blabel\s*=\s*["']([^"'<>{}]{1,40})["']""",
     re.IGNORECASE,
@@ -1299,10 +1324,13 @@ _FORM_ITEM_LABEL_RE = re.compile(
 def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
     """이벤트 핸들러의 인근 라벨 추출 — 사용자 친화적 trigger 표시용.
 
-    우선순위:
-      1. 같은 JSX tag 안의 ``label="..."`` / ``placeholder="..."`` / ``title="..."``
-      2. 같은 tag 의 children 텍스트 (예: ``<Button onClick={X}>조회</Button>``)
-      3. 부모 ``<Form.Item label="...">`` (사용자 케이스: Select self-closing)
+    우선순위 (사용자 명시: children 우선, placeholder/title 제외):
+      1. 같은 tag 의 **children 텍스트** (예: ``<Button onClick=...>신규</Button>``)
+         — title="라인추가" 같은 hover tooltip 보다 가시 텍스트가 ground truth
+      2. ``aria-label`` / ``name`` (의미 prop)
+      3. ``label="..."`` prop (placeholder/title 은 description 이라 제외)
+      4. 부모 ``<Form.Item label="...">``
+      5. 가장 가까운 형제 ``<span className="...label...">텍스트</span>``
     """
     # tag 의 시작 ``<`` 와 끝 ``>`` 위치 탐색.
     head_window_start = max(0, ev_start - 600)
@@ -1316,42 +1344,42 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
         return ""
     tag_text = content[tag_open:tag_close + 1]
 
-    # 1) 같은 tag 안 label/placeholder/title attr
-    m = _LABEL_PROP_RE.search(tag_text)
-    if m:
-        return m.group(1).strip()
-
-    # 2) 같은 tag children 텍스트
+    # 1) children 텍스트 (가시 라벨 — 가장 신뢰)
     next_lt = content.find("<", tag_close + 1)
     if 0 <= next_lt - tag_close <= 200:
         inner = content[tag_close + 1:next_lt].strip()
         if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
             return inner
 
-    # 3) 부모 Form.Item label — tag_open 이전 800자 안에 마지막 <Form.Item 검색
+    # 2) aria-label / name (의미 있는 prop)
+    m = _VALUE_PROP_RE.search(tag_text)
+    if m:
+        return m.group(1).strip()
+
+    # 3) label prop (placeholder/title 은 description 이라 제외)
+    m = _LABEL_PROP_RE.search(tag_text)
+    if m:
+        return m.group(1).strip()
+
+    # 4) 부모 Form.Item label
     parent_window = content[max(0, tag_open - 800):tag_open]
     last_form_item = parent_window.rfind("<Form.Item")
     if last_form_item < 0:
         last_form_item = parent_window.rfind("<FormItem")
     if last_form_item >= 0:
-        # 그 Form.Item 이 tag_open 사이에 닫혔는지 (`</Form.Item>` 등) 검사
         between = parent_window[last_form_item:]
         if "</Form.Item>" not in between and "</FormItem>" not in between:
             m = _FORM_ITEM_LABEL_RE.search(between + content[tag_open:tag_open + 1])
             if m:
                 return m.group(1).strip()
 
-    # 4) 사용자 패턴: ``<span className="search-label">다중권한</span>`` 같이
-    #    같은 부모 div 안의 형제 라벨. handler tag 직전 600자 안에서 가장
-    #    가까운 ``>텍스트<`` 노드 — JSX 텍스트 노드 휴리스틱.
+    # 5) 형제 ``<span className="...label...">텍스트</span>``
     nearby = content[max(0, tag_open - 600):tag_open]
     text_matches = list(re.finditer(r">([^<>{}]{1,40})<", nearby))
     for m in reversed(text_matches):
         text = m.group(1).strip()
         if not text:
             continue
-        # 의미있는 텍스트만 (영문 + 한글 + 숫자 mix). 공백/숫자/특수문자
-        # 만이면 skip.
         if re.search(r"[A-Za-z가-힣]", text):
             return text
     return ""
@@ -1386,9 +1414,12 @@ def collect_event_handlers(content: str) -> list[dict]:
             "source_offset": offset,
         })
 
-    # 1) JSX 이벤트: 모든 on<Event>={handler}
+    # 1) JSX 이벤트: 모든 on<Event>={handler}. 단 시스템 이벤트 (onCancel /
+    # onGridReady 등 라이프사이클 콜백) 는 사용자 trigger 가 아니라 skip.
     for m in _ANY_JSX_EVENT_RE.finditer(content):
         event_suffix = m.group("event")
+        if _is_noise_event(event_suffix):
+            continue
         handler = m.group("name") or m.group("arrow") or ""
         # arrow 매칭 결과가 prototype method (.bind/.call/.apply) 면
         # 직전 segment 가 진짜 호출 대상 — ``this.fnX.bind(this)()`` 같은
