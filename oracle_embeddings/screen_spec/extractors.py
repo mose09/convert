@@ -404,8 +404,13 @@ def _extract_field_from_item(item_node, source: bytes,
 
 def _extract_event_props(attrs: dict[str, str]) -> str:
     """``onChange`` / ``onClick`` / ``onBlur`` 등 React event prop 만 모아
-    ``"onChange / onClick"`` 형식. boolean prop 으로 잡힌 ``on*`` 도 포함."""
-    evts = [k for k in attrs if k.startswith("on") and len(k) > 2 and k[2].isupper()]
+    ``"onChange / onClick"`` 형식. 시스템 이벤트 (onCancel / onGridReady /
+    onLoad 등 라이프사이클 콜백) 는 사용자 trigger 가 아니라 제외.
+    """
+    from ..legacy_react_api_scanner import _is_noise_event
+    evts = [k for k in attrs
+            if k.startswith("on") and len(k) > 2 and k[2].isupper()
+            and not _is_noise_event(k[2:])]
     return " / ".join(sorted(evts))
 
 
