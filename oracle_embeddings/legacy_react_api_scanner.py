@@ -599,7 +599,8 @@ def _is_apps_react_file(rel_path: str) -> bool:
 # popup 처럼 별개 화면으로 분석할 sub-component 폴더 이름 키워드 (사용자
 # 환경: ``InstallManagePopup``). 그 외 sub-component (agGrid / SearchPanel
 # 등) 는 메인 화면 (apps/<X>/index.js) 에 통합.
-_POPUP_FOLDER_KEYWORDS = ("popup", "modal", "dialog", "drawer", "window")
+_POPUP_FOLDER_KEYWORDS = ("popup", "popups", "modal", "modals", "dialog",
+                          "dialogs", "drawer", "drawers", "window", "windows")
 
 
 # popup container JSX 태그 — 사용자 명시 (이슈 후속): Modal 만. 메인 render
@@ -1795,6 +1796,41 @@ def collect_handler_contexts(
         handler = ev["handler"]
         if handler and handler in helpers:
             continue
+
+        # Redux + Redux-Saga indirect handoff fallback —
+        # handler body 가 axios/fetch 직접 호출 없이 ``this.props.X(...)`` /
+        # ``dispatch(actions.X())`` 같은 indirect handoff 만 있고 URL 0건이면,
+        # 같은 app slug (``apps/<X>`` ↔ ``store/<X>``) 또는 같은 폴더의
+        # saga URL 합집합으로 채움. 사용자 케이스::
+        #
+        #     // Popup
+        #     handleDownLock = () => {
+        #       this.props.handleSVIDModelingListSave(a, b, c);
+        #     };
+        #     // 메인 index.js
+        #     mapDispatchToProps = (dispatch) => ({
+        #       handleSVIDModelingListSave: () => dispatch(action.svidModelingListSave())
+        #     });
+        #     // saga.js
+        #     yield call(axios.post, '/api/svid-modeling/save')
+        #
+        # connect HOC 의 자동 binding 은 우리 prop_index 가 못 잡으므로
+        # slug/폴더 단위 fallback 으로 saga URL 귀속. event 라벨에 ``+saga``
+        # 마커 (CLAUDE.md 컨벤션).
+        saga_indirect_used = False
+        if not urls_in_handler:
+            body_for_check = bodies_to_scan[0] if bodies_to_scan else (ev.get("body") or "")
+            if _is_indirect_handoff(body_for_check):
+                slug = _extract_app_slug(rel) or _extract_app_slug(fp)
+                fallback = set()
+                if slug:
+                    fallback |= slug_to_urls.get(slug.lower(), set())
+                if not fallback:
+                    fallback |= folder_to_urls.get(os.path.dirname(fp), set())
+                if fallback:
+                    urls_in_handler = set(fallback)
+                    saga_indirect_used = True
+
         if not urls_in_handler and not include_url_less:
             continue
         label = ev.get("label") or ""
@@ -1803,6 +1839,8 @@ def collect_handler_contexts(
             if other:
                 continue
         event_type = ev["event"]
+        if saga_indirect_used and not event_type.endswith("+saga"):
+            event_type = event_type + "+saga"
         offset = ev["source_offset"]
         jsx = _locate_enclosing_jsx(content, offset)
         validation_props = extract_validation_props(jsx)
