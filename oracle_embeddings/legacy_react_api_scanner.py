@@ -1809,22 +1809,32 @@ def collect_handler_contexts(
             if body:
                 bodies_to_scan.append(body)
             elif handler:
-                start = _locate_handler_start(content, handler)
-                if start is not None:
-                    sliced = _slice_function_body(content, start, max_len=8000)
-                    bodies_to_scan.append(sliced)
+                # dispatcher 분기 — JSX inline arrow ``onClick={() => this.X
+                # ('save')}`` 의 본문 (한 호출) 추출. 매칭되면 ``X`` 전체
+                # body 대신 inline 호출만 chain follow → string literal arg
+                # 가 chain resolver (c) 분기에서 case 매칭에 사용됨.
+                inline_call = _extract_inline_arrow_body(
+                    content, ev["source_offset"], handler
+                )
+                if inline_call:
+                    bodies_to_scan.append(inline_call)
                 else:
-                    fn_bodies = fn_index.get(handler) or []
-                    for _fp_other, sub_body in fn_bodies:
-                        bodies_to_scan.append(sub_body)
-                    # prop reference fallback — extract_button_triggers 와 동일.
-                    if not fn_bodies and prop_index:
-                        for binding_file, parent_handler in prop_index.get(handler) or []:
-                            if binding_file == rel:
-                                continue
-                            for _fp, sub_body in fn_index.get(parent_handler) or []:
-                                bodies_to_scan.append(sub_body)
-                                via_props.add(parent_handler)
+                    start = _locate_handler_start(content, handler)
+                    if start is not None:
+                        sliced = _slice_function_body(content, start, max_len=8000)
+                        bodies_to_scan.append(sliced)
+                    else:
+                        fn_bodies = fn_index.get(handler) or []
+                        for _fp_other, sub_body in fn_bodies:
+                            bodies_to_scan.append(sub_body)
+                        # prop reference fallback — extract_button_triggers 와 동일.
+                        if not fn_bodies and prop_index:
+                            for binding_file, parent_handler in prop_index.get(handler) or []:
+                                if binding_file == rel:
+                                    continue
+                                for _fp, sub_body in fn_index.get(parent_handler) or []:
+                                    bodies_to_scan.append(sub_body)
+                                    via_props.add(parent_handler)
 
             urls_in_handler: set[str] = set()
             for b in bodies_to_scan:
@@ -2113,6 +2123,104 @@ _MDTP_KV_RE = re.compile(
 )
 
 
+# dispatcher 함수 분기 인식 — 여러 trigger 가 같은 함수 호출하면서 string
+# literal arg 로 case 분기하는 패턴 (사용자 보고)::
+#
+#     onClick={() => this.processControl('save')}     ← trigger A
+#     onClick={() => this.processControl('delete')}   ← trigger B
+#
+#     processControl = async (type) => {
+#       switch (type) {
+#         case 'save':   dispatch(actions.save());    break;  ← A 의 chain
+#         case 'delete': dispatch(actions.delete()); break;  ← B 의 chain
+#       }
+#     };
+#
+# trigger 마다 string literal arg 추출 → dispatcher body 의 ``case 'X':``
+# (또는 ``if (type === 'X')``) 분기 body 만 chain follow → 그 분기의
+# action / URL 만 매핑.
+
+_STRING_LITERAL_CALL_RE = re.compile(
+    r"\b(?P<fn>\w+)\s*\(\s*['\"](?P<arg>[^'\"\s]{1,40})['\"]"
+)
+
+
+def _extract_inline_arrow_body(content: str, offset: int, handler: str) -> str:
+    """JSX inline arrow ``onClick={() => this.handler('arg')}`` 의 본문
+    (한 호출) 추출. 매칭 못 하면 빈 문자열.
+
+    ``collect_event_handlers`` 는 inline arrow body 를 빈 채로 두고 handler
+    이름만 추출하는데, dispatcher 분기 케이스 (``handler('save')`` /
+    ``handler('delete')``) 는 inline 의 string literal arg 가 chain 의
+    핵심이라 raw text 가 필요. JSX snippet 에서 ``=> ... handler(...)`` 직접
+    매칭으로 보강.
+    """
+    snippet = content[max(0, offset - 50): offset + 300]
+    pat = re.compile(
+        r"=>\s*(?P<body>[\w.]*\b" + re.escape(handler) + r"\s*\([^)]*\))"
+    )
+    m = pat.search(snippet)
+    if m:
+        return m.group("body").strip()
+    return ""
+
+
+def _calls_with_literal_arg(body: str) -> dict[str, set[str]]:
+    """body 안의 ``fn('literal')`` / ``fn("literal")`` 호출에서
+    ``{fn_name: {literal_arg, ...}}`` 추출."""
+    out: dict[str, set[str]] = {}
+    for m in _STRING_LITERAL_CALL_RE.finditer(body):
+        out.setdefault(m.group("fn"), set()).add(m.group("arg"))
+    return out
+
+
+def _slice_brace_balanced(text: str, brace_idx: int) -> str:
+    """``text[brace_idx]`` 가 ``{`` 면 matching ``}`` 까지 (안 포함) slice.
+    nested brace 보존. 못 닫으면 끝까지."""
+    if brace_idx >= len(text) or text[brace_idx] != "{":
+        return ""
+    depth = 0
+    for i in range(brace_idx, len(text)):
+        c = text[i]
+        if c == "{":
+            depth += 1
+        elif c == "}":
+            depth -= 1
+            if depth == 0:
+                return text[brace_idx + 1:i]
+    return text[brace_idx + 1:]
+
+
+def _slice_dispatcher_branch(body: str, literal: str) -> str:
+    """dispatcher fn body 에서 string literal 분기 body 추출.
+
+    지원:
+      a) ``case '<literal>': ... [break|return]`` (또는 다음 case 까지)
+      b) ``if (<var> === '<literal>') { ... }`` / ``else if (...)``
+
+    못 찾으면 빈 문자열 — caller 가 fallback 결정.
+    """
+    case_re = re.compile(
+        r"\bcase\s+['\"]" + re.escape(literal) + r"['\"]\s*:"
+    )
+    cm = case_re.search(body)
+    if cm:
+        start = cm.end()
+        next_branch_re = re.compile(
+            r"\b(?:case\s+['\"][^'\"]+['\"]\s*:|default\s*:)"
+        )
+        nm = next_branch_re.search(body, start)
+        end = nm.start() if nm else len(body)
+        return body[start:end]
+    if_re = re.compile(
+        r"\bif\s*\(\s*\w+\s*===?\s*['\"]" + re.escape(literal) + r"['\"]\s*\)\s*\{"
+    )
+    im = if_re.search(body)
+    if im:
+        return _slice_brace_balanced(body, im.end() - 1)
+    return ""
+
+
 def _collect_mdtp_action_map(all_files) -> dict[str, set[str]]:
     """모든 파일의 ``mapDispatchToProps`` body 패턴에서 ``key: actions.value``
     추출. Return ``{props_key: {action_name, ...}}``.
@@ -2191,18 +2299,37 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
 
     # (c) multi-level — handler body 의 helper fn 호출 sub body 도 recurse.
     # ``handler → helper class method → dispatch(actions.Y)`` 같은 indirect.
+    # ``fn('literal')`` 형태 (dispatcher 패턴) 면 sub_body 의 ``case 'literal':``
+    # / ``if (X === 'literal')`` 분기 body 만 follow — 사용자 보고
+    # ``processControl(type)`` switch 한 함수에 여러 trigger 가 다른
+    # type 으로 분기하는 케이스.
     if fn_index and depth > 0:
+        branch_calls = _calls_with_literal_arg(handler_body)
         for m in _FN_CALL_LEAF_RE.finditer(handler_body):
             fn = m.group("fn") or ""
             if not fn or fn in seen or fn in _RESERVED_NEAR_BLOCK:
                 continue
             seen.add(fn)
+            literals = branch_calls.get(fn)
             for _fp, sub_body in fn_index.get(fn) or []:
-                urls |= _resolve_saga_urls_for_handler(
-                    sub_body, handler_file_content,
-                    action_to_type, saga_urls_by_type,
-                    fn_index, mdtp_map, depth - 1, seen,
-                )
+                if literals:
+                    # 분기별 body 만 chain follow. case 못 찾으면 그
+                    # literal 은 skip (false positive 방지) — fallback 으로
+                    # 전체 body 보면 모든 case URL 다 합쳐짐.
+                    for lit in literals:
+                        case_body = _slice_dispatcher_branch(sub_body, lit)
+                        if case_body:
+                            urls |= _resolve_saga_urls_for_handler(
+                                case_body, handler_file_content,
+                                action_to_type, saga_urls_by_type,
+                                fn_index, mdtp_map, depth - 1, seen,
+                            )
+                else:
+                    urls |= _resolve_saga_urls_for_handler(
+                        sub_body, handler_file_content,
+                        action_to_type, saga_urls_by_type,
+                        fn_index, mdtp_map, depth - 1, seen,
+                    )
     return urls
 
 
