@@ -1669,6 +1669,12 @@ def collect_handler_contexts(
     # multi-level handler chain follow 용 함수 인덱스 (1 회 build, 모든
     # event 의 _scan_body_with_chain 가 공유). saga indirect 와 동일 인프라.
     fn_index = _collect_function_bodies(all_files)
+    # Redux + Saga 글로벌 매칭 인덱스 — action type 상수를 키로 saga URL
+    # 매핑. slug/folder 기반 fallback 보다 정확 (전역).
+    saga_urls_by_type = _collect_saga_urls_by_action_type(
+        all_files, fn_index, call_re, const_map, strip_patterns
+    )
+    action_to_type = _collect_action_to_type(all_files)
     # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
     # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
     prop_index = _collect_prop_bindings(all_files, frontend_dir)
@@ -1819,23 +1825,30 @@ def collect_handler_contexts(
         if not urls_in_handler:
             body_for_check = bodies_to_scan[0] if bodies_to_scan else (ev.get("body") or "")
             if _is_indirect_handoff(body_for_check):
-                # nested apps 케이스 — handler 파일의 모든 slug 후보를 saga
-                # URL map 에서 lookup (공통 slug 1개라도 매칭되면 saga URL
-                # 합집합 가져옴). 사용자 케이스::
-                #   handler:  apps/hypm_svidModeling/SvidModeling/index.js
-                #             slugs=[hypm_svidModeling, SvidModeling]
-                #   saga:     store/SvidModeling/saga.js
-                #             slugs=[SvidModeling]
-                #   → 공통 'SvidModeling' 으로 saga URL 매칭.
-                slugs = _extract_app_slugs(rel) or _extract_app_slugs(fp)
-                fallback: set[str] = set()
-                for slug in slugs:
-                    fallback |= slug_to_urls.get(slug.lower(), set())
-                if not fallback:
-                    fallback |= folder_to_urls.get(os.path.dirname(fp), set())
-                if fallback:
-                    urls_in_handler = set(fallback)
+                # 1차 정확 매칭 — action type 상수 글로벌 chain.
+                #   handler body → actions.X (또는 this.props.X via
+                #   mapDispatchToProps) → action_to_type[X] → saga_urls_by_type
+                #   slug/folder 무관, 가장 정확.
+                chain_urls = _resolve_saga_urls_for_handler(
+                    body_for_check, content,
+                    action_to_type, saga_urls_by_type,
+                )
+                if chain_urls:
+                    urls_in_handler = set(chain_urls)
                     saga_indirect_used = True
+                else:
+                    # 2차 fallback — slug/folder 컨벤션 (PR #241/#242).
+                    # action type 매칭 실패 시 (예: action 이 type 없이
+                    # 다른 형태) 보수적으로 같은 slug saga URL 합집합.
+                    slugs = _extract_app_slugs(rel) or _extract_app_slugs(fp)
+                    fallback: set[str] = set()
+                    for slug in slugs:
+                        fallback |= slug_to_urls.get(slug.lower(), set())
+                    if not fallback:
+                        fallback |= folder_to_urls.get(os.path.dirname(fp), set())
+                    if fallback:
+                        urls_in_handler = set(fallback)
+                        saga_indirect_used = True
 
         if not urls_in_handler and not include_url_less:
             continue
@@ -1898,6 +1911,170 @@ def _is_indirect_handoff(body: str) -> bool:
     if not body:
         return False
     return bool(_INDIRECT_HANDOFF_RE.search(body))
+
+
+# Redux + Saga 글로벌 매칭 — action type 상수 기반.
+#
+# 사용자 케이스::
+#
+#     // actions.js
+#     export const svidListSearch = value => ({
+#       type: constants.LOADING_SVIDSEARCH_SAGA,   ← 상수
+#       value
+#     });
+#     // saga.js
+#     yield takeLatest(constants.LOADING_SVIDSEARCH_SAGA, loadingSvidListSearch);
+#     export function* loadingSvidListSearch(payload) {
+#       yield call(Axios.post, '/api/...', payload.value);
+#     }
+#
+# 양쪽이 같은 상수명 (``LOADING_SVIDSEARCH_SAGA``) 을 키로 매칭. action
+# 이름 ``svidListSearch`` → type ``LOADING_SVIDSEARCH_SAGA`` → saga
+# ``loadingSvidListSearch`` body 의 URL. slug/folder 컨벤션 무관, 전역 매칭.
+
+_ACTION_TYPE_RE = re.compile(
+    # ``type: constants.X`` / ``type: 'STRING'`` / ``type: X`` /
+    # ``type: actionTypes.X`` — quoted literal 또는 UPPER_SNAKE 식별자.
+    r"\btype\s*:\s*(?:(?:constants|actionTypes|types|ActionTypes|ActionType)\.)?"
+    r"(?:['\"]([^'\"]+)['\"]|([A-Z_][A-Z0-9_]*))"
+)
+
+_SAGA_TAKE_RE = re.compile(
+    # takeLatest / takeEvery / takeLeading / debounce / throttle 의 첫 인자
+    # (type) + 둘째 인자 (saga 함수 이름).
+    r"\b(?:takeLatest|takeEvery|takeMaybe|takeLeading|debounce|throttle)\s*\(\s*"
+    r"(?:(?:constants|actionTypes|types|ActionTypes|ActionType)\.)?"
+    r"(?:['\"]([^'\"]+)['\"]|([A-Z_][A-Z0-9_]*))"
+    r"\s*,\s*([A-Za-z_$][\w$]*)"
+)
+
+_EXPORT_ACTION_RE = re.compile(
+    # export const|function <name> = ... — actions.js 함수 정의 시작.
+    r"\bexport\s+(?:const|function\*?|let|var)\s+([a-z][\w$]*)\s*[=(]"
+)
+
+
+# saga 함수 body 에서 URL literal 직접 추출 — quoted path-like literal.
+# axios.<method>('/url') / call(Axios.post, '/url') / fetch('/url') 모두
+# 같은 quoted literal 패턴이라 단순 regex 로 충분.
+_URL_LITERAL_IN_BODY_RE = re.compile(
+    r"""['"`](?P<url>/[A-Za-z0-9_\-./{}:@?&=]+)['"`]"""
+)
+
+
+def _collect_saga_urls_by_action_type(all_files, fn_index, call_re,
+                                      const_map, strip_patterns) -> dict[str, set[str]]:
+    """모든 파일에서 saga effect 의 (type_key, saga_fn) 페어를 찾고,
+    saga_fn body 의 URL literal 매핑. Returns ``{type_key: {url, ...}}``.
+
+    type_key 는 string literal 또는 ``UPPER_SNAKE_CONST`` 이름. saga 의
+    URL 은 보통 quoted path literal (``'/api/...'``) 이라 _scan_body_with_chain
+    의 axios call regex 대신 단순 URL literal regex 로 추출 (saga effect
+    ``call(Axios.post, '/url', ...)`` 같은 형태도 동일 패턴).
+    """
+    out: dict[str, set[str]] = {}
+    for fp in all_files:
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        for m in _SAGA_TAKE_RE.finditer(content):
+            type_lit = m.group(1)
+            type_const = m.group(2)
+            saga_fn = m.group(3)
+            type_key = type_lit or type_const
+            if not type_key or not saga_fn:
+                continue
+            for _fp_other, body in fn_index.get(saga_fn) or []:
+                for um in _URL_LITERAL_IN_BODY_RE.finditer(body):
+                    raw = um.group("url")
+                    # api_index 와 같은 정규화 (lowercase + 동적 segment 변환)
+                    canonical = normalize_url(_normalize_template(raw), strip_patterns)
+                    if not canonical:
+                        continue
+                    out.setdefault(type_key, set()).add(canonical)
+    return out
+
+
+def _collect_action_to_type(all_files) -> dict[str, str]:
+    """모든 파일에서 ``export const|function <name>`` 의 body 에서
+    ``type:`` 값을 추출, ``{action_name: type_key}`` 매핑.
+
+    action_name 은 export 된 함수 이름. type_key 는 literal 또는
+    UPPER_SNAKE 식별자 (saga side 와 매칭).
+    """
+    out: dict[str, str] = {}
+    for fp in all_files:
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        # export action 위치들 + 그 함수 body 안의 type 값
+        for m in _EXPORT_ACTION_RE.finditer(content):
+            action_name = m.group(1)
+            # 함수 body slice — 다음 export 또는 모듈 끝까지.
+            body = _slice_function_body(content, m.start(), max_len=2000)
+            if not body:
+                # arrow shorthand `export const X = v => ({...})` — body 가
+                # paren 안 object 라 brace slicer 가 실패. content 슬라이스
+                # 로 fallback.
+                body = content[m.start(): m.start() + 1500]
+            tm = _ACTION_TYPE_RE.search(body)
+            if not tm:
+                continue
+            type_key = tm.group(1) or tm.group(2)
+            if type_key:
+                out[action_name] = type_key
+    return out
+
+
+_THIS_PROPS_CALL_LEAF_RE = re.compile(r"\bthis\.props\.(\w+)\s*\(")
+_DISPATCH_ACTION_RE = re.compile(
+    r"\b(?:dispatch|store\.dispatch)\s*\(\s*(?:[\w.]+\.)?(?P<act>\w+)\s*\("
+)
+_MDTP_KV_RE = re.compile(
+    # mapDispatchToProps body — ``key: ... actions.value(...)``
+    r"(?P<key>\w+)\s*:\s*[^,}]*?\b(?:actions?|ACTIONS?)\.(?P<act>\w+)"
+)
+
+
+def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
+                                   action_to_type: dict[str, str],
+                                   saga_urls_by_type: dict[str, set[str]]
+                                   ) -> set[str]:
+    """handler body + 같은 파일 컨텍스트에서 action_name 들을 찾고,
+    action_type → saga URL chain 으로 매칭된 URL set 반환.
+
+    추적 경로:
+      a) handler body 에 ``dispatch(actions.Y(...))`` 직접 호출
+      b) handler body 에 ``this.props.X(...)`` 호출 — 같은 파일
+         ``mapDispatchToProps`` 의 ``X: ... actions.Y(...)`` 로 Y 매핑
+    """
+    urls: set[str] = set()
+    candidate_actions: set[str] = set()
+
+    # (a) handler body 의 직접 dispatch
+    for m in _DISPATCH_ACTION_RE.finditer(handler_body):
+        candidate_actions.add(m.group("act"))
+
+    # (b) handler body 의 this.props.X → 같은 파일 mapDispatchToProps 에서
+    # X key 의 actions.Y 매핑
+    props_keys: set[str] = set()
+    for m in _THIS_PROPS_CALL_LEAF_RE.finditer(handler_body):
+        props_keys.add(m.group(1))
+    if props_keys:
+        for m in _MDTP_KV_RE.finditer(handler_file_content):
+            k = m.group("key")
+            if k in props_keys:
+                candidate_actions.add(m.group("act"))
+
+    # candidate_actions → action_to_type → saga_urls_by_type
+    for act in candidate_actions:
+        type_key = action_to_type.get(act)
+        if not type_key:
+            continue
+        urls |= saga_urls_by_type.get(type_key, set())
+    return urls
 
 
 # 흔한 React 프로젝트 모듈 root: ``apps/X/`` (Container) ↔ ``store/X/``
