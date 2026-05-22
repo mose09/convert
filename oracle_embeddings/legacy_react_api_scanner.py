@@ -762,6 +762,37 @@ def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
     return added
 
 
+# ``render() { return <Modal/Dialog/Drawer/Popup>...` 또는
+# ``render() { return (<Modal>...)`` — 컴포넌트 자체가 popup wrapper 를
+# top-level 로 반환. component 안 nested ``<Modal>`` (popup 컨테이너
+# 보유 main) 와 구별하기 위해 ``return`` 직후만 매칭.
+_SELF_POPUP_RENDER_RE = re.compile(
+    r"\breturn\s*\(?\s*<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b",
+)
+
+
+def _collect_self_modal_popup_files(files: list[str], frontend_dir: str) -> set[str]:
+    """파일 자체가 top-level ``return <Modal>`` 패턴이면 popup 컴포넌트.
+
+    사용자 보고 — ``apps/hypm_svidModeling/SvidCopy/index.js`` 같이 cousin
+    main entry 가 사실은 popup 인 경우. ``SvidCopy`` 컴포넌트 자체가
+    Modal wrapper 를 render 하면 popup 으로 재분류 → main 에 흡수된
+    trigger 들이 올바르게 popup 으로 귀속.
+    """
+    out: set[str] = set()
+    for fp in files:
+        rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
+        if not _is_apps_react_file(rel):
+            continue
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        if _SELF_POPUP_RENDER_RE.search(content):
+            out.add(rel)
+    return out
+
+
 def _collect_main_entries(files: list[str], frontend_dir: str) -> set[str]:
     """모든 ``apps/<...>/index.*`` 들 중 메인 entry set 반환.
 
@@ -1762,6 +1793,15 @@ def collect_handler_contexts(
     # popup 인덱스 — 메인 (apps/<...>/index.*) 가 ``<Modal>`` 안에 import 한
     # 컴포넌트의 file_rel set. 폴더명에 popup 키워드 없는 popup 잡기 위함.
     popup_set = _collect_popup_imports_per_main(all_files, frontend_dir, main_files)
+    # 보강: ``apps/<group>/<module>/index.js`` cousins (예: ``SvidModeling/``
+    # 와 ``SvidCopy/`` 같이 sibling main entries) 중 자체 ``return <Modal>``
+    # 패턴이면 popup 으로 재분류. ``_collect_main_entries`` 의 ancestor
+    # 휴리스틱이 cousins 를 둘 다 main 으로 잡아 popup 의 trigger 들이
+    # main 으로 흡수되는 사용자 보고 케이스 해결.
+    self_popups = _collect_self_modal_popup_files(all_files, frontend_dir)
+    new_popups = self_popups - popup_set
+    popup_set |= new_popups
+    main_files -= new_popups
     if closure_popup_augment:
         added = _augment_popup_set_via_closure(
             popup_set, main_files, frontend_dir, patterns or {},
