@@ -1694,17 +1694,15 @@ def collect_handler_contexts(
     # 에 있는 경우. handler body 안에서 직접 axios 못 찾으면 같은
     # 폴더 saga URL 들에 귀속 (folder-scope fallback).
     folder_to_urls: dict[str, set[str]] = {}
-    # slug_to_urls: ``apps/<X>/index.js`` ↔ ``store/<X>/saga.js`` 처럼
-    # 폴더가 분리된 redux+saga 구조 매칭. path 안 ``apps`` / ``store``
-    # / ``modules`` / ``pages`` 다음 segment 를 app slug 로 추출.
+    # slug_to_urls: nested apps 케이스도 매칭하기 위해 file path 에서 추출한
+    # 모든 slug 후보로 등록 (``apps/<group>/<slug>/...`` 의 group + slug 둘 다).
     slug_to_urls: dict[str, set[str]] = {}
     for url, files in api_index.items():
         for f in files:
             abs_f = os.path.join(frontend_dir, f)
             folder = os.path.dirname(abs_f)
             folder_to_urls.setdefault(folder, set()).add(url)
-            slug = _extract_app_slug(abs_f)
-            if slug:
+            for slug in _extract_app_slugs(abs_f):
                 slug_to_urls.setdefault(slug.lower(), set()).add(url)
 
     out: dict[str, list[dict]] = {}
@@ -1821,9 +1819,17 @@ def collect_handler_contexts(
         if not urls_in_handler:
             body_for_check = bodies_to_scan[0] if bodies_to_scan else (ev.get("body") or "")
             if _is_indirect_handoff(body_for_check):
-                slug = _extract_app_slug(rel) or _extract_app_slug(fp)
-                fallback = set()
-                if slug:
+                # nested apps 케이스 — handler 파일의 모든 slug 후보를 saga
+                # URL map 에서 lookup (공통 slug 1개라도 매칭되면 saga URL
+                # 합집합 가져옴). 사용자 케이스::
+                #   handler:  apps/hypm_svidModeling/SvidModeling/index.js
+                #             slugs=[hypm_svidModeling, SvidModeling]
+                #   saga:     store/SvidModeling/saga.js
+                #             slugs=[SvidModeling]
+                #   → 공통 'SvidModeling' 으로 saga URL 매칭.
+                slugs = _extract_app_slugs(rel) or _extract_app_slugs(fp)
+                fallback: set[str] = set()
+                for slug in slugs:
                     fallback |= slug_to_urls.get(slug.lower(), set())
                 if not fallback:
                     fallback |= folder_to_urls.get(os.path.dirname(fp), set())
@@ -1903,29 +1909,45 @@ _APP_SLUG_PARENT_MARKERS = frozenset({
 })
 
 
-def _extract_app_slug(file_path: str) -> str | None:
-    """``apps/<slug>/...`` / ``store/<slug>/...`` / ``modules/<slug>/...``
-    형태의 path 에서 marker 다음 segment 를 app slug 로 추출.
+def _extract_app_slugs(file_path: str) -> list[str]:
+    """``apps/<group>/<slug>/...`` / ``store/<slug>/...`` 처럼 marker 다음
+    1~3 단계 segment 를 모두 slug 후보로 반환.
 
-    사용자 케이스 (전형적 Korean enterprise React+Redux+Saga):
-      ``src/apps/cbmModeling/index.js``  → slug=``cbmModeling``
-      ``src/store/cbmModeling/saga.js``  → slug=``cbmModeling`` (동일)
-    → 같은 slug 끼리 묶어 indirect handler ↔ saga URL 매칭.
+    사용자 케이스 (Korean enterprise nested 모듈):
+      ``src/apps/hypm_svidModeling/SvidModeling/index.js``
+        → slugs=[``hypm_svidModeling``, ``SvidModeling``]
+      ``src/store/SvidModeling/saga.js``
+        → slugs=[``SvidModeling``]
+      → 공통 ``SvidModeling`` 으로 indirect handler ↔ saga URL 매칭.
 
-    여러 marker 가 path 에 있으면 첫 번째 발견. slug 가 file 이름
-    (``.``) 포함하면 폴더가 아니라 파일이라 skip 후 다음 marker 시도.
+    단순 케이스 (slug 한 단계):
+      ``src/apps/cbmModeling/index.js``  → [``cbmModeling``]
+      ``src/store/cbmModeling/saga.js``  → [``cbmModeling``]
+
+    file 이름 (``.`` 포함) 만나면 stop. 빈 list 도 가능.
     """
     parts = file_path.replace("\\", "/").split("/")
+    out: list[str] = []
     for i, p in enumerate(parts):
         if p.lower() not in _APP_SLUG_PARENT_MARKERS:
             continue
-        if i + 1 >= len(parts):
-            continue
-        slug = parts[i + 1]
-        if "." in slug:
-            continue
-        return slug
-    return None
+        # marker 다음 1-3 단계 segment 를 slug 후보로
+        for j in range(1, 4):
+            if i + j >= len(parts):
+                break
+            seg = parts[i + j]
+            if "." in seg:
+                break
+            if seg not in out:
+                out.append(seg)
+    return out
+
+
+def _extract_app_slug(file_path: str) -> str | None:
+    """단일 slug 호환 wrapper — 첫 번째 후보 반환. 신규 코드는
+    ``_extract_app_slugs`` 사용 권장."""
+    slugs = _extract_app_slugs(file_path)
+    return slugs[0] if slugs else None
 
 
 def _locate_handler_body(content: str, handler: str, max_chars: int = 4000) -> str:
