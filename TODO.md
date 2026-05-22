@@ -151,6 +151,24 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: `--screen-layout-llm-only` — 화면 layout LLM 전담 모드
+
+`--extract-screen-layout` 의 LLM 응답이 그 후 events/search/grid 파서
+결과로 덮어쓰여서, 파서가 못 잡는 사용자 정의 컴포넌트 / 비정형 패턴
+화면에서 LLM 가 잡아낸 정보가 사라지는 경우가 있음. opt-in 으로 파서
+augmentation 전부 skip 하고 LLM 응답 그대로 사용하는 모드 추가.
+
+- [x] `extract_screen_layouts(llm_only=...)` 시그니처 추가
+- [x] gate 1: events 정적 덮어쓰기 (line 806) — `if not llm_only`
+- [x] gate 2: `_parser_fill_layout` (line 816) — `if not llm_only`
+- [x] cache key 분리 (`mode=llm-only` 추가) — 일반/llm-only 결과 섞이지 X
+- [x] stdout "[llm-only]" 태그 표시
+- [x] `analyze_legacy` + `analyze_legacy_batch` 시그니처에 propagate
+- [x] main.py argparse `--screen-layout-llm-only` + 3 호출처 wire
+- [x] mock 기반 functional 검증 — 일반 모드 parser 호출+덮어씀 / llm-only
+      parser 0호출 + LLM 값 그대로
+- [x] README 기능표에 옵션 명시
+
 ### 진행 중: sibling label depth 5 + 우선순위 + JSX tag 보존
 
 PR #228/#232 후속 — 사용자 환경에서 검색 라벨 여전히 "Select 하세요"

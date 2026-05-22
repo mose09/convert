@@ -97,10 +97,13 @@ def _cache_dir(base: str = "output/legacy_analysis/.screen_cache") -> Path:
     return p
 
 
-def _cache_key(file_content: str, url_map: Dict[str, List[str]]) -> str:
+def _cache_key(file_content: str, url_map: Dict[str, List[str]],
+               llm_only: bool = False) -> str:
     payload = SCREEN_SCHEMA_VERSION + "\n" + file_content + "\n" + json.dumps(
         url_map, sort_keys=True
     )
+    if llm_only:
+        payload += "\nmode=llm-only"
     return hashlib.sha256(payload.encode("utf-8", errors="ignore")).hexdigest()
 
 
@@ -709,12 +712,19 @@ def extract_screen_layouts(
     closure_llm: bool = False,
     closure_max_depth: int = 3,
     closure_token_budget: int = 12000,
+    llm_only: bool = False,
 ) -> Dict[str, ScreenLayout]:
     """파일별로 한 번씩 LLM 호출 + 캐시. ``{file_rel: ScreenLayout}`` 반환.
 
     ``closure_llm=True`` (옵트인) 시 LLM input 을 raw JSX + smart_slice 대신
     AST 기반 closure markdown (import 그래프 BFS + popup 3 신호) 로 보강.
     tree-sitter 미설치/closure 빌드 실패 시 자동 smart_slice fallback.
+
+    ``llm_only=True`` 시 LLM 응답을 그대로 사용 — events 정적 덮어쓰기 +
+    `_parser_fill_layout` (search_panel/data_table_columns 파서 덮어쓰기)
+    둘 다 skip. 파서가 잡지 못하는 사용자 정의 컴포넌트 / 비정형 패턴
+    화면에서 LLM 만의 해석이 필요할 때 사용. cache 는 별도 key 분리
+    (`llm_only=True` 결과와 일반 결과 섞이지 않도록).
     """
     cfg = dict(_DEFAULT_CONFIG)
     cfg.update((config or {}).get("screen_extraction") or {})
@@ -731,7 +741,8 @@ def extract_screen_layouts(
         print(f"  screen layout: {len(files)} files > cap {max_screens} — truncate")
         files = files[:max_screens]
 
-    print(f"  screen layout: {len(files)} React 화면 파일 분석 시작")
+    mode_tag = " [llm-only]" if llm_only else ""
+    print(f"  screen layout: {len(files)} React 화면 파일 분석 시작{mode_tag}")
 
     out: Dict[str, ScreenLayout] = {}
     cache_hits = 0
@@ -782,7 +793,8 @@ def extract_screen_layouts(
 
         # 캐시 키 — closure markdown 사용 시 raw content 대신 markdown 해시
         # (다른 입력 → 다른 LLM 결과). closure off 경로는 회귀 0 유지.
-        cache_key = _cache_key(closure_md or content, url_map)
+        # llm_only 모드는 결과 자체가 달라지므로 cache key 도 분리.
+        cache_key = _cache_key(closure_md or content, url_map, llm_only=llm_only)
         cached = _cache_get(cache_key, use_cache)
         if cached:
             cached.file = rel
@@ -801,11 +813,12 @@ def extract_screen_layouts(
         if data:
             layout = _parse_layout_dict(rel, data)
             llm_calls += 1
-            # events 는 항상 정적 분석 결과로 덮어쓰기 — LLM 이 plausible 한
+            # events 는 기본 정적 분석 결과로 덮어쓰기 — LLM 이 plausible 한
             # 환각 URL 만들어 진짜 호출 URL 가리는 케이스 차단. handlers_by_url
             # 는 collect_handler_contexts 가 JSX/saga 정적 분석으로 추출한
-            # ground truth.
-            layout.events = _fallback_layout(rel, url_map).events
+            # ground truth. llm_only 모드에선 LLM 응답 그대로 유지.
+            if not llm_only:
+                layout.events = _fallback_layout(rel, url_map).events
         else:
             layout = _fallback_layout(rel, url_map)
             fallback_calls += 1
@@ -814,12 +827,13 @@ def extract_screen_layouts(
         # ground truth. closure 가 빌드된 경우 (tree-sitter 설치 + 빌드 성공)
         # screen_spec.extractors 의 deterministic 추출기 결과로 덮어쓴다.
         # 자식 컴포넌트가 따로 import 된 분할 화면에서도 정확. 파서 0건이면
-        # LLM 결과 유지.
-        f_n, c_n = _parser_fill_layout(layout, closure_obj, patterns or {})
-        if f_n or c_n:
-            parser_screens += 1
-            parser_fields_total += f_n
-            parser_grids_total += c_n
+        # LLM 결과 유지. llm_only 모드에선 파서 자체를 호출하지 않음.
+        if not llm_only:
+            f_n, c_n = _parser_fill_layout(layout, closure_obj, patterns or {})
+            if f_n or c_n:
+                parser_screens += 1
+                parser_fields_total += f_n
+                parser_grids_total += c_n
 
         # 진단: 파서 + LLM 모두 0 인 화면 — 사용자가 "그리드/조회영역 안
         # 나옴" 의심할 때 어디서 빠졌는지 보이도록 closure 안 JSX 후보를
