@@ -606,7 +606,7 @@ _POPUP_FOLDER_KEYWORDS = ("popup", "popups", "modal", "modals", "dialog",
 # popup container JSX 태그 — 사용자 명시 (이슈 후속): Modal 만. 메인 render
 # 안 ``<Modal>`` children 의 import 한 컴포넌트가 popup. 그 외 사용
 # (``<div>`` / 일반 위치) 은 메인 통합.
-_POPUP_CONTAINER_TAGS = ("Modal",)
+_POPUP_CONTAINER_TAGS = ("Modal", "Dialog", "Drawer", "Popup", "Sheet", "Layer")
 
 
 _IMPORT_FROM_RE = re.compile(
@@ -671,32 +671,22 @@ def _extract_popup_container_components(content: str) -> set[str]:
 def _collect_popup_imports_per_main(files: list[str], frontend_dir: str,
                                        main_files: set[str] | None = None
                                        ) -> set[str]:
-    """모든 메인 ``apps/<...>/index.*`` 의 imports + popup container children
-    교집합 → popup file_rel set 반환. nested 메인 (`apps/X/Y/index.js`) 도 cover.
+    """모든 ``apps/<...>`` React 파일의 imports + popup container children
+    교집합 → popup file_rel set 반환.
 
-    이걸로 폴더명에 popup 키워드 없는 popup 도 잡음 — 메인이 ``import
-    InstallScreen from './InstallScreen'`` + render 안 ``<Modal>
-    <InstallScreen/></Modal>`` 패턴.
+    이전엔 ``main_files`` 만 검사했는데 사용자 환경에서 ``apps/<group>/
+    index.js`` 가 그룹 entry 라 SvidModeling 같은 실제 화면이 sub-area
+    로 분류 → popup import 매칭 누락. 모든 apps React 파일 (main / sub
+    무관) 검사하면 화면별 popup import 다 잡힘.
+
+    폴더명에 popup 키워드 없는 popup 도 잡음 — 메인이 ``import SVIDCOPY
+    from '../SvidCopy'`` + render 안 ``<Modal><SVIDCOPY/></Modal>`` 패턴.
     """
     popup_files: set[str] = set()
-    main_set = main_files if main_files is not None else set()
     for fp in files:
         rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
         if not _is_apps_react_file(rel):
             continue
-        # 메인 entry 만 검사 — main_files 가 주어지면 그 set, 아니면 옛
-        # fallback (apps/<X>/index.*).
-        if main_files is not None:
-            if rel not in main_set:
-                continue
-        else:
-            parts = rel.split("/")
-            try:
-                apps_i = parts.index("apps")
-            except ValueError:
-                continue
-            if apps_i + 2 != len(parts) - 1:
-                continue
         try:
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
@@ -766,19 +756,29 @@ def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
 # ``render() { return (<Modal>...)`` — 컴포넌트 자체가 popup wrapper 를
 # top-level 로 반환. component 안 nested ``<Modal>`` (popup 컨테이너
 # 보유 main) 와 구별하기 위해 ``return`` 직후만 매칭.
-# popup 컴포넌트 식별 — 3가지 신호 중 하나라도 매칭이면 popup 으로 분류.
+# popup 컴포넌트 식별 — 4가지 신호 중 하나라도 매칭이면 popup 으로 분류.
 #
 # 1) ``return`` 직후 top-level popup wrapper (Fragment ``<>`` / ``React.Fragment``
-#    안도 허용). 사용자 보고 — wrapper Fragment 안 Modal 인 경우 기존
-#    ``return\s*\(?\s*<Modal`` 매칭 실패.
-# 2) ``<Modal visible={(this.)?props.X}>`` 처럼 visible prop 이 부모에서 옴
-#    — popup 의 명확한 신호.
-# 3) class/function 이름이 popup 키워드 포함 (예: ``SvidCopyPopup``,
-#    ``CommonModal``, ``SearchDialog``).
+#    안도 허용). class component / function statement 의 render.
+# 2) **Functional component + 암시적 return** —
+#    ``const X = (props) => (<Modal>...)`` 또는 ``const X = (props) => <Modal>``.
+#    사용자 보고 — ``return`` 키워드 없는 화살표 직접 JSX 반환.
+# 3) ``<Modal visible={(this.)?props.X}>`` — visible prop 이 부모 props 에서.
+# 4) class/function 이름이 popup 키워드 포함 (예: ``CommonModal``,
+#    ``SearchDialog``).
 _SELF_POPUP_RENDER_RE = re.compile(
     r"\breturn\s*\(?\s*"
     r"(?:<>\s*|<React\.Fragment\b[^>]*>\s*)?"
     r"<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b"
+)
+_SELF_POPUP_FC_ARROW_RE = re.compile(
+    # ``const X = (props) => (\n   <Modal ...`` 또는
+    # ``const X = ({a, b}) => <Modal ...`` 형태.
+    r"\b(?:const|let|var)\s+\w+\s*=\s*"
+    r"(?:\([^)]*\)|\w+)\s*=>\s*\(?\s*"
+    r"(?:<>\s*|<React\.Fragment\b[^>]*>\s*)?"
+    r"<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b",
+    re.DOTALL,
 )
 _SELF_POPUP_VISIBLE_FROM_PROPS_RE = re.compile(
     r"<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b[^>]{0,200}?"
@@ -794,6 +794,8 @@ _POPUP_COMPONENT_NAME_RE = re.compile(
 def _is_self_popup_file(content: str) -> bool:
     """파일이 popup wrapper render 하는 컴포넌트인지 휴리스틱 판정."""
     if _SELF_POPUP_RENDER_RE.search(content):
+        return True
+    if _SELF_POPUP_FC_ARROW_RE.search(content):
         return True
     if _SELF_POPUP_VISIBLE_FROM_PROPS_RE.search(content):
         return True
