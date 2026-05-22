@@ -766,13 +766,46 @@ def _augment_popup_set_via_closure(popup_set: set[str], main_files: set[str],
 # ``render() { return (<Modal>...)`` — 컴포넌트 자체가 popup wrapper 를
 # top-level 로 반환. component 안 nested ``<Modal>`` (popup 컨테이너
 # 보유 main) 와 구별하기 위해 ``return`` 직후만 매칭.
+# popup 컴포넌트 식별 — 3가지 신호 중 하나라도 매칭이면 popup 으로 분류.
+#
+# 1) ``return`` 직후 top-level popup wrapper (Fragment ``<>`` / ``React.Fragment``
+#    안도 허용). 사용자 보고 — wrapper Fragment 안 Modal 인 경우 기존
+#    ``return\s*\(?\s*<Modal`` 매칭 실패.
+# 2) ``<Modal visible={(this.)?props.X}>`` 처럼 visible prop 이 부모에서 옴
+#    — popup 의 명확한 신호.
+# 3) class/function 이름이 popup 키워드 포함 (예: ``SvidCopyPopup``,
+#    ``CommonModal``, ``SearchDialog``).
 _SELF_POPUP_RENDER_RE = re.compile(
-    r"\breturn\s*\(?\s*<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b",
+    r"\breturn\s*\(?\s*"
+    r"(?:<>\s*|<React\.Fragment\b[^>]*>\s*)?"
+    r"<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b"
+)
+_SELF_POPUP_VISIBLE_FROM_PROPS_RE = re.compile(
+    r"<(?:Modal|Dialog|Drawer|Popup|Sheet|Layer)\w*\b[^>]{0,200}?"
+    r"\bvisible\s*=\s*\{\s*(?:this\.)?props\.\w+",
+    re.DOTALL,
+)
+_POPUP_COMPONENT_NAME_RE = re.compile(
+    r"\b(?:class|function|const)\s+\w*"
+    r"(?:Popup|PopUp|Modal|Dialog|Drawer|Sheet|Layer)\w*\b"
 )
 
 
+def _is_self_popup_file(content: str) -> bool:
+    """파일이 popup wrapper render 하는 컴포넌트인지 휴리스틱 판정."""
+    if _SELF_POPUP_RENDER_RE.search(content):
+        return True
+    if _SELF_POPUP_VISIBLE_FROM_PROPS_RE.search(content):
+        return True
+    if _POPUP_COMPONENT_NAME_RE.search(content):
+        return True
+    return False
+
+
 def _collect_self_modal_popup_files(files: list[str], frontend_dir: str) -> set[str]:
-    """파일 자체가 top-level ``return <Modal>`` 패턴이면 popup 컴포넌트.
+    """파일 자체가 popup wrapper render — top-level ``return <Modal>``,
+    또는 ``<Modal visible={props.X}>``, 또는 class/function 이름이 popup
+    키워드 포함이면 popup 으로 분류.
 
     사용자 보고 — ``apps/hypm_svidModeling/SvidCopy/index.js`` 같이 cousin
     main entry 가 사실은 popup 인 경우. ``SvidCopy`` 컴포넌트 자체가
@@ -788,7 +821,7 @@ def _collect_self_modal_popup_files(files: list[str], frontend_dir: str) -> set[
             content = _strip_comments(_read_file_safe(fp))
         except Exception:
             continue
-        if _SELF_POPUP_RENDER_RE.search(content):
+        if _is_self_popup_file(content):
             out.add(rel)
     return out
 
