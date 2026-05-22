@@ -488,7 +488,9 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         # 화면에 실제 컴포넌트 이름이 그대로 표시되도록.
         layout.search_panel = [
             ScreenField(
-                label=(f.label or f.name or ""),
+                # name 은 식별자 (form key) 라 사용자 가시 라벨 아님 —
+                # fallback 에서 제외. 라벨 없으면 빈 채로 두는 게 정답.
+                label=(f.label or ""),
                 component=(f.jsx_tag or f.field_type or ""),
                 default=f.default or "",
                 options=f.options or "",

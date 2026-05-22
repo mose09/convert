@@ -1313,8 +1313,10 @@ def _is_noise_event(event_suffix: str) -> bool:
 
 
 _LABEL_PROP_RE = re.compile(r"""\blabel\s*=\s*["']([^"'<>{}]{1,40})["']""")
+# ``name`` / ``id`` 는 식별자 prop 이라 사용자 가시 라벨 아님. ``aria-label``
+# 만 의미 prop 으로 인정 (a11y 표준 — 시각 라벨 없을 때 대체).
 _VALUE_PROP_RE = re.compile(
-    r"""\b(?:aria-label|name)\s*=\s*["']([^"'<>{}]{1,40})["']"""
+    r"""\baria-label\s*=\s*["']([^"'<>{}]{1,40})["']"""
 )
 _FORM_ITEM_LABEL_RE = re.compile(
     r"""<Form\.Item\b[^>]*?\blabel\s*=\s*["']([^"'<>{}]{1,40})["']""",
@@ -1852,6 +1854,24 @@ def collect_handler_contexts(
 
         if not urls_in_handler and not include_url_less:
             continue
+        # 정적 이벤트 skip — form input 이벤트 (onChange / onBlur / onFocus /
+        # onKey* / onInput / onSelect) 가 URL 도 없고 body 도 setState 만이면
+        # events 시트에 emit 안 함. 예: ``<Select onChange={(v) => this.setState(
+        # {fab: v})}>``. 사용자 click 류 (onClick / onSubmit / onDoubleClick)
+        # 는 URL 없어도 keep — UI 효과 (popup / 화면이동 등) 표시 가치 있음.
+        if not urls_in_handler:
+            ev_name = ev["event"]
+            ev_suffix = ev_name[2:] if ev_name.startswith("on") else ev_name
+            is_form_input_event = ev_suffix in {
+                "Change", "Blur", "Focus", "Input", "Select",
+                "KeyDown", "KeyUp", "KeyPress",
+            }
+            if is_form_input_event:
+                body_for_narrative_check = (ev.get("body")
+                                            or (bodies_to_scan[0] if bodies_to_scan else ""))
+                narrative_check = _describe_handler_body(body_for_narrative_check)
+                if narrative_check in ("", "상태 갱신", "redux dispatch"):
+                    continue
         label = ev.get("label") or ""
         if handler and not label:
             other = handler_labels.get(handler, set()) - {""}
