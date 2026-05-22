@@ -1895,7 +1895,6 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
             closure_llm=bool(getattr(args, "closure_llm", False)),
             closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
             closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
-            llm_only=bool(getattr(args, "screen_layout_llm_only", False)),
         )
         if layouts:
             from datetime import datetime as _dt
@@ -2124,7 +2123,6 @@ def cmd_analyze_legacy(args):
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
-            screen_layout_llm_only=getattr(args, "screen_layout_llm_only", False),
             output_dir=_screens_output_root(output_dir),
         )
     else:
@@ -2157,7 +2155,6 @@ def cmd_analyze_legacy(args):
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
-            screen_layout_llm_only=getattr(args, "screen_layout_llm_only", False),
             output_dir=_screens_output_root(output_dir),
         )
 
@@ -2508,13 +2505,6 @@ def main():
                                 "메인의 ``<Modal>`` 안 import 만 보는 기존 휴리스틱이 "
                                 "놓친 popup 잡음. tree-sitter wheel 필요. "
                                 "미설치 시 자동 skip.")
-    al_parser.add_argument("--screen-layout-llm-only", action="store_true",
-                           help="(옵트인) --extract-screen-layout 의 LLM 응답을 "
-                                "그대로 사용 — events 정적 덮어쓰기 + search_panel/"
-                                "data_table_columns 파서 fill 둘 다 skip. 파서가 "
-                                "잡지 못하는 사용자 정의 컴포넌트 / 비정형 패턴 "
-                                "화면에서 LLM 단일 해석이 필요할 때. closure-llm 과 "
-                                "함께 쓰면 LLM 입력도 closure markdown 으로 보강.")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(
