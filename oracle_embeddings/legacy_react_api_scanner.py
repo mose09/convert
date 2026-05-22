@@ -1663,10 +1663,76 @@ _MODAL_OPEN_API_RE = re.compile(
     r"openDrawer|showDrawer)\s*\(",
 )
 
+# 그리드 / 파일 / 인쇄 등 backend 호출 없는 trigger 의 의미 narrative.
+# 사용자 보고: "수정/신규/엑셀" 같은 trigger 가 ``상태 갱신`` 만으론 의도
+# 안 보임. 구체적 휴리스틱으로 "그리드 행 추가" / "그리드 수정 모드" /
+# "엑셀 다운로드" 등 lable 화.
+
+# 그리드 행 추가 — ``setState({rows: [...rows, {}]})`` / ``push`` /
+# ``concat`` / ``.unshift``. data field 이름: rows/data/list/items/grid 등.
+_GRID_ADD_ROW_RE = re.compile(
+    r"setState\s*\(\s*\{[^}]*?"
+    r"\b(?:rows?|data|gridData|tableData|dataSource|list|items)\w*\s*:\s*\[\s*\.\.\."
+    r"|"
+    r"\b(?:rows?|data|gridData|tableData|dataSource|list|items)\w*\s*\.\s*"
+    r"(?:push|unshift|concat)\s*\(",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# 그리드 행 삭제 — filter / splice
+_GRID_DEL_ROW_RE = re.compile(
+    r"setState\s*\(\s*\{[^}]*?"
+    r"\b(?:rows?|data|gridData|tableData|dataSource|list|items)\w*\s*:\s*[^}]{0,80}?\.\s*filter\s*\("
+    r"|"
+    r"\b(?:rows?|data|gridData|tableData|dataSource|list|items)\w*\s*\.\s*splice\s*\(",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# 그리드 수정 모드 — setState({editMode: true} / editable / isEditing 등)
+_GRID_EDIT_MODE_RE = re.compile(
+    r"setState\s*\(\s*\{[^}]*?"
+    r"\b\w*(?:editMode|editable|isEditing|isEdit|modifyMode|updateMode)\w*\s*:\s*true"
+    r"|"
+    r"\bset\w*(?:EditMode|Editable|Editing|ModifyMode)\w*\s*\(\s*true",
+    re.DOTALL | re.IGNORECASE,
+)
+
+# 엑셀 다운로드/업로드
+_EXCEL_EXPORT_RE = re.compile(
+    r"\b(?:XLSX\.|writeFile\s*\(|saveAsExcel|exportToExcel|exportExcel|"
+    r"downloadExcel|toExcel|excelDownload|excelExport)\w*\s*\(?",
+    re.IGNORECASE,
+)
+
+# 파일 다운로드 (excel 외) — Blob/saveAs/FileSaver
+_FILE_DOWNLOAD_RE = re.compile(
+    r"\b(?:saveAs|fileDownload|downloadFile)\s*\("
+    r"|"
+    r"\bcreateObjectURL\s*\(\s*new\s+Blob",
+)
+
+_PRINT_RE = re.compile(r"\bwindow\.print\s*\(")
+_CLIPBOARD_RE = re.compile(
+    r"\bnavigator\.clipboard\.(?:writeText|write)\s*\("
+    r"|"
+    r"\bcopyToClipboard\s*\("
+)
+
 _NARRATIVE_PATTERNS: list[tuple[re.Pattern, str]] = [
+    # Modal/popup 오픈 — 가장 specific 패턴 먼저
     (_MODAL_OPEN_STATE_RE,  "Modal 오픈"),
     (_MODAL_OPEN_SETTER_RE, "Modal 오픈"),
     (_MODAL_OPEN_API_RE,    "Modal 오픈"),
+    # 그리드 조작 — setState 보다 우선 (구체 → 일반 순)
+    (_GRID_ADD_ROW_RE,      "그리드 행 추가"),
+    (_GRID_DEL_ROW_RE,      "그리드 행 삭제"),
+    (_GRID_EDIT_MODE_RE,    "그리드 수정 모드"),
+    # 파일/엑셀/인쇄/클립보드
+    (_EXCEL_EXPORT_RE,      "엑셀 다운로드"),
+    (_FILE_DOWNLOAD_RE,     "파일 다운로드"),
+    (_PRINT_RE,             "인쇄"),
+    (_CLIPBOARD_RE,         "클립보드 복사"),
+    # 일반 fallback
     (re.compile(r"\bsetState\s*\("), "상태 갱신"),
     (re.compile(r"\buseState\s*\(|\bset[A-Z]\w*\s*\("), "상태 갱신"),
     (re.compile(r"\bdispatch\s*\("), "redux dispatch"),
@@ -1717,12 +1783,22 @@ def _extract_modal_title_for_handler(handler_body: str, file_content: str) -> st
     return candidates[0] if candidates else ""
 
 
+# 구체 narrative — 매칭되면 일반 fallback (``상태 갱신`` / ``redux dispatch``)
+# 은 중복이라 제거. ``그리드 행 추가, 상태 갱신`` → ``그리드 행 추가`` 만.
+_SPECIFIC_NARRATIVES = frozenset({
+    "Modal 오픈", "그리드 행 추가", "그리드 행 삭제", "그리드 수정 모드",
+    "엑셀 다운로드", "파일 다운로드", "인쇄", "클립보드 복사",
+    "화면 이동", "윈도우 제어",
+})
+_FALLBACK_NARRATIVES = frozenset({"상태 갱신", "redux dispatch"})
+
+
 def _describe_handler_body(body: str) -> str:
     """handler body 의 사이드이펙트 narrative — URL 호출 없는 버튼 설명용.
 
-    regex 패턴 매칭으로 Modal 오픈 / 상태 갱신 / dispatch / 화면 이동 등을
-    short 라벨로 요약. 동일 카테고리 중복 제거. URL 무관 이벤트도 events
-    리스트에 의미 있는 정보 함께 표시하기 위함.
+    regex 패턴 매칭으로 Modal 오픈 / 그리드 조작 / 엑셀 / 인쇄 등을 short
+    라벨로 요약. 동일 카테고리 중복 제거. 구체 narrative 있으면 일반
+    fallback (``상태 갱신`` / ``redux dispatch``) 은 중복으로 제거.
     """
     if not body:
         return ""
@@ -1732,6 +1808,8 @@ def _describe_handler_body(body: str) -> str:
             continue
         if pat.search(body):
             found.append(desc)
+    if any(d in _SPECIFIC_NARRATIVES for d in found):
+        found = [d for d in found if d not in _FALLBACK_NARRATIVES]
     return ", ".join(found)
 
 
