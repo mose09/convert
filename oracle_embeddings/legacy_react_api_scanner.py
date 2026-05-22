@@ -937,6 +937,12 @@ def _scan_body_with_chain(body: str,
         return urls
 
     # 2. 호출 함수 chain follow
+    # dispatcher 분기 인식 — body 안 ``fn('literal')`` 호출이면 sub_body 의
+    # ``case 'literal':`` / ``if (X === 'literal')`` 분기 body 만 follow.
+    # ``processControl = (type) => switch (type) { case 'save': axios... }``
+    # 같이 axios 가 dispatcher case 안에 직접 있는 케이스 — 전체 body 보면
+    # 모든 case 의 axios 가 cross 매핑.
+    branch_calls = _calls_with_literal_arg(body)
     seen_names: set[str] = set()
     for m in _FN_CALL_LEAF_RE.finditer(body):
         fn = m.group("fn") or ""
@@ -945,16 +951,29 @@ def _scan_body_with_chain(body: str,
         if fn in seen_names:
             continue
         seen_names.add(fn)
+        literals = branch_calls.get(fn)
         for fp, sub_body in fn_index.get(fn) or []:
             key = (fp, fn)
             if key in seen:
                 continue
             seen.add(key)
-            urls |= _scan_body_with_chain(
-                sub_body, fn_index, call_re, const_map, strip_patterns,
-                depth - 1, seen, prop_index, via_props, current_file,
-                backend_name_map=backend_name_map, repo_index_out=repo_index_out,
-            )
+            if literals:
+                # 분기 별 body 만 follow. case 못 찾으면 그 literal skip
+                # (false positive 방지) — 전체 body fallback 안 함.
+                for lit in literals:
+                    case_body = _slice_dispatcher_branch(sub_body, lit)
+                    if case_body:
+                        urls |= _scan_body_with_chain(
+                            case_body, fn_index, call_re, const_map, strip_patterns,
+                            depth - 1, seen, prop_index, via_props, current_file,
+                            backend_name_map=backend_name_map, repo_index_out=repo_index_out,
+                        )
+            else:
+                urls |= _scan_body_with_chain(
+                    sub_body, fn_index, call_re, const_map, strip_patterns,
+                    depth - 1, seen, prop_index, via_props, current_file,
+                    backend_name_map=backend_name_map, repo_index_out=repo_index_out,
+                )
 
     # 3. this.props.X(...) — prop binding chain follow.
     if prop_index:
