@@ -1747,6 +1747,10 @@ def collect_handler_contexts(
         all_files, fn_index, call_re, const_map, strip_patterns
     )
     action_to_type = _collect_action_to_type(all_files)
+    # cross-file mapDispatchToProps 글로벌 인덱스 — popup handler 가
+    # ``this.props.X(...)`` 부르고 X 정의가 부모 (다른 파일) 의
+    # ``mapDispatchToProps`` 인 케이스 chain 매칭.
+    mdtp_map = _collect_mdtp_action_map(all_files)
     # 부모→자식 prop binding 인덱스. 자식 popup 의 ``this.props.X(...)`` 호출
     # 시 부모 JSX 의 ``<Child X={this.handlerY}>`` lookup 으로 chain follow.
     prop_index = _collect_prop_bindings(all_files, frontend_dir)
@@ -1766,22 +1770,11 @@ def collect_handler_contexts(
         if added:
             print(f"  closure popup augment: +{added} popup files")
 
-    # folder_to_urls: 같은 폴더의 sibling 파일이 호출하는 URL 합집합.
-    # redux + saga 패턴에서 Container/index.js 의 click handler 가
-    # ``dispatch(actions.X)`` 만 부르고 실제 axios 는 같은 폴더 saga.js
-    # 에 있는 경우. handler body 안에서 직접 axios 못 찾으면 같은
-    # 폴더 saga URL 들에 귀속 (folder-scope fallback).
-    folder_to_urls: dict[str, set[str]] = {}
-    # slug_to_urls: nested apps 케이스도 매칭하기 위해 file path 에서 추출한
-    # 모든 slug 후보로 등록 (``apps/<group>/<slug>/...`` 의 group + slug 둘 다).
-    slug_to_urls: dict[str, set[str]] = {}
-    for url, files in api_index.items():
-        for f in files:
-            abs_f = os.path.join(frontend_dir, f)
-            folder = os.path.dirname(abs_f)
-            folder_to_urls.setdefault(folder, set()).add(url)
-            for slug in _extract_app_slugs(abs_f):
-                slug_to_urls.setdefault(slug.lower(), set()).add(url)
+    # 이전 PR #241/#242 의 slug_to_urls / folder_to_urls fallback 은 같은
+    # slug 의 모든 saga URL 합집합이라 false positive 다발 (사용자 보고:
+    # combo URL 만 부르는 dropdown 에 Search/Delete URL 까지 잡힘,
+    # onAddRow 인데 저장 URL 잡힘). PR #246 에서 제거하고 multi-level
+    # action type chain (``_resolve_saga_urls_for_handler``) 으로 대체.
 
     out: dict[str, list[dict]] = {}
 
@@ -1890,37 +1883,25 @@ def collect_handler_contexts(
         #     // saga.js
         #     yield call(axios.post, '/api/svid-modeling/save')
         #
-        # connect HOC 의 자동 binding 은 우리 prop_index 가 못 잡으므로
-        # slug/폴더 단위 fallback 으로 saga URL 귀속. event 라벨에 ``+saga``
-        # 마커 (CLAUDE.md 컨벤션).
+        # connect HOC 의 자동 binding 은 prop_index 가 못 잡으므로 action
+        # type 상수 글로벌 chain 으로 매칭. event 라벨에 ``+saga`` 마커
+        # (CLAUDE.md 컨벤션). URL 없는 모든 trigger 에 chain resolver 시도
+        # (multi-level recursive 라 ``this.X()`` 위임 패턴도 자동 follow).
+        # 매칭 fail 이면 URL 빈 채 emit (narrative + label keep). 이전
+        # PR #241/#242 의 slug/folder fallback 은 false positive 다발이라
+        # 제거 (사용자 보고: combo URL only dropdown 에 Search/Delete URL,
+        # onAddRow 에 저장 URL 까지 합집합).
         saga_indirect_used = False
         if not urls_in_handler:
             body_for_check = bodies_to_scan[0] if bodies_to_scan else (ev.get("body") or "")
-            if _is_indirect_handoff(body_for_check):
-                # 1차 정확 매칭 — action type 상수 글로벌 chain.
-                #   handler body → actions.X (또는 this.props.X via
-                #   mapDispatchToProps) → action_to_type[X] → saga_urls_by_type
-                #   slug/folder 무관, 가장 정확.
-                chain_urls = _resolve_saga_urls_for_handler(
-                    body_for_check, content,
-                    action_to_type, saga_urls_by_type,
-                )
-                if chain_urls:
-                    urls_in_handler = set(chain_urls)
-                    saga_indirect_used = True
-                else:
-                    # 2차 fallback — slug/folder 컨벤션 (PR #241/#242).
-                    # action type 매칭 실패 시 (예: action 이 type 없이
-                    # 다른 형태) 보수적으로 같은 slug saga URL 합집합.
-                    slugs = _extract_app_slugs(rel) or _extract_app_slugs(fp)
-                    fallback: set[str] = set()
-                    for slug in slugs:
-                        fallback |= slug_to_urls.get(slug.lower(), set())
-                    if not fallback:
-                        fallback |= folder_to_urls.get(os.path.dirname(fp), set())
-                    if fallback:
-                        urls_in_handler = set(fallback)
-                        saga_indirect_used = True
+            chain_urls = _resolve_saga_urls_for_handler(
+                body_for_check, content,
+                action_to_type, saga_urls_by_type,
+                fn_index=fn_index, mdtp_map=mdtp_map, depth=3,
+            )
+            if chain_urls:
+                urls_in_handler = set(chain_urls)
+                saga_indirect_used = True
 
         if not urls_in_handler and not include_url_less:
             continue
@@ -2125,14 +2106,41 @@ _DISPATCH_ACTION_RE = re.compile(
     r"\b(?:dispatch|store\.dispatch)\s*\(\s*(?:[\w.]+\.)?(?P<act>\w+)\s*\("
 )
 _MDTP_KV_RE = re.compile(
-    # mapDispatchToProps body — ``key: ... actions.value(...)``
-    r"(?P<key>\w+)\s*:\s*[^,}]*?\b(?:actions?|ACTIONS?)\.(?P<act>\w+)"
+    # mapDispatchToProps body — ``key: ... actions.value(...)``. ``[^,}]``
+    # 로 콤마 제외하면 함수 인자 안 콤마 (``(a, b, c)``) 에 막혀 매칭
+    # 실패 — ``[^\n}]`` 로 한 줄 단위 매칭 (한 entry 가 보통 한 줄).
+    r"(?P<key>\w+)\s*:\s*[^\n}]*?\b(?:actions?|ACTIONS?)\.(?P<act>\w+)"
 )
+
+
+def _collect_mdtp_action_map(all_files) -> dict[str, set[str]]:
+    """모든 파일의 ``mapDispatchToProps`` body 패턴에서 ``key: actions.value``
+    추출. Return ``{props_key: {action_name, ...}}``.
+
+    cross-file popup 케이스 — popup handler 가 ``this.props.X(...)`` 부르고
+    X 정의가 부모 컴포넌트 (다른 파일) 의 mapDispatchToProps 인 경우 chain
+    resolver 가 cross-file lookup 으로 매칭. 같은 key 가 여러 파일에 정의
+    되면 union (보수적 — chain resolver 가 action_to_type 매칭 필요해서
+    false positive 자연스럽게 거름).
+    """
+    out: dict[str, set[str]] = {}
+    for fp in all_files:
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        for m in _MDTP_KV_RE.finditer(content):
+            out.setdefault(m.group("key"), set()).add(m.group("act"))
+    return out
 
 
 def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
                                    action_to_type: dict[str, str],
-                                   saga_urls_by_type: dict[str, set[str]]
+                                   saga_urls_by_type: dict[str, set[str]],
+                                   fn_index: dict | None = None,
+                                   mdtp_map: dict | None = None,
+                                   depth: int = 2,
+                                   seen: set | None = None,
                                    ) -> set[str]:
     """handler body + 같은 파일 컨텍스트에서 action_name 들을 찾고,
     action_type → saga URL chain 으로 매칭된 URL set 반환.
@@ -2141,7 +2149,15 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
       a) handler body 에 ``dispatch(actions.Y(...))`` 직접 호출
       b) handler body 에 ``this.props.X(...)`` 호출 — 같은 파일
          ``mapDispatchToProps`` 의 ``X: ... actions.Y(...)`` 로 Y 매핑
+      c) **multi-level** — handler body 의 helper fn 호출 (예:
+         ``this.handleLoadingSdptParam()``) 의 body 도 재귀 follow.
+         ``handleSdptChange → handleLoadingSdptParam → dispatch(actions.X)``
+         같은 indirect chain 도 정확히 잡음.
+
+    cycle 방지 ``seen`` set, recursion depth ``depth`` 로 무한 follow 방지.
     """
+    if seen is None:
+        seen = set()
     urls: set[str] = set()
     candidate_actions: set[str] = set()
 
@@ -2149,16 +2165,22 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
     for m in _DISPATCH_ACTION_RE.finditer(handler_body):
         candidate_actions.add(m.group("act"))
 
-    # (b) handler body 의 this.props.X → 같은 파일 mapDispatchToProps 에서
-    # X key 의 actions.Y 매핑
+    # (b) handler body 의 this.props.X → mapDispatchToProps 에서 X key 의
+    # actions.Y 매핑. 같은 파일 우선 (정확), 매칭 못 한 props_key 는 글로벌
+    # mdtp_map (cross-file popup 부모 케이스) 으로 확장.
     props_keys: set[str] = set()
     for m in _THIS_PROPS_CALL_LEAF_RE.finditer(handler_body):
         props_keys.add(m.group(1))
     if props_keys:
+        matched_local: set[str] = set()
         for m in _MDTP_KV_RE.finditer(handler_file_content):
             k = m.group("key")
             if k in props_keys:
                 candidate_actions.add(m.group("act"))
+                matched_local.add(k)
+        if mdtp_map:
+            for k in props_keys - matched_local:
+                candidate_actions |= mdtp_map.get(k, set())
 
     # candidate_actions → action_to_type → saga_urls_by_type
     for act in candidate_actions:
@@ -2166,6 +2188,21 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
         if not type_key:
             continue
         urls |= saga_urls_by_type.get(type_key, set())
+
+    # (c) multi-level — handler body 의 helper fn 호출 sub body 도 recurse.
+    # ``handler → helper class method → dispatch(actions.Y)`` 같은 indirect.
+    if fn_index and depth > 0:
+        for m in _FN_CALL_LEAF_RE.finditer(handler_body):
+            fn = m.group("fn") or ""
+            if not fn or fn in seen or fn in _RESERVED_NEAR_BLOCK:
+                continue
+            seen.add(fn)
+            for _fp, sub_body in fn_index.get(fn) or []:
+                urls |= _resolve_saga_urls_for_handler(
+                    sub_body, handler_file_content,
+                    action_to_type, saga_urls_by_type,
+                    fn_index, mdtp_map, depth - 1, seen,
+                )
     return urls
 
 
