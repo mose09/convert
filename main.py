@@ -1874,6 +1874,14 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
     )
     print(f"  handler contexts: {len(handlers_by_url)} URLs collected")
 
+    # 옵트인 LLM narrative 보강 — regex 가 못 잡은 trigger 의 의도 (필터
+    # 초기화 / 전체 선택 등) 를 LLM 으로 구체화. handlers_by_url ctx 의
+    # narrative 필드 in-place 수정 → extract_screen_layouts 가 같은 dict
+    # 참조해서 events 시트에 반영.
+    if getattr(args, "enrich_trigger_narrative", False):
+        from oracle_embeddings.legacy_react_api_scanner import enrich_narratives_with_llm
+        enrich_narratives_with_llm(handlers_by_url, config={})
+
     triggers = extract_button_triggers(frontend_dir, api_idx, patterns=patterns)
     print(f"  trigger map: {len(triggers)} URLs labeled")
 
@@ -2463,6 +2471,11 @@ def main():
                                 "Search Panel / DataTable / Edit Mode / Tabs / "
                                 "Events→backend URL 추출 후 정적 HTML mockup 생성. "
                                 "산출물: output/<영역>/<일자>/screens/<file>.html")
+    al_parser.add_argument("--enrich-trigger-narrative", action="store_true",
+                           help="narrative 가 비어있거나 '상태 갱신' / 'redux dispatch' "
+                                "만인 trigger 에 LLM 으로 구체 설명 보강 (예: '필터 초기화', "
+                                "'전체 행 선택'). batch 호출. PATTERN_LLM_* 또는 LLM_* env "
+                                "사용. --extract-screen-layout 와 함께 사용. 옵트인.")
     al_parser.add_argument("--render-screenshots", action="store_true",
                            help="(스텁, 별도 환경 필요) Playwright 로 진짜 React "
                                 "화면 스크린샷. 사용자 PC 에 React 빌드/실행 + "
