@@ -14,6 +14,12 @@
    시작 전 `Skill` 도구로 `karpathy-guidelines` 호출 → 4가지 원칙
    (Think Before Coding / Simplicity First / Surgical Changes /
    Goal-Driven Execution) 적용.
+5. **기능 추가·변경 시 `user_manual.html` 재빌드 필수**. 새 커맨드 /
+   옵션 / 산출물 경로 / 워크플로우 변경 → 먼저 README.md 갱신 →
+   `python main.py docs` 실행 → 결과 `user_manual.html` 도 같은 PR 에
+   commit. README 와 매뉴얼이 어긋난 채로 머지 금지. 새 커맨드면
+   `oracle_embeddings/docs_builder.py` 의 `CATEGORY_MAP` / `SECTION_MAP`
+   에 매핑 추가도 잊지 말 것.
 
 ## 프로젝트 컨텍스트
 

@@ -4,7 +4,7 @@ Oracle DB 스키마 + MyBatis 쿼리를 분석하여 Markdown 추출, ERD 자동
 
 FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬 LLM**으로 테이블 관계를 추론합니다.
 
-> 📖 **HTML 설명서**: 좌측 사이드바 목차 + 검색 + 다크모드 버전은 [`docs/site/index.html`](docs/site/index.html) — 브라우저로 직접 열기 (CDN 의존 X, 오프라인 OK). README 갱신 후엔 `python main.py docs` 로 재빌드.
+> 📖 **HTML 사용자 매뉴얼**: 좌측 사이드바 (카테고리 → 커맨드) + 검색 + 다크모드 버전은 루트의 [`user_manual.html`](user_manual.html) — 브라우저로 직접 열기 (CDN 의존 X, 오프라인 OK). 기능 추가·변경 후엔 **반드시 `python main.py docs` 로 재빌드**.
 
 ## 기능 요약
 

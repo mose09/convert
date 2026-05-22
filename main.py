@@ -2282,8 +2282,8 @@ def main():
     )
     docs_parser.add_argument("--readme", default="README.md",
                              help="Source markdown (default: README.md)")
-    docs_parser.add_argument("--output", default="docs/site/index.html",
-                             help="Output HTML path (default: docs/site/index.html)")
+    docs_parser.add_argument("--output", default="user_manual.html",
+                             help="Output HTML path (default: user_manual.html)")
     docs_parser.add_argument("--title", default=None,
                              help="Override page title (default: 첫 H1 텍스트)")
 
