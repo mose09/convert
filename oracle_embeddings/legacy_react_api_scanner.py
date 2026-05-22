@@ -2635,3 +2635,110 @@ def extract_validation_props(jsx_slice: str) -> list[dict]:
         val = m.group("curly") or m.group("dqs") or m.group("sqs") or ""
         out.append({"prop": prop, "value": val.strip()})
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# LLM narrative enrichment (옵트인 ``--enrich-trigger-narrative``)
+# ─────────────────────────────────────────────────────────────────────────
+#
+# regex 휴리스틱 (``_NARRATIVE_PATTERNS``) 이 못 잡은 trigger 의 의도를
+# LLM 으로 보강. 대상: narrative 가 ``""`` / ``"상태 갱신"`` / ``"redux
+# dispatch"`` 만인 (구체 narrative 없는) trigger.
+#
+# batch 단위로 LLM 호출 (token 절감). 응답은 ``{"1": "narrative", ...}``
+# JSON. ``legacy_pattern_discovery._call_llm`` 인프라 재사용.
+
+_NARRATIVE_ENRICH_TARGETS = frozenset({
+    "", "상태 갱신", "redux dispatch",
+    "상태 갱신, redux dispatch", "redux dispatch, 상태 갱신",
+})
+
+
+def _build_narrative_enrich_prompt(batch: list[tuple]) -> str:
+    """batch ``[(url, idx, ctx), ...]`` → LLM prompt 문자열."""
+    lines = [
+        "다음 React handler 들의 사용자 액션을 각각 한 줄 (한국어 5-20자) 로 요약해주세요.",
+        "backend URL 호출 없는 trigger 라 의도/효과 중심 (예: '필터 조건 초기화',",
+        "'전체 행 선택', '선택된 행 삭제', '입력값 리셋', '캘린더 popup 오픈',",
+        "'그리드 정렬 변경', '체크박스 토글' 등).",
+        "",
+        "JSON 형식만 응답 (다른 설명 X):",
+        '{"1": "narrative1", "2": "narrative2", ...}',
+        "",
+    ]
+    for j, (_url, _i, ctx) in enumerate(batch):
+        label = ctx.get("label", "") or "<no-label>"
+        handler = ctx.get("handler", "") or "<no-handler>"
+        body = (ctx.get("body", "") or "").strip()
+        if len(body) > 600:
+            body = body[:600] + "..."
+        lines.append(f"[{j + 1}] 라벨={label!r}  handler={handler!r}")
+        lines.append("body:")
+        lines.append(body or "<empty>")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def enrich_narratives_with_llm(handlers_by_url: dict,
+                               config: dict | None = None,
+                               batch_size: int = 8) -> int:
+    """narrative 가 비어있거나 일반 fallback 만인 trigger 에 LLM 으로 구체
+    설명 보강. ``--enrich-trigger-narrative`` 옵트인.
+
+    handlers_by_url 의 ctx["narrative"] 를 in-place 수정. 반환: 보강된
+    trigger 수.
+
+    실패 시 (LLM wrapper unavailable, batch call error, JSON parse fail)
+    silently skip — 기존 narrative 그대로 유지.
+    """
+    targets: list[tuple] = []  # [(url, idx, ctx)]
+    for url, ctx_list in handlers_by_url.items():
+        for i, ctx in enumerate(ctx_list):
+            narr = (ctx.get("narrative", "") or "").strip()
+            if narr not in _NARRATIVE_ENRICH_TARGETS:
+                continue
+            body = (ctx.get("body", "") or "").strip()
+            if len(body) < 10:
+                continue
+            targets.append((url, i, ctx))
+
+    if not targets:
+        print("  enrich_narratives_with_llm: 보강 대상 trigger 0건 — skip")
+        return 0
+
+    print(f"  enrich_narratives_with_llm: {len(targets)} trigger 대상, "
+          f"batch={batch_size}, LLM 호출 시작...")
+
+    try:
+        from .legacy_pattern_discovery import _call_llm as llm_call
+    except Exception as exc:
+        print(f"  enrich_narratives_with_llm: LLM wrapper unavailable ({exc}) — skip")
+        return 0
+
+    enriched = 0
+    for start in range(0, len(targets), batch_size):
+        batch = targets[start: start + batch_size]
+        prompt = _build_narrative_enrich_prompt(batch)
+        try:
+            resp = llm_call(prompt, config or {}, label="narrative_enrich")
+        except Exception as exc:
+            print(f"  batch {start // batch_size + 1}: LLM call failed ({exc})")
+            continue
+        if not isinstance(resp, dict):
+            continue
+        for j, (_url, _i, ctx) in enumerate(batch):
+            key = str(j + 1)
+            llm_narr = (resp.get(key) or "").strip()
+            if not llm_narr or len(llm_narr) > 60:
+                continue
+            existing = (ctx.get("narrative", "") or "").strip()
+            # 기존 narrative (상태 갱신 등) 가 있으면 LLM 결과 + (기존)
+            # 형태로 합성. 없으면 LLM 결과만.
+            if existing:
+                ctx["narrative"] = f"{llm_narr} ({existing})"
+            else:
+                ctx["narrative"] = llm_narr
+            enriched += 1
+
+    print(f"  enrich_narratives_with_llm: {enriched}/{len(targets)} 보강 완료")
+    return enriched
