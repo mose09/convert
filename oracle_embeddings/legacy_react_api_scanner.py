@@ -1597,11 +1597,26 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     return {k: sorted(v) for k, v in triggers.items()}
 
 
+# Modal 오픈 — setState({...key: true}) 의 key 에 visible/open/show/
+# modal/popup/dialog 단어 substring (camelCase: ``modalVisible``,
+# ``searchPopupOpen`` 등). IGNORECASE 로 어느 case 든 매칭.
+_MODAL_OPEN_STATE_RE = re.compile(
+    r"setState\s*\(\s*\{[^}]*?\b(?P<key>\w*(?:visible|open|show|modal|popup|dialog)\w*)\s*:\s*true",
+    re.DOTALL | re.IGNORECASE,
+)
+_MODAL_OPEN_SETTER_RE = re.compile(
+    r"\bset(?P<setter>[A-Z]\w*(?:visible|open|show)\w*)\s*\(\s*true\b",
+    re.IGNORECASE,
+)
+_MODAL_OPEN_API_RE = re.compile(
+    r"\b(?:openModal|showModal|openPopup|showPopup|openDialog|showDialog|"
+    r"openDrawer|showDrawer)\s*\(",
+)
+
 _NARRATIVE_PATTERNS: list[tuple[re.Pattern, str]] = [
-    (re.compile(r"setState\s*\(\s*\{[^}]*\b(visible|open|isOpen|show)\b[^}]*:\s*true",
-                re.DOTALL), "popup 열기"),
-    (re.compile(r"\bset(Visible|Open|Show)\s*\(\s*true\b"), "popup 열기"),
-    (re.compile(r"\bopenModal\s*\(|\bshowModal\s*\(|\.show\s*\(\s*\)"), "popup 열기"),
+    (_MODAL_OPEN_STATE_RE,  "Modal 오픈"),
+    (_MODAL_OPEN_SETTER_RE, "Modal 오픈"),
+    (_MODAL_OPEN_API_RE,    "Modal 오픈"),
     (re.compile(r"\bsetState\s*\("), "상태 갱신"),
     (re.compile(r"\buseState\s*\(|\bset[A-Z]\w*\s*\("), "상태 갱신"),
     (re.compile(r"\bdispatch\s*\("), "redux dispatch"),
@@ -1610,10 +1625,52 @@ _NARRATIVE_PATTERNS: list[tuple[re.Pattern, str]] = [
 ]
 
 
+# ``<Modal|Dialog|Drawer|Popup ... title="X">`` 의 title 추출 — handler 의
+# setState key 가 같은 Modal 의 ``visible={this.state.<key>}`` 와 매칭되면
+# 그 title 을 narrative prefix 로 (예: "SVID Modeling 복사 Modal 오픈").
+_MODAL_OPEN_TAGS = ("Modal", "Dialog", "Drawer", "Popup", "Sheet", "Layer")
+_MODAL_TITLE_OPEN_RE = re.compile(
+    rf"<(?P<comp>(?:{'|'.join(_MODAL_OPEN_TAGS)})\w*)\b(?P<attrs>[^>]*)>"
+)
+_MODAL_TITLE_ATTR_RE = re.compile(r"""\btitle\s*=\s*['"]([^'"]+)['"]""")
+
+
+def _extract_modal_title_for_handler(handler_body: str, file_content: str) -> str:
+    """handler 가 띄우는 Modal/Dialog/Drawer/Popup 의 title prop 추출.
+
+    1) handler body 의 setState key 추출 → 같은 파일 ``<Modal visible={
+       this.state.<key>}>`` 매칭. 일치하면 그 Modal 의 title.
+    2) 못 찾으면 같은 파일 첫 ``<Modal title="...">`` 의 title (보수적).
+    3) 그것도 없으면 빈 문자열 — narrative 는 단순히 "Modal 오픈".
+    """
+    state_key = None
+    sk = _MODAL_OPEN_STATE_RE.search(handler_body)
+    if sk:
+        state_key = sk.group("key")
+    candidates: list[str] = []
+    for m in _MODAL_TITLE_OPEN_RE.finditer(file_content):
+        attrs = m.group("attrs")
+        tm = _MODAL_TITLE_ATTR_RE.search(attrs)
+        if not tm:
+            continue
+        title = tm.group(1).strip()
+        if not title:
+            continue
+        if state_key:
+            vis = re.search(
+                rf"\bvisible\s*=\s*\{{\s*(?:this\.state\.)?{re.escape(state_key)}\b",
+                attrs,
+            )
+            if vis:
+                return title
+        candidates.append(title)
+    return candidates[0] if candidates else ""
+
+
 def _describe_handler_body(body: str) -> str:
     """handler body 의 사이드이펙트 narrative — URL 호출 없는 버튼 설명용.
 
-    regex 패턴 매칭으로 popup 열기 / 상태 갱신 / dispatch / 화면 이동 등을
+    regex 패턴 매칭으로 Modal 오픈 / 상태 갱신 / dispatch / 화면 이동 등을
     short 라벨로 요약. 동일 카테고리 중복 제거. URL 무관 이벤트도 events
     리스트에 의미 있는 정보 함께 표시하기 위함.
     """
@@ -1626,6 +1683,19 @@ def _describe_handler_body(body: str) -> str:
         if pat.search(body):
             found.append(desc)
     return ", ".join(found)
+
+
+def _build_narrative_with_modal_title(body: str, file_content: str) -> str:
+    """``_describe_handler_body`` + ``Modal 오픈`` 에 같은 파일 ``<Modal
+    title="...">`` 의 title 을 prefix 로 합성. 예: ``"SVID Modeling 복사 Modal 오픈"``.
+    """
+    narrative = _describe_handler_body(body)
+    if not narrative or "Modal 오픈" not in narrative:
+        return narrative
+    title = _extract_modal_title_for_handler(body, file_content)
+    if title:
+        narrative = narrative.replace("Modal 오픈", f"{title} Modal 오픈")
+    return narrative
 
 
 def collect_handler_contexts(
@@ -1898,9 +1968,11 @@ def collect_handler_contexts(
             # 도 noise 로 간주해서 제외 — local 자기-호출이 우선.
             "parent_handlers": sorted(via_props - handlers_by_file.get(rel, set())),
             # JSX 출현 순서 (events 시트 정렬 secondary key) + URL 무관
-            # 이벤트 narrative (popup 열기 / 상태 갱신 / dispatch 등).
+            # 이벤트 narrative (Modal 오픈 / 상태 갱신 / dispatch 등).
             "source_offset": offset,
-            "narrative": _describe_handler_body(body_for_narrative),
+            "narrative": _build_narrative_with_modal_title(
+                body_for_narrative, content
+            ),
         }
         if urls_in_handler:
             for u in urls_in_handler:
