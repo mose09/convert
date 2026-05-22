@@ -2252,11 +2252,47 @@ _THIS_PROPS_CALL_LEAF_RE = re.compile(r"\bthis\.props\.(\w+)\s*\(")
 _DISPATCH_ACTION_RE = re.compile(
     r"\b(?:dispatch|store\.dispatch)\s*\(\s*(?:[\w.]+\.)?(?P<act>\w+)\s*\("
 )
+_DESTRUCT_PROPS_RE = re.compile(
+    # ``const { X, Y, Z: alias } = this.props;`` — destructured prop names.
+    # handler body 또는 같은 파일 상단에서 props 분해. 이후 ``X(...)`` 호출
+    # 은 ``this.props.X(...)`` 와 동등하지만 우리 ``_THIS_PROPS_CALL_LEAF_RE``
+    # 는 ``this.props.`` prefix 강제라 매칭 X. destructured 이름 따로 수집.
+    r"\bconst\s*\{\s*(?P<names>[^}]+?)\s*\}\s*=\s*this\.props\b",
+    re.DOTALL,
+)
+
+
+def _extract_destructured_props(content: str) -> set[str]:
+    """파일에서 ``const { X, Y } = this.props`` 의 X, Y 이름 set 반환.
+
+    alias (``{X: alias}``) → alias 사용 (호출 시 alias 로). rest
+    (``{...rest}``) skip.
+    """
+    out: set[str] = set()
+    for m in _DESTRUCT_PROPS_RE.finditer(content):
+        for piece in m.group("names").split(","):
+            piece = piece.strip()
+            if not piece or piece.startswith("..."):
+                continue
+            # ``X: alias`` 형태면 alias 가 호출에 사용
+            if ":" in piece:
+                piece = piece.split(":", 1)[1].strip()
+            if re.match(r"^[\w$]+$", piece):
+                out.add(piece)
+    return out
+
+
 _MDTP_KV_RE = re.compile(
-    # mapDispatchToProps body — ``key: ... actions.value(...)``. ``[^,}]``
-    # 로 콤마 제외하면 함수 인자 안 콤마 (``(a, b, c)``) 에 막혀 매칭
-    # 실패 — ``[^\n}]`` 로 한 줄 단위 매칭 (한 entry 가 보통 한 줄).
-    r"(?P<key>\w+)\s*:\s*[^\n}]*?\b(?:actions?|ACTIONS?)\.(?P<act>\w+)"
+    # mapDispatchToProps body — ``key: ... actions.value(...)``.
+    # entry value 가 multi-line arrow (``key: (v) =>\n  dispatch(actions.X(v))``)
+    # 인 경우 한 줄 매칭은 실패. value boundary 는 다음 entry 의 ``,``
+    # 또는 ``}`` 인데 함수 인자 안 ``,`` 와 구별 위해 paren 통째 매칭
+    # (``\([^)]*\)``) + ``[^,;}{]`` 로 top-level 콤마/세미콜론 stop. DOTALL
+    # 로 ``\n`` 도 cover (multi-line).
+    r"(?P<key>\w+)\s*:\s*"
+    r"(?:[^,;}{]|\([^)]*\))*?"
+    r"\b(?:actions?|ACTIONS?)\.(?P<act>\w+)",
+    re.DOTALL,
 )
 
 
@@ -2413,9 +2449,19 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
     # (b) handler body 의 this.props.X → mapDispatchToProps 에서 X key 의
     # actions.Y 매핑. 같은 파일 우선 (정확), 매칭 못 한 props_key 는 글로벌
     # mdtp_map (cross-file popup 부모 케이스) 으로 확장.
+    # destructured (``const {X} = this.props``) 도 props_keys 후보 — 호출 시
+    # ``this.props.`` 없이 ``X(...)`` 로 호출되므로 _THIS_PROPS_CALL_LEAF_RE
+    # 가 못 잡음. 파일에서 destructured 이름 수집 → handler body 의 fn 호출
+    # leaf name 매칭으로 보완.
     props_keys: set[str] = set()
     for m in _THIS_PROPS_CALL_LEAF_RE.finditer(handler_body):
         props_keys.add(m.group(1))
+    destructured = _extract_destructured_props(handler_file_content)
+    if destructured:
+        for m in _FN_CALL_LEAF_RE.finditer(handler_body):
+            fn = m.group("fn") or ""
+            if fn in destructured:
+                props_keys.add(fn)
     if props_keys:
         matched_local: set[str] = set()
         for m in _MDTP_KV_RE.finditer(handler_file_content):
