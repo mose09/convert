@@ -1789,6 +1789,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    closure_max_depth: int = 3,
                    closure_token_budget: int = 12000,
                    closure_popup_augment: bool = False,
+                   screen_layout_llm_only: bool = False,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2487,6 +2488,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 closure_llm=closure_llm,
                 closure_max_depth=closure_max_depth,
                 closure_token_budget=closure_token_budget,
+                llm_only=screen_layout_llm_only,
             )
             if screen_layout_map:
                 from datetime import datetime as _dt
@@ -2649,6 +2651,7 @@ def analyze_legacy_batch(backends_root: str,
                         closure_max_depth: int = 3,
                         closure_token_budget: int = 12000,
                         closure_popup_augment: bool = False,
+                        screen_layout_llm_only: bool = False,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2786,6 +2789,7 @@ def analyze_legacy_batch(backends_root: str,
             closure_max_depth=closure_max_depth,
             closure_token_budget=closure_token_budget,
             closure_popup_augment=closure_popup_augment,
+            screen_layout_llm_only=screen_layout_llm_only,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream
