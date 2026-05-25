@@ -2296,6 +2296,19 @@ _DESTRUCT_PROPS_RE = re.compile(
     re.DOTALL,
 )
 
+# ``ComponentName.propTypes = { X: PropTypes.func, Y: PropTypes.string, ... }``
+# 또는 ``static propTypes = { ... }`` — prop 선언. 직접 호출 (``X(param)``)
+# 이면서 ``this.props.`` prefix 도 없고 destructure 도 없는 한국 SI 흔한
+# 패턴 대응. body 안 keys 가 prop 이름 후보.
+_PROPTYPES_BLOCK_RE = re.compile(
+    r"\bpropTypes\s*=\s*\{(?P<body>(?:[^{}]|\{[^{}]*\})*)\}",
+    re.DOTALL,
+)
+_PROPTYPES_KEY_RE = re.compile(
+    r"(?:^|[,{])\s*['\"]?(?P<name>[A-Za-z_$][\w$]*)['\"]?\s*:",
+    re.MULTILINE,
+)
+
 
 def _extract_destructured_props(content: str) -> set[str]:
     """파일에서 ``const { X, Y } = this.props`` 의 X, Y 이름 set 반환.
@@ -2314,6 +2327,26 @@ def _extract_destructured_props(content: str) -> set[str]:
                 piece = piece.split(":", 1)[1].strip()
             if re.match(r"^[\w$]+$", piece):
                 out.add(piece)
+    return out
+
+
+def _extract_proptypes_names(content: str) -> set[str]:
+    """``ComponentName.propTypes = { X: ..., Y: ... }`` 또는 ``static
+    propTypes = { ... }`` 블록의 top-level key 이름 set.
+
+    한국 SI 흔한 패턴 — destructure 없이 ``X(param)`` 직접 호출하면서
+    propTypes 에만 prop 선언. ``_DESTRUCT_PROPS_RE`` 가 못 잡는 경우의
+    방어선. False positive 는 뒤 단계 ``action_to_type`` 매칭에서 자동
+    필터링되므로 안전.
+    """
+    out: set[str] = set()
+    for m in _PROPTYPES_BLOCK_RE.finditer(content):
+        body = m.group("body")
+        # nested ``{...}`` (예: PropTypes.shape({...})) 안 key 는 prop 이
+        # 아니므로 mask. 단순 1-depth mask 로 충분.
+        masked = re.sub(r"\{[^{}]*\}", "{}", body)
+        for nm in _PROPTYPES_KEY_RE.finditer(masked):
+            out.add(nm.group("name"))
     return out
 
 
@@ -2491,11 +2524,17 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
     props_keys: set[str] = set()
     for m in _THIS_PROPS_CALL_LEAF_RE.finditer(handler_body):
         props_keys.add(m.group(1))
-    destructured = _extract_destructured_props(handler_file_content)
-    if destructured:
+    # destructured (``const {X} = this.props``) + propTypes 선언만 있고
+    # 직접 호출 (``X(param)``) 인 케이스 둘 다 합쳐서 prop name 후보.
+    # propTypes 는 한국 SI 에서 destructure 없이 그냥 호출하는 패턴 대응.
+    prop_candidates = (
+        _extract_destructured_props(handler_file_content)
+        | _extract_proptypes_names(handler_file_content)
+    )
+    if prop_candidates:
         for m in _FN_CALL_LEAF_RE.finditer(handler_body):
             fn = m.group("fn") or ""
-            if fn in destructured:
+            if fn in prop_candidates:
                 props_keys.add(fn)
     if props_keys:
         matched_local: set[str] = set()
