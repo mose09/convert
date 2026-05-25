@@ -47,9 +47,10 @@ def main() -> int:
         _locate_handler_body, _locate_handler_start,
         _MDTP_KV_RE, _THIS_PROPS_CALL_LEAF_RE, _DISPATCH_ACTION_RE,
         _EXPORT_ACTION_RE, _ACTION_TYPE_RE, _SAGA_TAKE_RE,
-        _URL_LITERAL_IN_BODY_RE, _slice_function_body,
+        _URL_LITERAL_IN_BODY_RE, _slice_function_body, _FN_CALL_LEAF_RE,
         _build_call_regex, _DEFAULT_API_METHODS, _collect_url_constants,
         _resolve_saga_urls_for_handler,
+        _extract_destructured_props, _extract_proptypes_names,
     )
 
     fe_dir = os.path.abspath(args.frontend_dir)
@@ -87,13 +88,38 @@ def main() -> int:
 
     # ── 2. body 안 직접/간접 호출 ──────────────────────────────────
     direct_actions = [m.group("act") for m in _DISPATCH_ACTION_RE.finditer(body)]
-    props_keys = [m.group(1) for m in _THIS_PROPS_CALL_LEAF_RE.finditer(body)]
-    print(f"  · this.props.X() 호출: {props_keys or '(없음)'}")
+    props_keys = set(m.group(1) for m in _THIS_PROPS_CALL_LEAF_RE.finditer(body))
+    # destructure + propTypes 도 props_key 후보로 (resolver 와 동일 로직).
+    destructured = _extract_destructured_props(content)
+    proptypes = _extract_proptypes_names(content)
+    prop_candidates = destructured | proptypes
+    direct_call_props: set[str] = set()
+    if prop_candidates:
+        for m in _FN_CALL_LEAF_RE.finditer(body):
+            fn = m.group("fn") or ""
+            if fn in prop_candidates:
+                direct_call_props.add(fn)
+                props_keys.add(fn)
+
+    print(f"  · this.props.X() 호출: {sorted([k for k in props_keys if k not in direct_call_props]) or '(없음)'}")
     print(f"  · 직접 dispatch(actions.Y): {direct_actions or '(없음)'}")
+    print(f"  · destructure ({{X}} = this.props) 후 직접 호출: "
+          f"{sorted([k for k in direct_call_props if k in destructured]) or '(없음)'}")
+    print(f"  · propTypes 선언 + 직접 호출: "
+          f"{sorted([k for k in direct_call_props if k in proptypes and k not in destructured]) or '(없음)'}")
+    if args.verbose:
+        print(f"  · destructured set ({len(destructured)}): {sorted(destructured)[:10]}{'...' if len(destructured) > 10 else ''}")
+        print(f"  · propTypes set ({len(proptypes)}): {sorted(proptypes)[:10]}{'...' if len(proptypes) > 10 else ''}")
 
     if not direct_actions and not props_keys:
-        print(f"✗ Step 2: body 에 redux dispatch / this.props 호출 없음 — "
+        print(f"✗ Step 2: body 에 redux dispatch / this.props 호출 없음 + destructure/propTypes 매칭 0 — "
               f"saga chain 시작점 없음 (handler 가 axios 를 직접 호출하지 않으면 URL 추적 불가)")
+        # 사용자 진단 단서: body 안 모든 fn 호출 leaf
+        all_calls = sorted(set(m.group("fn") for m in _FN_CALL_LEAF_RE.finditer(body) if m.group("fn")))
+        if all_calls:
+            print(f"   → body 안 fn 호출 전체: {all_calls[:8]}{'...' if len(all_calls) > 8 else ''}")
+            print(f"   → 위 함수 중 prop 인 것이 있다면 destructure / propTypes 선언이 못 잡힌 형태 (functional"
+                  f" component arg 분해? render prop?). --verbose 로 raw body 확인.")
         return 1
     print(f"✓ Step 2: trigger 시작점 식별")
 

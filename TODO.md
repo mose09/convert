@@ -151,6 +151,23 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: propTypes 선언 + 직접 호출 패턴 (`X(param)`) saga chain 인식
+
+사용자 보고: Search 버튼 backend URL 빠짐. 진단 결과 `const {X} = this.props;
+X(param)` 또는 `X(param)` 직접 호출 (propTypes 에만 선언) 패턴에서 chain
+끊김. resolver 의 `_extract_destructured_props` 는 `const {X} = this.props`
+만 잡고 propTypes-only 패턴은 못 잡음.
+
+- [x] `_PROPTYPES_BLOCK_RE` + `_PROPTYPES_KEY_RE` regex 추가 (top-level
+      key 만, nested `shape({...})` 등 1-depth mask 로 false 방지)
+- [x] `_extract_proptypes_names()` 함수
+- [x] `_resolve_saga_urls_for_handler` 에서 destructured + propTypes
+      union 으로 prop_candidates 구성
+- [x] `diag_saga_chain.py` Step 2 도 같은 로직 — destructure / propTypes
+      / this.props.X 3종 분리 표시
+- [x] fixture 3종 E2E (this.props.X / destructure / propTypes-only)
+      모두 ✓ — URL 정확히 추출
+
 ### 진행 중: sibling label depth 5 + 우선순위 + JSX tag 보존
 
 PR #228/#232 후속 — 사용자 환경에서 검색 라벨 여전히 "Select 하세요"
