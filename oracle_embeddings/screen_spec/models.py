@@ -43,6 +43,10 @@ class GridColumn:
     ui_type: str = ""                 # cellRenderer / cellEditor → "Text Field(Basic)" 등
     description: str = ""             # description / tooltipField (반환값 설명)
     action: str = ""                  # onCellClicked → "클릭시 X 호출" 등
+    # 분기 정보 — JSX conditional ancestor (예: ``tab === 'A'``, ``mode === 'edit'``).
+    # 같은 화면에 조건별로 다른 grid 가 render 되는 경우 grid 별 condition 으로
+    # group 가능. 빈 값이면 무조건 render (top-level).
+    condition: str = ""
 
 
 @dataclass

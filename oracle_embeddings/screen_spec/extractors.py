@@ -109,6 +109,61 @@ def _jsx_open_elements(tree, source: bytes) -> Iterator[tuple[Any, str]]:
         yield n, text_of(name_node, source).strip()
 
 
+def _extract_jsx_ancestor_condition(jsx_node, source: bytes) -> str:
+    """JSX 노드의 ancestor 중 conditional (ternary / ``&&`` / ``||``) 의 test
+    텍스트들 모음 → ``cond1 && cond2`` 형태로 결합. 같은 화면에 ``{tab === 'A'
+    && <Grid/>}`` 처럼 분기로 render 되는 grid 의 condition 추출용.
+
+    지원 패턴:
+      - ``a && <X/>``     → ``a``
+      - ``a ? <X/> : Y``  → ``a``           (then branch)
+      - ``a ? Y : <X/>``  → ``!(a)``        (else branch)
+
+    nested conditional 은 inner 부터 outer 순으로 합침. 빈 문자열이면
+    top-level (무조건 render).
+    """
+    conditions: list[str] = []
+    node = jsx_node.parent
+    # parent jsx_element 노드는 같은 JSX 라 skip — 그 위의 expression 부터.
+    while node is not None and node.type in ("jsx_element", "jsx_fragment"):
+        node = node.parent
+    while node is not None:
+        if node.type in ("ternary_expression", "conditional_expression"):
+            cond_node = (child_by_field(node, "condition")
+                         or (node.children[0] if node.children else None))
+            then_node = child_by_field(node, "consequence")
+            else_node = child_by_field(node, "alternative")
+            cond_text = text_of(cond_node, source).strip() if cond_node else ""
+            if cond_text:
+                if then_node and _node_contains(then_node, jsx_node):
+                    conditions.append(cond_text)
+                elif else_node and _node_contains(else_node, jsx_node):
+                    conditions.append(f"!({cond_text})")
+        elif node.type == "binary_expression":
+            # operator 노드 (& ||) 확인
+            op_text = ""
+            for c in node.children:
+                if c.type in ("&&", "||"):
+                    op_text = c.type
+                    break
+            if op_text == "&&":
+                left = node.children[0] if node.children else None
+                right = node.children[-1] if node.children else None
+                # jsx 가 right 쪽이면 left 가 condition
+                if right is not None and _node_contains(right, jsx_node):
+                    left_text = text_of(left, source).strip() if left else ""
+                    if left_text:
+                        conditions.append(left_text)
+        node = node.parent
+    return " && ".join(reversed(conditions))
+
+
+def _node_contains(outer, inner) -> bool:
+    """tree-sitter 노드 byte range 로 outer 가 inner 를 포함하는지 판정."""
+    return (outer.start_byte <= inner.start_byte
+            and inner.end_byte <= outer.end_byte)
+
+
 def _jsx_attributes(element_node, source: bytes) -> dict[str, str]:
     """JSX 노드의 attribute 들 → {name: literal_value_or_expr_text}.
 
@@ -864,14 +919,22 @@ def extract_grid_columns(closure: ScreenClosure,
             if tag not in table_comps:
                 continue
             attrs = _jsx_attributes(el, source)
+            # grid 의 conditional ancestor — 같은 화면에 ``{tab === 'A' &&
+            # <Grid/>}`` 처럼 분기 render 되는 경우 condition 으로 group.
+            grid_condition = _extract_jsx_ancestor_condition(el, source)
             # ag-grid: columnDefs / antd, generic: columns / RealGrid 등: schema.
             # 라이브러리별 prop 이름 union.
             cols_expr = (attrs.get("columns") or attrs.get("columnDefs")
                          or attrs.get("schema") or "")
             if not cols_expr:
                 # 컬럼 정의가 children (<TableColumn ...> 형태) 인 케이스 처리
-                cols.extend(_extract_table_column_children(el, source, f.rel_path,
-                                                          start_order=order))
+                child_cols = _extract_table_column_children(el, source, f.rel_path,
+                                                            start_order=order)
+                # children 케이스도 grid 의 condition 부여
+                if grid_condition:
+                    for c in child_cols:
+                        c.condition = grid_condition
+                cols.extend(child_cols)
                 order = len(cols)
                 continue
             # columns={SOME_CONST} → tree 에서 그 const 찾아 array of objects
@@ -905,6 +968,7 @@ def extract_grid_columns(closure: ScreenClosure,
                     description=_strip_quotes(
                         _first_present(d, _COL_DESC_KEYS) or ""),
                     action=_strip_quotes(_first_present(d, _COL_ACTION_KEYS) or ""),
+                    condition=grid_condition,
                 ))
     return cols
 
