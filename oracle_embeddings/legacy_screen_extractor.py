@@ -72,6 +72,9 @@ class TableColumn:
     ui_type: str = ""        # UI타입 (Text Field(Basic) / Dropdown / ...)
     description: str = ""    # 설명 (반환값)
     action: str = ""         # 동작 (예: "클릭시 [UI ID] 호출")
+    # 분기 — JSX conditional ancestor (예: ``tab === 'A'``). 같은 화면에
+    # 조건별로 다른 grid render 시 group key. 빈 값 = top-level (무조건).
+    condition: str = ""
 
 
 @dataclass
@@ -513,6 +516,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 ui_type=c.ui_type or "Text Field(Basic)",
                 description=c.description or "",
                 action=c.action or "",
+                condition=getattr(c, "condition", "") or "",
             )
             for c in cols
         ]
@@ -636,6 +640,7 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                 ui_type=str(c.get("ui_type", "")),
                 description=str(c.get("description", "")),
                 action=str(c.get("action", "")),
+                condition=str(c.get("condition", "")),
             ))
         else:
             # 옛 형식 (단순 string) 호환
@@ -1013,11 +1018,32 @@ def _render_table(cols: List[TableColumn]) -> str:
     """화면정의서 표 양식 — NO / 필드명(영문) / 필드설명 / 타입 / 필수여부 /
     속성 / UI타입 / 설명 / 동작 9컬럼.
 
+    grid 의 ``condition`` 이 다르면 condition 별로 sub-section 분리
+    (``{tab === 'A' && <Grid/>}`` 같이 분기 render 되는 grid). 같은
+    condition 안 컬럼들은 한 표로 묶음.
+
     hide 컬럼은 attribute='H' 로 표시하되 같은 표에 emit (별도 분리 X).
     """
     if not cols:
         return ""
+    # condition 별 group — 순서 보존 (먼저 등장한 condition 부터).
+    from collections import OrderedDict as _OD
+    groups: "_OD[str, List[TableColumn]]" = _OD()
+    for c in cols:
+        cond = getattr(c, "condition", "") or ""
+        groups.setdefault(cond, []).append(c)
+    if len(groups) == 1 and "" in groups:
+        # condition 없는 단일 그룹 — 기존 동작 (sub-section 분리 X)
+        return _render_table_inner(groups[""], heading=None)
+    sections = []
+    for cond, group_cols in groups.items():
+        heading = f"분기: {cond}" if cond else "분기 없음 (top-level)"
+        sections.append(_render_table_inner(group_cols, heading=heading))
+    return "".join(sections)
 
+
+def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
+    """내부 헬퍼 — 단일 grid (또는 단일 condition group) 의 표 렌더."""
     headers = ["NO", "필드명(영문)", "필드설명", "타입", "필수여부",
                "속성", "UI타입", "설명", "동작"]
     head_row = "".join(f"<th>{h}</th>" for h in headers)
@@ -1041,8 +1067,11 @@ def _render_table(cols: List[TableColumn]) -> str:
             f"</tr>"
         )
         body_rows.append(row)
+    title = "DataTable (그리드 정의)"
+    if heading:
+        title = f"DataTable — {heading}"
     return (
-        "<section><h2>DataTable (그리드 정의)</h2>"
+        f"<section><h2>{_esc(title)}</h2>"
         f"<table class='grid-def'><thead><tr>{head_row}</tr></thead>"
         f"<tbody>{''.join(body_rows)}</tbody></table>"
         "</section>"
