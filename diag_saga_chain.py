@@ -144,14 +144,15 @@ def main() -> int:
     print(f"  · 전체 action_to_type 매핑 수: {len(action_to_type)}")
     if args.verbose:
         for a in sorted(matched_actions):
-            print(f"  · {a} → type: {action_to_type.get(a, '(없음)')}")
+            tks = action_to_type.get(a, set())
+            print(f"  · {a} → types: {sorted(tks) if tks else '(없음)'}")
 
-    type_keys = set()
+    type_keys: set[str] = set()
     missing_in_actions = []
     for a in matched_actions:
-        tk = action_to_type.get(a)
-        if tk:
-            type_keys.add(tk)
+        tks = action_to_type.get(a)
+        if tks:
+            type_keys |= tks
         else:
             missing_in_actions.append(a)
     if missing_in_actions:

@@ -2190,7 +2190,9 @@ def _is_indirect_handoff(body: str) -> bool:
 _ACTION_TYPE_RE = re.compile(
     # ``type: constants.X`` / ``type: 'STRING'`` / ``type: X`` /
     # ``type: actionTypes.X`` — quoted literal 또는 UPPER_SNAKE 식별자.
-    r"\btype\s*:\s*(?:(?:constants|actionTypes|types|ActionTypes|ActionType)\.)?"
+    # PascalCase prefix (``Constants.``, ``Types.``) 도 인식 — 한국 SI
+    # 케이스에서 사용자 코드가 자체 모듈명을 대문자로 쓰는 경우 있음.
+    r"\btype\s*:\s*(?:(?:[Cc]onstants?|[Aa]ction[Tt]ypes?|[Tt]ypes?)\.)?"
     r"(?:['\"]([^'\"]+)['\"]|([A-Z_][A-Z0-9_]*))"
 )
 
@@ -2198,7 +2200,7 @@ _SAGA_TAKE_RE = re.compile(
     # takeLatest / takeEvery / takeLeading / debounce / throttle 의 첫 인자
     # (type) + 둘째 인자 (saga 함수 이름).
     r"\b(?:takeLatest|takeEvery|takeMaybe|takeLeading|debounce|throttle)\s*\(\s*"
-    r"(?:(?:constants|actionTypes|types|ActionTypes|ActionType)\.)?"
+    r"(?:(?:[Cc]onstants?|[Aa]ction[Tt]ypes?|[Tt]ypes?)\.)?"
     r"(?:['\"]([^'\"]+)['\"]|([A-Z_][A-Z0-9_]*))"
     r"\s*,\s*([A-Za-z_$][\w$]*)"
 )
@@ -2251,14 +2253,19 @@ def _collect_saga_urls_by_action_type(all_files, fn_index, call_re,
     return out
 
 
-def _collect_action_to_type(all_files) -> dict[str, str]:
+def _collect_action_to_type(all_files) -> dict[str, set[str]]:
     """모든 파일에서 ``export const|function <name>`` 의 body 에서
-    ``type:`` 값을 추출, ``{action_name: type_key}`` 매핑.
+    ``type:`` 값을 추출, ``{action_name: {type_key1, type_key2, ...}}`` 매핑.
 
     action_name 은 export 된 함수 이름. type_key 는 literal 또는
     UPPER_SNAKE 식별자 (saga side 와 매칭).
+
+    한 action body 안에 ``type:`` 가 여러 번 나오면 (예: nested meta
+    object) 전부 수집 — saga 매핑에 hit 하는 type 만 뒤에서 사용되므로
+    false positive 영향 0. 외곽 type 이 ``constants.X_SAGA`` 인데 nested
+    ``meta.type: 'X'`` 가 먼저 등장해서 짧은 형이 잡히던 버그 방어.
     """
-    out: dict[str, str] = {}
+    out: dict[str, set[str]] = {}
     for fp in all_files:
         try:
             content = _strip_comments(_read_file_safe(fp))
@@ -2274,12 +2281,10 @@ def _collect_action_to_type(all_files) -> dict[str, str]:
                 # paren 안 object 라 brace slicer 가 실패. content 슬라이스
                 # 로 fallback.
                 body = content[m.start(): m.start() + 1500]
-            tm = _ACTION_TYPE_RE.search(body)
-            if not tm:
-                continue
-            type_key = tm.group(1) or tm.group(2)
-            if type_key:
-                out[action_name] = type_key
+            for tm in _ACTION_TYPE_RE.finditer(body):
+                type_key = tm.group(1) or tm.group(2)
+                if type_key:
+                    out.setdefault(action_name, set()).add(type_key)
     return out
 
 
@@ -2484,7 +2489,7 @@ def _collect_mdtp_action_map(all_files) -> dict[str, set[str]]:
 
 
 def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
-                                   action_to_type: dict[str, str],
+                                   action_to_type: dict[str, set[str]],
                                    saga_urls_by_type: dict[str, set[str]],
                                    fn_index: dict | None = None,
                                    mdtp_map: dict | None = None,
@@ -2547,12 +2552,14 @@ def _resolve_saga_urls_for_handler(handler_body: str, handler_file_content: str,
             for k in props_keys - matched_local:
                 candidate_actions |= mdtp_map.get(k, set())
 
-    # candidate_actions → action_to_type → saga_urls_by_type
+    # candidate_actions → action_to_type → saga_urls_by_type.
+    # action_to_type[X] 는 set (한 action body 안 여러 type 후보) — saga
+    # 에 매핑된 것 하나라도 hit 하면 URL 수집. nested object 안에 짧은
+    # type 이 먼저 등장해 외곽 type 을 못 잡던 버그 방어.
     for act in candidate_actions:
-        type_key = action_to_type.get(act)
-        if not type_key:
-            continue
-        urls |= saga_urls_by_type.get(type_key, set())
+        type_keys = action_to_type.get(act) or ()
+        for tk in type_keys:
+            urls |= saga_urls_by_type.get(tk, set())
 
     # (c) multi-level — handler body 의 helper fn 호출 sub body 도 recurse.
     # ``handler → helper class method → dispatch(actions.Y)`` 같은 indirect.

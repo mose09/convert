@@ -151,6 +151,25 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: action body 안 nested `type:` 짧은 형 우선 매칭 버그
+
+사용자 진단 결과 saga chain step 5 에서 매핑 못 찾음. 원인: action 함수
+body 안에 nested ``meta: { type: 'X' }`` 같은 짧은 type 이 외곽 ``type:
+constants.X_SAGA`` 보다 먼저 등장하면 `_ACTION_TYPE_RE.search()` 가 첫
+매치만 반환해서 짧은 형이 잡힘. saga 는 긴 형을 listen 중이라 매핑
+끊김.
+
+- [x] `_collect_action_to_type` 가 multi-value (set) 로 변경 — body 안
+      모든 type 후보 수집. resolver 가 saga 에 hit 하는 것 하나라도
+      있으면 URL 가져옴 (false positive 는 자동 필터).
+- [x] `_resolve_saga_urls_for_handler` 시그니처 / 매칭 로직 set 호환.
+- [x] `diag_saga_chain.py` Step 4 도 multi-value 표시.
+- [x] `_ACTION_TYPE_RE` / `_SAGA_TAKE_RE` prefix 에 `Constants` /
+      `Types` / `ActionType` 등 PascalCase 도 인식 (한국 SI 자체 모듈
+      이름 대문자 사용 케이스 대응).
+- [x] fixture: nested meta.type + 외곽 type_SAGA → 최종 URL 정확
+      추출. 기존 3 패턴 (this.props.X / destructure / propTypes) 회귀 OK.
+
 ### 진행 중: propTypes 선언 + 직접 호출 패턴 (`X(param)`) saga chain 인식
 
 사용자 보고: Search 버튼 backend URL 빠짐. 진단 결과 `const {X} = this.props;
