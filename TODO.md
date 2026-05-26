@@ -151,6 +151,22 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: wrapper 컴포넌트 event + nested Button 라벨 추출
+
+사용자 보고: ``<Upload onFileUploaded={...}><Button>Upload 생성</Button>
+</Upload>`` 패턴에서 라벨 빈 채로 emit. 한국 SI 흔한 패턴 — wrapper
+컴포넌트에 event 가 달리고 실제 표시 버튼은 children. ``_extract_event_label``
+의 step 1 이 직속 children 텍스트만 보고 nested ``<Button>...</Button>``
+은 안 봐서 빈 라벨.
+
+- [x] `_extract_nested_label()` 헬퍼 — opening tag 따라 최대 depth 3 까지
+      들어가서 leaf text 추출. closing tag / self-closing / depth 초과
+      시 빈 문자열 반환.
+- [x] step 1 (직속 children) 이 빈 경우 fallback 으로 `_extract_nested_label`
+      호출 — aria-label/label prop 보다 먼저 (가시 텍스트 우선).
+- [x] fixture: 사용자 케이스 + depth 2 (div 중간) + 회귀 직접 onClick +
+      빈 wrapper 모두 정확.
+
 ### 진행 중: action body 안 nested `type:` 짧은 형 우선 매칭 버그
 
 사용자 진단 결과 saga chain step 5 에서 매핑 못 찾음. 원인: action 함수

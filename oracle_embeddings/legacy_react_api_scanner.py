@@ -1409,6 +1409,46 @@ _FORM_ITEM_LABEL_RE = re.compile(
 )
 
 
+def _extract_nested_label(content: str, after_open_tag: int, max_depth: int = 3) -> str:
+    """Wrapper opening tag 직후부터 nested 자식 element 들의 leaf text 추출.
+
+    Wrapper 컴포넌트에 event 가 달리고 children 으로 실제 Button 이
+    들어가는 케이스::
+
+        <Upload onFileUploaded={this.X}>
+          <Button title="Upload 생성">Upload 생성</Button>
+        </Upload>
+
+    Wrapper 의 직속 children 텍스트는 빈 (또는 공백) 상태이므로
+    nested ``<Button>...</Button>`` 의 text 가 진짜 라벨. depth 0 부터
+    ``max_depth`` 까지 opening tag 따라가다가 text 찾으면 반환.
+    closing tag 만나거나 max_depth 초과면 빈 문자열.
+    """
+    pos = after_open_tag
+    n = len(content)
+    for _ in range(max_depth):
+        # 다음 ``<`` 찾기. 그 전까지의 text 가 있으면 라벨 후보.
+        next_lt = content.find("<", pos)
+        if next_lt < 0 or next_lt - pos > 200:
+            return ""
+        between = content[pos:next_lt].strip()
+        if between and len(between) <= 40 and "{" not in between:
+            return between
+        # closing tag (``</...>``) 만나면 inner 컨텐츠 끝 — 라벨 없음.
+        if content[next_lt + 1:next_lt + 2] == "/":
+            return ""
+        # opening tag — 안으로 더 깊이 탐색.
+        inner_close = content.find(">", next_lt)
+        if inner_close < 0:
+            return ""
+        # self-closing (``<X />``) 면 안으로 못 들어감.
+        if content[inner_close - 1:inner_close] == "/":
+            pos = inner_close + 1
+            continue
+        pos = inner_close + 1
+    return ""
+
+
 def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
     """이벤트 핸들러의 인근 라벨 추출 — 사용자 친화적 trigger 표시용.
 
@@ -1438,6 +1478,13 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
         inner = content[tag_close + 1:next_lt].strip()
         if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
             return inner
+        # 직속 children 이 nested tag (예: ``<Upload onFileUploaded=...>
+        # <Button>Upload 생성</Button></Upload>``) — wrapper 컴포넌트에
+        # event 가 달리고 안에 실제 Button 이 들어가는 한국 SI 흔한 패턴.
+        # 안으로 3 depth 까지 들어가서 leaf children 텍스트 찾기.
+        nested = _extract_nested_label(content, tag_close + 1, max_depth=3)
+        if nested:
+            return nested
 
     # 2) aria-label / name (의미 있는 prop)
     m = _VALUE_PROP_RE.search(tag_text)
