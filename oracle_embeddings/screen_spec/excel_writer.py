@@ -26,12 +26,12 @@ _HEADERS = {
             "truncated", "검색 필드 수", "그리드 컬럼 수", "탭 수",
             "버튼 수", "검증 규칙 수", "API 호출 수 (factual)",
             "팝업 ref 수"],
-    "검색조건": ["화면명", "No", "라벨", "타입", "길이",
+    "검색조건": ["화면명", "No", "필드(영문)", "라벨", "타입", "길이",
                 "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
-                "동작", "필드명", "소스파일"],
-    "입력영역": ["화면명", "No", "라벨", "타입", "길이",
+                "동작", "소스파일"],
+    "입력영역": ["화면명", "No", "필드(영문)", "라벨", "타입", "길이",
                 "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
-                "동작", "필드명", "소스파일"],
+                "동작", "소스파일"],
     "그리드컬럼": ["화면명", "NO", "필드명(영문)", "필드설명", "타입",
                   "필수여부", "속성", "UI타입", "설명", "동작",
                   "너비", "정렬", "소스파일"],
@@ -73,7 +73,9 @@ def _rows_for_form_fields(s: ScreenSpec, panel_type: str = "search"):
         # 유효성 규칙 = LLM 판단 칸 (validation_rule) > 인라인 prop 요약 (validation)
         validation_display = ff.validation_rule or ff.validation or ""
         yield [
-            s.screen_id, ff.order, ff.label,
+            s.screen_id, ff.order,
+            ff.name,                    # 필드(영문) — input id/name/field
+            ff.label,
             ff.input_data_type,         # 타입 (keyboard input 만)
             ff.max_length,              # 길이 (keyboard input 만)
             "필수" if ff.required else "선택",
@@ -81,7 +83,6 @@ def _rows_for_form_fields(s: ScreenSpec, panel_type: str = "search"):
             validation_display,
             ff.ui_type or "",
             ff.action or "",
-            ff.name,
             ff.source_file,
         ]
 

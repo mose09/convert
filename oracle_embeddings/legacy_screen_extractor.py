@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v13"  # v13: input panel false positive 2nd fix — entry 파일만 (popup/공통 imported file 의 table 제외) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v14"  # v14: search/input panel 에 필드(영문) 컬럼 추가 (No 다음, id 우선) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -42,6 +42,7 @@ _DEFAULT_CONFIG = {
 @dataclass
 class ScreenField:
     label: str = ""
+    name: str = ""           # 필드(영문) — input element 의 id 우선 / name / field
     component: str = ""
     default: str = ""
     options: str = ""
@@ -565,6 +566,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 # name 은 식별자 (form key) 라 사용자 가시 라벨 아님 —
                 # fallback 에서 제외. 라벨 없으면 빈 채로 두는 게 정답.
                 label=(f.label or ""),
+                name=(f.name or ""),
                 component=(f.jsx_tag or f.field_type or ""),
                 default=f.default or "",
                 options=f.options or "",
@@ -593,6 +595,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         layout.input_panel = [
             ScreenField(
                 label=(f.label or ""),
+                name=(f.name or ""),
                 component=(f.jsx_tag or f.field_type or ""),
                 default=f.default or "",
                 options=f.options or "",
@@ -912,6 +915,7 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
             if isinstance(f, dict):
                 out.append(ScreenField(
                     label=str(f.get("label", "")),
+                    name=str(f.get("name", "") or f.get("id", "") or f.get("field", "")),
                     component=str(f.get("component", "")),
                     default=str(f.get("default", "")),
                     options=str(f.get("options", "")),
@@ -1342,7 +1346,10 @@ def _render_search(fields: List[ScreenField]) -> str:
 
 
 def _render_input_panel(fields: List[ScreenField]) -> str:
-    """입력 영역 (table 기반 입력 폼) 정의서 — 검색영역과 같은 9컬럼 양식.
+    """입력 영역 (table 기반 입력 폼) 정의서 — 검색영역과 같은 컬럼 양식.
+
+    컬럼: No / 필드(영문) / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고 /
+    UI 타입 / 동작.
 
     onSave 의 isNull 검증은 ``required`` 로, isNumber/isNegative 등 그 외
     검증은 ``validation_rule`` 로 parser 가 채움.
@@ -1353,9 +1360,11 @@ def _render_input_panel(fields: List[ScreenField]) -> str:
     for i, f in enumerate(fields, start=1):
         display_default = f.placeholder or f.default or ""
         action_html = _esc(f.action or "").replace("\n", "<br/>")
+        field_en = _esc(getattr(f, "name", "") or "")
         rows.append(
             "<tr>"
             f"<td class='no'>{i}</td>"
+            f"<td><code>{field_en}</code></td>"
             f"<td>{_esc(f.label or '')}</td>"
             f"<td>{_esc(f.input_data_type or '')}</td>"
             f"<td>{_esc(f.max_length or '')}</td>"
@@ -1369,7 +1378,7 @@ def _render_input_panel(fields: List[ScreenField]) -> str:
     return (
         "<section><h2>Input Panel — 입력 영역 정의서</h2>"
         "<table class='input-spec'><thead><tr>"
-        "<th>No</th><th>라벨</th><th>타입</th><th>길이</th>"
+        "<th>No</th><th>필드(영문)</th><th>라벨</th><th>타입</th><th>길이</th>"
         "<th>필수</th><th>기본값</th><th>유효성 규칙 및 비고</th>"
         "<th>UI 타입</th><th>동작</th>"
         "</tr></thead><tbody>"
@@ -1381,10 +1390,13 @@ def _render_input_panel(fields: List[ScreenField]) -> str:
 def _render_search_table(fields: List[ScreenField]) -> str:
     """검색 패널 9컬럼 화면정의서 표 (grid 와 parallel).
 
-    컬럼: No / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고 /
+    컬럼: No / 필드(영문) / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고 /
     UI 타입 / 동작. 기본값은 placeholder 우선 (UI 가시값) → default fallback.
     동작은 단순 dropdown 이면 옵션 값 줄바꿈, LLM 이 cascading 동작
     채웠으면 그 값 우선.
+
+    필드(영문) — input element 의 id 우선, 없으면 name (ScreenField.name 에
+    이미 그 순서로 추출돼있음).
     """
     if not fields:
         return ""
@@ -1393,9 +1405,11 @@ def _render_search_table(fields: List[ScreenField]) -> str:
         display_default = f.placeholder or f.default or ""
         validation_display = f.validation_rule or ""
         action_html = _esc(f.action or "").replace("\n", "<br/>")
+        field_en = _esc(getattr(f, "name", "") or "")
         rows.append(
             "<tr>"
             f"<td class='no'>{i}</td>"
+            f"<td><code>{field_en}</code></td>"
             f"<td>{_esc(f.label or '')}</td>"
             f"<td>{_esc(f.input_data_type or '')}</td>"
             f"<td>{_esc(f.max_length or '')}</td>"
@@ -1407,9 +1421,9 @@ def _render_search_table(fields: List[ScreenField]) -> str:
             "</tr>"
         )
     return (
-        "<h3 style='margin-top:12px'>검색 영역 정의서 (9컬럼)</h3>"
+        "<h3 style='margin-top:12px'>검색 영역 정의서</h3>"
         "<table class='search-spec'><thead><tr>"
-        "<th>No</th><th>라벨</th><th>타입</th><th>길이</th>"
+        "<th>No</th><th>필드(영문)</th><th>라벨</th><th>타입</th><th>길이</th>"
         "<th>필수</th><th>기본값</th><th>유효성 규칙 및 비고</th>"
         "<th>UI 타입</th><th>동작</th>"
         "</tr></thead><tbody>"

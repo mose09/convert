@@ -780,7 +780,7 @@ def _extract_field_from_item(item_node, source: bytes,
                or attrs.get("title")
                or attrs.get("aria-label")
                or ""),
-        name=(attrs.get("name") or attrs.get("id") or attrs.get("field") or ""),
+        name=(attrs.get("id") or attrs.get("name") or attrs.get("field") or ""),
         field_type=field_type,
         required=(attrs.get("required") == "true"
                   or "required" in (attrs.get("className") or "").lower().split()
@@ -1682,7 +1682,7 @@ def _extract_inline_validations(tree, source: bytes, rel: str
         attrs = _jsx_attributes(el, source)
         if not attrs:
             continue
-        name = (attrs.get("name") or attrs.get("id") or attrs.get("field") or "")
+        name = (attrs.get("id") or attrs.get("name") or attrs.get("field") or "")
         if not name:
             continue
         for prop, rule in (("required", "required"),
@@ -1955,7 +1955,7 @@ def _extract_input_panel_from_table(table_node, source: bytes,
                            or attrs.get("title")
                            or attrs.get("aria-label")
                            or ""),
-                    name=(attrs.get("name") or attrs.get("id")
+                    name=(attrs.get("id") or attrs.get("name")
                           or attrs.get("field") or ""),
                     field_type=ft,
                     required=(attrs.get("required") == "true"
