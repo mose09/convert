@@ -186,9 +186,16 @@ def build_trigger_bundle(
     return bundle
 
 
+# Bundle schema 버전 — bundle 구조 / 직렬화 형식 변경 시 bump 하여 캐시
+# 자동 무효화. v2: false positive options 수정 + label substring 매칭 강화
+# (사용자 보고 — F/L 이 FAB 분석 결과 가져가던 사고 차단).
+_TRIGGER_BUNDLE_VERSION = "v2"
+
+
 def serialize_bundle_for_llm(bundle: dict) -> str:
     """Bundle → LLM user-message body markdown."""
     parts: list[str] = []
+    parts.append(f"<!-- trigger-bundle {_TRIGGER_BUNDLE_VERSION} -->")
     parts.append(f"# Trigger: {bundle.get('label') or '(no label)'}  "
                  f"`{bundle.get('event_type')}` → `{bundle.get('handler_name')}`")
     parts.append(f"_파일_: `{bundle.get('source_file')}`")

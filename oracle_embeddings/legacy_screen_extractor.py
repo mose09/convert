@@ -54,6 +54,7 @@ class ScreenField:
     ui_type: str = ""        # Select(Single) / Text Field(Search Box) / DatePicker 등
     action: str = ""         # 단순 dropdown 은 옵션 줄바꿈 / LLM cascading 판단
     validation_rule: str = ""   # LLM 판단 — 계층 cascading 규칙·비고
+    change_handler: str = ""    # 내부 — onChange leaf handler 이름 (trigger LLM 머지용)
 
 
 @dataclass
@@ -577,6 +578,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                     llm_extra.get((f.label or "").strip(), {})
                     .get("validation_rule", "")
                 ),
+                change_handler=getattr(f, "change_handler", "") or "",
             )
             for f in fields
         ]
@@ -760,20 +762,25 @@ def _merge_trigger_llm_into_layout(layout: "ScreenLayout",
     if not trigger_analyses:
         return
 
-    # search_panel — field 의 events (또는 LLM 응답 schema 의 change_handler)
-    # 와 매칭. ScreenField 에 change_handler 가 따로 없으므로 label
-    # 또는 component 로 추정.
+    # search_panel — field.change_handler 정확 매칭 우선. 정확 매칭 없을
+    # 때만 label substring fallback (사용자 보고: F/L 이 'fab' substring
+    # 으로 FAB handler 결과를 잘못 가져옴 → 정확 매칭으로 회피).
     for f in layout.search_panel or []:
-        # 매칭: handler_name 이 trigger_analyses 에 있는 것 중에서 라벨/이름
-        # 일치하는 첫 분석을 사용.
         matched = None
-        for handler_name, analysis in trigger_analyses.items():
-            # field 의 label 이 handler 이름에 들어있거나 그 반대면 매칭
-            # 시도 (예: handler='handleFabChange', label='FAB').
-            hlow = handler_name.lower()
-            if f.label and f.label.lower() in hlow:
-                matched = analysis
-                break
+        # (a) 정확 매칭 — handler_name == f.change_handler
+        ch = getattr(f, "change_handler", "") or ""
+        if ch and ch in trigger_analyses:
+            matched = trigger_analyses[ch]
+        # (b) fallback — label 이 handler 이름에 substring 으로 들어있는 경우.
+        # 단 너무 짧은 label (1-2 글자) 은 substring 매칭이 사고남 → skip.
+        # (예: 'FL' 이 'handleFabChange' 안 'fl' substring 매칭하는 사고)
+        if matched is None and f.label and len(f.label.strip()) >= 3:
+            label_norm = re.sub(r"[\W_]+", "", f.label).lower()
+            if label_norm:
+                for handler_name, analysis in trigger_analyses.items():
+                    if label_norm in handler_name.lower():
+                        matched = analysis
+                        break
         if not matched:
             continue
         # action — LLM 의 cascading 설명이 우선 + parser 옵션 list 보강.
