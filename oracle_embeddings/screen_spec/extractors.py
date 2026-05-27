@@ -621,6 +621,46 @@ def _compose_form_action(field_type: str, options: str, ui_type: str) -> str:
     return ""
 
 
+def _extract_cell_label_text(element_node, source: bytes) -> str:
+    """``<th>`` 또는 label-only ``<td>`` 의 표시 텍스트 추출.
+
+    우선순위 (한국 SI 입력 폼의 흔한 라벨 형태들):
+    1. direct text child — ``<th>SDPT</th>`` → "SDPT"
+    2. nested inline element 의 text — ``<th><span>SDPT</span></th>`` /
+       ``<th><strong>SDPT</strong></th>`` → "SDPT"
+    3. className 에 'label' 포함된 child 의 text (기존 fallback)
+
+    ``_find_label_text_in_children`` 만 사용하면 direct text child 케이스
+    (``<th className="required">SDPT</th>``) 에서 빈 문자열 반환 → 호출자
+    가 placeholder/title 같은 엉뚱한 값으로 fallback 하던 사용자 보고
+    버그 차단.
+    """
+    if element_node.type != "jsx_element":
+        return ""
+    # 1) direct text children
+    direct = []
+    for c in element_node.children:
+        if c.type == "jsx_text":
+            t = text_of(c, source).strip()
+            if t:
+                direct.append(t)
+    if direct:
+        return " ".join(direct)
+    # 2) nested element 의 direct text (1 단계만 — 깊은 nesting 은 noise)
+    for c in element_node.children:
+        if c.type != "jsx_element":
+            continue
+        for cc in c.children:
+            if cc.type == "jsx_text":
+                t = text_of(cc, source).strip()
+                if t:
+                    return t
+    # 3) className='label' fallback (기존 동작)
+    txt, _ = _find_label_text_in_children(element_node, exclude=None,
+                                          source=source)
+    return txt
+
+
 def _find_label_text_in_children(parent, exclude, source: bytes
                                  ) -> tuple[str, str]:
     """parent 의 자식 element 중 ``className`` 에 'label' 포함된 element 의
@@ -1904,9 +1944,8 @@ def _extract_input_panel_from_table(table_node, source: bytes,
                 continue
             ctag = text_of(cnm, source).strip().lower()
             if ctag == "th":
-                txt = _find_label_text_in_children(child, exclude=None, source=source)
-                if isinstance(txt, tuple):
-                    txt = txt[0]
+                # <th> 는 항상 라벨 셀 — direct text 우선 추출
+                txt = _extract_cell_label_text(child, source)
                 cells.append(("label", (txt or "").strip()))
             elif ctag == "td":
                 # td 안 첫 input 컴포넌트
@@ -1927,9 +1966,7 @@ def _extract_input_panel_from_table(table_node, source: bytes,
                         break
                 # input 없으면 label-only td (label 위치) 로 처리
                 if input_el is None:
-                    txt = _find_label_text_in_children(child, exclude=None, source=source)
-                    if isinstance(txt, tuple):
-                        txt = txt[0]
+                    txt = _extract_cell_label_text(child, source)
                     cells.append(("label", (txt or "").strip()))
                 else:
                     cells.append(("input", (input_el, input_tag)))
