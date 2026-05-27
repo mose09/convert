@@ -164,6 +164,87 @@ def _node_contains(outer, inner) -> bool:
             and inner.end_byte <= outer.end_byte)
 
 
+# 길이 추출 — ag-grid 의 ``cellEditor: 'ResetNumber'`` 같은 커스텀 에디터를
+# import 한 파일에서 ``maxLength={N}`` / ``maxLength: N`` regex.
+import re as _length_re
+import os as _length_os
+
+_MAXLENGTH_RE = _length_re.compile(r"\bmaxLength\s*[:=]\s*\{?\s*(\d+)\s*\}?")
+
+
+def _resolve_cell_editor_max_length(cell_editor_name: str,
+                                    current_abs_path: str,
+                                    closure) -> str:
+    """``cellEditor: 'CustomEditor'`` 의 import 파일에서 ``maxLength`` 추출.
+
+    1. current file 에서 ``import CustomEditor from <path>`` 매칭
+    2. path resolve (relative + extension/index)
+    3. 그 파일에서 ``maxLength={N}`` 또는 ``maxLength: N`` 추출
+    4. closure 안 fallback (current 에서 못 찾으면 closure 내 같은 이름
+       파일 검색)
+
+    실패 시 빈 문자열.
+    """
+    if not cell_editor_name or not current_abs_path:
+        return ""
+    try:
+        with open(current_abs_path, "r", encoding="utf-8", errors="ignore") as f:
+            cur = f.read()
+    except Exception:
+        return ""
+    # default 또는 named import 매칭
+    import_pat = _length_re.compile(
+        r"""import\s+"""
+        r"""(?:"""
+        r"""\{[^}]*\b""" + _length_re.escape(cell_editor_name) + r"""\b[^}]*\}"""
+        r"""|"""
+        + _length_re.escape(cell_editor_name) +
+        r""")"""
+        r"""(?:\s*,\s*\{[^}]*\})?"""
+        r"""\s+from\s+["']([^"']+)["']"""
+    )
+    m = import_pat.search(cur)
+    target_abs = ""
+    if m:
+        target_abs = _resolve_relative_import_abs(m.group(1), current_abs_path)
+    if not target_abs:
+        # closure fallback — 같은 이름의 파일
+        for cf in closure.files:
+            base = _length_os.path.splitext(_length_os.path.basename(str(cf.abs_path)))[0]
+            if base == cell_editor_name:
+                target_abs = str(cf.abs_path)
+                break
+    if not target_abs or not _length_os.path.isfile(target_abs):
+        return ""
+    try:
+        with open(target_abs, "r", encoding="utf-8", errors="ignore") as f:
+            editor_src = f.read()
+    except Exception:
+        return ""
+    lm = _MAXLENGTH_RE.search(editor_src)
+    return lm.group(1) if lm else ""
+
+
+def _resolve_relative_import_abs(import_path: str, current_abs_path: str) -> str:
+    """``./X`` / ``../Y/Z`` import path → abs path. 확장자/index 후보 시도."""
+    if not import_path.startswith("."):
+        return ""
+    cur_dir = _length_os.path.dirname(current_abs_path)
+    base = _length_os.path.normpath(_length_os.path.join(cur_dir, import_path))
+    cands = [
+        base,
+        base + ".js", base + ".jsx", base + ".ts", base + ".tsx",
+        _length_os.path.join(base, "index.js"),
+        _length_os.path.join(base, "index.jsx"),
+        _length_os.path.join(base, "index.ts"),
+        _length_os.path.join(base, "index.tsx"),
+    ]
+    for c in cands:
+        if _length_os.path.isfile(c):
+            return c
+    return ""
+
+
 def _jsx_attributes(element_node, source: bytes) -> dict[str, str]:
     """JSX 노드의 attribute 들 → {name: literal_value_or_expr_text}.
 
@@ -953,6 +1034,13 @@ def extract_grid_columns(closure: ScreenClosure,
             ):
                 d = _parse_object_literal(obj, src)
                 order += 1
+                # 길이 — cellEditor 가 커스텀 컴포넌트면 import 추적해서
+                # maxLength regex. 사용자 보고: ag-grid 컬럼에 cellEditor:
+                # 'ResetNumber' → ResetNumber.js 안 maxLength={10}.
+                cell_editor_name = _strip_quotes(d.get("cellEditor", "") or "")
+                length_val = _resolve_cell_editor_max_length(
+                    cell_editor_name, str(f.abs_path), closure
+                ) if cell_editor_name else ""
                 cols.append(GridColumn(
                     order=order,
                     header=_strip_quotes(_first_present(d, _COL_HEADER_KEYS) or ""),
@@ -969,6 +1057,7 @@ def extract_grid_columns(closure: ScreenClosure,
                         _first_present(d, _COL_DESC_KEYS) or ""),
                     action=_strip_quotes(_first_present(d, _COL_ACTION_KEYS) or ""),
                     condition=grid_condition,
+                    length=length_val,
                 ))
     return cols
 
