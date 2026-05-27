@@ -55,6 +55,9 @@ class GridColumn:
     # 같은 화면에 조건별로 다른 grid 가 render 되는 경우 grid 별 condition 으로
     # group 가능. 빈 값이면 무조건 render (top-level).
     condition: str = ""
+    # 길이 — ag-grid 의 ``cellEditor: 'CustomEditor'`` 같은 커스텀 에디터
+    # import 파일에서 ``maxLength={N}`` 추출. 숫자 문자열 ("10" 등) 또는 빈 값.
+    length: str = ""
 
 
 @dataclass

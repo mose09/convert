@@ -82,6 +82,9 @@ class TableColumn:
     # 분기 — JSX conditional ancestor (예: ``tab === 'A'``). 같은 화면에
     # 조건별로 다른 grid render 시 group key. 빈 값 = top-level (무조건).
     condition: str = ""
+    # 길이 — 커스텀 cellEditor 의 maxLength 추출 (사용자 보고: ag-grid
+    # ``cellEditor: 'ResetNumber'`` → ResetNumber.js 안 ``maxLength={10}``).
+    length: str = ""
 
 
 @dataclass
@@ -592,6 +595,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 description=c.description or "",
                 action=c.action or "",
                 condition=getattr(c, "condition", "") or "",
+                length=getattr(c, "length", "") or "",
             )
             for c in cols
         ]
@@ -886,6 +890,7 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                 description=str(c.get("description", "")),
                 action=str(c.get("action", "")),
                 condition=str(c.get("condition", "")),
+                length=str(c.get("length", "")),
             ))
         else:
             # 옛 형식 (단순 string) 호환
@@ -1345,9 +1350,14 @@ def _render_table(cols: List[TableColumn]) -> str:
 
 
 def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
-    """내부 헬퍼 — 단일 grid (또는 단일 condition group) 의 표 렌더."""
-    headers = ["NO", "필드명(영문)", "필드설명", "타입", "필수여부",
-               "속성", "UI타입", "설명", "동작"]
+    """내부 헬퍼 — 단일 grid (또는 단일 condition group) 의 표 렌더.
+
+    컬럼 순서 (사용자 명시):
+      NO / 필드명(영문) / 헤더명 / 타입 / 길이 / 필수여부 / 속성 / 필드설명
+      / UI타입 / 동작
+    """
+    headers = ["NO", "필드명(영문)", "헤더명", "타입", "길이", "필수여부",
+               "속성", "필드설명", "UI타입", "동작"]
     head_row = "".join(f"<th>{h}</th>" for h in headers)
     body_rows = []
     for i, c in enumerate(cols, start=1):
@@ -1355,16 +1365,18 @@ def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
         ui = c.ui_type or "Text Field(Basic)"
         dtype = (c.data_type or "String").capitalize()
         required = "필수" if c.required else ""
+        length = getattr(c, "length", "") or ""
         row = (
             f"<tr>"
             f"<td class='no'>{i}</td>"
             f"<td><code>{_esc(c.field) or '<em>(no field)</em>'}</code></td>"
             f"<td>{_esc(c.title)}</td>"
             f"<td>{_esc(dtype)}</td>"
+            f"<td>{_esc(length)}</td>"
             f"<td>{_esc(required)}</td>"
             f"<td>{_esc(attribute)}</td>"
-            f"<td>{_esc(ui)}</td>"
             f"<td>{_esc(c.description)}</td>"
+            f"<td>{_esc(ui)}</td>"
             f"<td>{_esc(c.action)}</td>"
             f"</tr>"
         )
