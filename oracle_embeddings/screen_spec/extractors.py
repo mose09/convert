@@ -1806,10 +1806,27 @@ def build_and_extract(entry_file: Path, frontend_dir: Path,
 # ─────────────────────────────────────────────────────────────────
 
 
-def _find_input_tables(tree, source: bytes, input_comps) -> list:
-    """closure 안 `<table>` element 중 input component 가 children 으로
-    포함된 것만 input panel 후보로 반환. 단순 표 display table 은 제외
-    (input 없으면 skip)."""
+def _find_input_tables(tree, source: bytes, input_comps,
+                       container_tokens) -> list:
+    """closure 안 `<table>` element 중 input panel 후보만 반환.
+
+    필터 조건 (false positive 방지 — 사용자 보고: search-area 안 layout
+    table 까지 input panel 로 잡혀 'Select 하세요' 라벨이 input panel
+    에 중복 표시):
+    1. ``<table>`` element 여야 함
+    2. children 에 input 컴포넌트가 1개 이상
+    3. **search-area / search-form / filter-area / criteria-area container
+       안에 있으면 skip** — 이미 search panel 이 담당하는 영역
+    4. **`<th>` element 가 1개 이상 있어야** — `<th>` 없는 table 은 보통
+       display 용 (legacy layout / grid 등) 이라 input panel 아님
+
+    legacy ``<td>`` 만으로 label 처리하는 케이스는 false negative 가능 —
+    그 경우 사용자가 patterns.yaml 로 input panel 후보를 명시할 수 있게
+    추후 옵션 (TODO).
+    """
+    # 1. search-area / 유사 container 찾기 — 그 안 table 은 input panel 에서 제외
+    search_containers = _find_search_containers(tree, source, container_tokens)
+
     out = []
     for n in find_by_type(tree.root_node,
                           {"jsx_opening_element", "jsx_self_closing_element"}):
@@ -1823,8 +1840,12 @@ def _find_input_tables(tree, source: bytes, input_comps) -> list:
         cur = n.parent if (n.type == "jsx_opening_element" and n.parent) else n
         if cur.type != "jsx_element":
             continue
-        # children 안 input 컴포넌트 존재 검사
+        # 3. search-area container 안에 있으면 skip
+        if any(_node_contains(c, cur) for c in search_containers):
+            continue
+        # 2 + 4. children 안 input 컴포넌트 + <th> 존재 검사
         has_input = False
+        has_th = False
         for sub in walk(cur):
             if sub is cur:
                 continue
@@ -1833,11 +1854,15 @@ def _find_input_tables(tree, source: bytes, input_comps) -> list:
             sub_nm = child_by_field(sub, "name")
             if sub_nm is None:
                 continue
-            sub_tag = text_of(sub_nm, source).strip()
-            if sub_tag in input_comps:
+            sub_tag_raw = text_of(sub_nm, source).strip()
+            sub_tag_lower = sub_tag_raw.lower()
+            if sub_tag_raw in input_comps:
                 has_input = True
+            if sub_tag_lower == "th":
+                has_th = True
+            if has_input and has_th:
                 break
-        if has_input:
+        if has_input and has_th:
             out.append(cur)
     return out
 
@@ -2054,6 +2079,8 @@ def extract_input_panel_fields(closure: ScreenClosure,
     input_comps = _comp_list(pat, "input_components", DEFAULT_INPUT_COMPONENTS)
     option_comps = _comp_list(pat, "option_components",
                               DEFAULT_OPTION_COMPONENTS)
+    container_tokens = _comp_list(pat, "search_containers",
+                                  DEFAULT_SEARCH_CONTAINERS)
 
     from ..legacy_react_ast import parse_file
     fields: list[FormField] = []
@@ -2064,7 +2091,7 @@ def extract_input_panel_fields(closure: ScreenClosure,
         if tree is None:
             continue
         file_sources[f.rel_path] = source.decode("utf-8", errors="replace")
-        tables = _find_input_tables(tree, source, input_comps)
+        tables = _find_input_tables(tree, source, input_comps, container_tokens)
         for tbl in tables:
             new = _extract_input_panel_from_table(
                 tbl, source, input_comps, option_comps,
