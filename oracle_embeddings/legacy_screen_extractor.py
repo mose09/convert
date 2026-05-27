@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v8"   # v8: search-area boundary 없는 화면 search_panel 빈 채 (팝업 false positive 제거) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v9"   # v9: search_panel 9컬럼 화면정의서 양식 (placeholder/max_length/input_data_type/ui_type/action/validation_rule 추가) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -47,6 +47,13 @@ class ScreenField:
     options: str = ""
     events: str = ""         # "onChange / onClick" 등 (공백 구분)
     required: bool = False   # 필수 여부 (label className required 또는 required prop)
+    # 화면정의서 9컬럼 표 양식 (grid 와 parallel)
+    placeholder: str = ""    # placeholder attr — UI 가시값 (default 보다 우선)
+    max_length: str = ""     # maxLength — keyboard input 자릿수 제한
+    input_data_type: str = ""   # String / Number / Date / "" (비입력)
+    ui_type: str = ""        # Select(Single) / Text Field(Search Box) / DatePicker 등
+    action: str = ""         # 단순 dropdown 은 옵션 줄바꿈 / LLM cascading 판단
+    validation_rule: str = ""   # LLM 판단 — 계층 cascading 규칙·비고
 
 
 @dataclass
@@ -191,6 +198,24 @@ React 코드 텍스트만 보고 추출.
   **만** 포함. 그리드 inline filter / edit modal / 페이지네이션 등 다른
   영역의 input 은 search_panel 에서 제외.
 
+**검색 패널 필드 9컬럼 양식** (data_table_columns 와 parallel):
+- ``label`` — 라벨 텍스트 (위 추출 규칙 참조)
+- ``input_data_type`` — **키보드 입력 필드일 때만** String/Number/Date 채움.
+  Select/DatePicker/Checkbox/Radio 등 비-타이핑 필드는 빈 문자열.
+- ``max_length`` — 키보드 입력 필드의 ``maxLength`` prop. 비-타이핑 필드는 빈.
+- ``required`` — true/false (위 라벨 추출 규칙 참조)
+- ``placeholder`` — ``placeholder`` prop 값 그대로 (있으면 default 보다 우선 표시)
+- ``default`` — ``defaultValue`` / ``value`` literal (placeholder 없을 때만 표시)
+- ``ui_type`` — Select(Single) / Select(Multi) / Text Field(Basic) /
+  Text Field(Search Box) / DatePicker / Date Range / Checkbox / Radio Group /
+  Number Field / Password / Text Area
+- ``action`` — 단순 dropdown 이면 옵션 값 줄바꿈 (예: ``"전체\\nY\\nN"``).
+  Cascading dependency (FAB → TEAM → SDPT 계층 — 부모 선택 시 자식 콤보 갱신)
+  이 코드에서 보이면 그 동작 설명 (예: ``"FAB 선택 시 해당 TEAM 목록 조회"``).
+- ``validation_rule`` — 검증 규칙 + 비고. 계층 의존성 hint (예: ``"FAB 미선택
+  시 비활성"``) 또는 prop 기반 검증 (required/pattern/min/max) 요약.
+  없으면 빈 문자열.
+
 **DataTable 컬럼 추출 규칙** (화면정의서 9컬럼 표 양식):
 - 컬럼 정의 prop 이름은 라이브러리별로 다름:
   ``columns`` (antd / react-table / generic) / ``columnDefs`` (ag-grid) /
@@ -225,7 +250,13 @@ React 코드 텍스트만 보고 추출.
      "default": "defaultValue / value (예: Select 하세요.)",
      "options": "드롭다운 자식 Option value 콤마 구분 (예: Y, N)",
      "events": "onChange / onClick / onBlur 등 (공백 구분)",
-     "required": false}
+     "required": false,
+     "placeholder": "placeholder attr 값 (예: Select 하세요)",
+     "max_length": "maxLength prop 값 (keyboard 입력일 때만; 그 외 빈)",
+     "input_data_type": "String | Number | Date (keyboard 입력일 때만; 그 외 빈)",
+     "ui_type": "Select(Single) | Select(Multi) | Text Field(Basic) | Text Field(Search Box) | DatePicker | Date Range | Checkbox | Radio Group | Number Field | Password | Text Area",
+     "action": "단순 dropdown 옵션 값 줄바꿈 (전체\\nY\\nN) 또는 cascading 동작 (FAB 선택 시 TEAM 갱신)",
+     "validation_rule": "검증 규칙 / 계층 의존성 비고 (예: FAB 미선택 시 비활성) — 없으면 빈 문자열"}
   ],
   "data_table_columns": [
     {"field": "영문 데이터 키 / dataIndex (예: org)",
@@ -499,6 +530,12 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 options=f.options or "",
                 events=f.events or "",
                 required=f.required,
+                placeholder=f.placeholder or "",
+                max_length=f.max_length or "",
+                input_data_type=f.input_data_type or "",
+                ui_type=f.ui_type or "",
+                action=f.action or "",
+                validation_rule=f.validation_rule or "",
             )
             for f in fields
         ]
@@ -615,6 +652,12 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
                     options=str(f.get("options", "")),
                     events=str(f.get("events", "")),
                     required=bool(f.get("required", False)),
+                    placeholder=str(f.get("placeholder", "")),
+                    max_length=str(f.get("max_length", "")),
+                    input_data_type=str(f.get("input_data_type", "")),
+                    ui_type=str(f.get("ui_type", "")),
+                    action=str(f.get("action", "")),
+                    validation_rule=str(f.get("validation_rule", "")),
                 ))
         return out
 
@@ -1011,7 +1054,49 @@ def _render_search(fields: List[ScreenField]) -> str:
     if not fields:
         return ""
     return ("<section><h2>Search Panel — 조회 조건 영역</h2>"
-            + _render_field_list(fields) + "</section>")
+            + _render_field_list(fields)
+            + _render_search_table(fields)
+            + "</section>")
+
+
+def _render_search_table(fields: List[ScreenField]) -> str:
+    """검색 패널 9컬럼 화면정의서 표 (grid 와 parallel).
+
+    컬럼: No / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고 /
+    UI 타입 / 동작. 기본값은 placeholder 우선 (UI 가시값) → default fallback.
+    동작은 단순 dropdown 이면 옵션 값 줄바꿈, LLM 이 cascading 동작
+    채웠으면 그 값 우선.
+    """
+    if not fields:
+        return ""
+    rows = []
+    for i, f in enumerate(fields, start=1):
+        display_default = f.placeholder or f.default or ""
+        validation_display = f.validation_rule or ""
+        action_html = _esc(f.action or "").replace("\n", "<br/>")
+        rows.append(
+            "<tr>"
+            f"<td class='no'>{i}</td>"
+            f"<td>{_esc(f.label or '')}</td>"
+            f"<td>{_esc(f.input_data_type or '')}</td>"
+            f"<td>{_esc(f.max_length or '')}</td>"
+            f"<td>{'필수' if f.required else '선택'}</td>"
+            f"<td>{_esc(display_default)}</td>"
+            f"<td>{_esc(validation_display)}</td>"
+            f"<td>{_esc(f.ui_type or '')}</td>"
+            f"<td>{action_html}</td>"
+            "</tr>"
+        )
+    return (
+        "<h3 style='margin-top:12px'>검색 영역 정의서 (9컬럼)</h3>"
+        "<table class='search-spec'><thead><tr>"
+        "<th>No</th><th>라벨</th><th>타입</th><th>길이</th>"
+        "<th>필수</th><th>기본값</th><th>유효성 규칙 및 비고</th>"
+        "<th>UI 타입</th><th>동작</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table>"
+    )
 
 
 def _render_table(cols: List[TableColumn]) -> str:
