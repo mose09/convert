@@ -1320,7 +1320,12 @@ def _truthy(s: str) -> bool:
 
 def extract_grid_columns(closure: ScreenClosure,
                          patterns: dict | None = None) -> list[GridColumn]:
-    """모든 closure 파일에서 Table/DataGrid 의 columns prop → GridColumn 리스트."""
+    """모든 closure 파일에서 Table/DataGrid 의 columns prop → GridColumn 리스트.
+
+    추출 후 onSave / handleSave 등 핸들러의 isNull / isNumber 등 검증
+    패턴을 ``data_key`` 매칭으로 ``required`` / ``validation_rule``-
+    equivalent 에 머지 (search panel 과 동일 원칙).
+    """
     pat = _patterns_section(patterns)
     table_comps = _comp_list(pat, "table_components", DEFAULT_TABLE_COMPONENTS)
 
@@ -1394,7 +1399,51 @@ def extract_grid_columns(closure: ScreenClosure,
                     condition=grid_condition,
                     length=length_val,
                 ))
+    # onSave 검증 결과를 grid column 에도 머지 — data_key 로 매칭.
+    if cols:
+        from ..legacy_react_ast import parse_file as _pf
+        file_sources: dict[str, str] = {}
+        for f in closure.files:
+            _t, _s, _ = _pf(f.abs_path)
+            if _s is not None:
+                file_sources[f.rel_path] = _s.decode("utf-8", errors="replace")
+        save_validations = _detect_save_validations(closure, file_sources)
+        _apply_save_validations_to_grid(cols, save_validations)
     return cols
+
+
+def _apply_save_validations_to_grid(cols: list[GridColumn],
+                                    detected: dict) -> None:
+    """onSave 검증 결과 → grid column 의 required / description 머지.
+
+    data_key 의 leaf (``a.b.c`` → ``c``) 또는 header 로 매칭. validation
+    rule 들은 GridColumn 에 별도 필드 없으므로 description 에 append
+    (이미 description 있으면 ``" / "`` join).
+    """
+    if not detected or not cols:
+        return
+    norm_detected = {k.lower(): v for k, v in detected.items()}
+    for c in cols:
+        keys = []
+        if c.data_key:
+            keys.append(c.data_key.split(".")[-1].lower())
+        if c.header:
+            keys.append(re.sub(r"[\W_]+", "", c.header).lower())
+        for k in keys:
+            info = norm_detected.get(k)
+            if not info:
+                continue
+            if info.get("required"):
+                c.required = True
+            rules = info.get("rules") or []
+            if rules:
+                text = " / ".join(rules)
+                if c.description:
+                    if text not in c.description:
+                        c.description = c.description + " / " + text
+                else:
+                    c.description = text
+            break
 
 
 def _find_attr_expression(element_node, attr_name: str, source: bytes):

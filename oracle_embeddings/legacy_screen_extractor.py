@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v10"  # v10: input_panel 추가 (table 기반 입력 폼, onSave isNull 검증으로 required 추출) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v11"  # v11: grid 컬럼도 onSave isNull 검증으로 required 자동 + LLM 의 description/action 보존 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -610,6 +610,27 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         ]
     if cols:
         from .screen_spec.extractors import _compose_attribute
+        # LLM 값 보존 — parser fill 전에 LLM 응답의 description / action /
+        # ui_type 을 (title, field) 키로 캡처. 파서 후 빈 칸이면 LLM 값 재머지.
+        # search_panel 과 같은 패턴.
+        llm_grid_extra: Dict[str, Dict[str, str]] = {}
+        for tc in (layout.data_table_columns or []):
+            key = (tc.title or "").strip() or (tc.field or "").strip()
+            if not key:
+                continue
+            llm_grid_extra[key.lower()] = {
+                "description": (tc.description or ""),
+                "action": (tc.action or ""),
+                "ui_type": (tc.ui_type or ""),
+            }
+
+        def _llm_grid_pick(c, field: str) -> str:
+            for key in (c.header or "", c.data_key or ""):
+                k = (key or "").strip().lower()
+                if k and k in llm_grid_extra:
+                    return llm_grid_extra[k].get(field, "")
+            return ""
+
         layout.data_table_columns = [
             TableColumn(
                 title=c.header or "",
@@ -619,9 +640,14 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 data_type=(c.data_type or "").capitalize() or "String",
                 required=c.required,
                 attribute=_compose_attribute(c.visible, c.editable),
-                ui_type=c.ui_type or "Text Field(Basic)",
-                description=c.description or "",
-                action=c.action or "",
+                ui_type=(c.ui_type or _llm_grid_pick(c, "ui_type")
+                         or "Text Field(Basic)"),
+                # description: parser (cellRenderer / onSave 검증 머지 결과) 우선,
+                # 빈 칸이면 LLM 의 description 사용.
+                description=(c.description or _llm_grid_pick(c, "description")),
+                # action: parser 가 onCellClicked 등 인라인 처리. 빈 칸이면
+                # LLM 의 action 설명 사용.
+                action=(c.action or _llm_grid_pick(c, "action")),
                 condition=getattr(c, "condition", "") or "",
                 length=getattr(c, "length", "") or "",
             )
