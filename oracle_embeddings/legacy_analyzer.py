@@ -1789,6 +1789,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    closure_max_depth: int = 3,
                    closure_token_budget: int = 12000,
                    closure_popup_augment: bool = False,
+                   llm_per_trigger: bool = False,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2479,14 +2480,19 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             )
             print(f"  screen layout: api_idx={len(api_idx)} URLs, "
                   f"handlers_by_url={len(handlers_by_url)} URLs")
+            _trigger_cfg = dict(biz_config or {})
+            _trigger_cfg["__frontend_dir"] = frontend_dir
             screen_layout_map = screen_ext.extract_screen_layouts(
                 frontend_dir, handlers_by_url, patterns or {},
                 max_screens=screen_max,
                 use_cache=False,   # 사용자 명시: 항상 새로 분석
-                config=biz_config or {},
+                config=_trigger_cfg,
                 closure_llm=closure_llm,
                 closure_max_depth=closure_max_depth,
                 closure_token_budget=closure_token_budget,
+                llm_per_trigger=llm_per_trigger,
+                trigger_cache_dir=os.path.join(
+                    output_dir or "output/legacy_analysis", ".trigger_cache"),
             )
             if screen_layout_map:
                 from datetime import datetime as _dt
@@ -2649,6 +2655,7 @@ def analyze_legacy_batch(backends_root: str,
                         closure_max_depth: int = 3,
                         closure_token_budget: int = 12000,
                         closure_popup_augment: bool = False,
+                        llm_per_trigger: bool = False,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2786,6 +2793,7 @@ def analyze_legacy_batch(backends_root: str,
             closure_max_depth=closure_max_depth,
             closure_token_budget=closure_token_budget,
             closure_popup_augment=closure_popup_augment,
+            llm_per_trigger=llm_per_trigger,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream

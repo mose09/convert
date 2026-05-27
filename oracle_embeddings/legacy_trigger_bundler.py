@@ -1,5 +1,6 @@
-"""Trigger bundle builder — 한 trigger (버튼 onClick / Select onChange 등)
-의 모든 호출 chain 을 한 덩어리로 묶어 LLM 분석용 컨텍스트 생성.
+"""Trigger bundle builder + LLM 분석 — 한 trigger (버튼 onClick / Select
+onChange 등) 의 모든 호출 chain 을 한 덩어리로 묶어 LLM 호출 후 동작 /
+유효성 / cascading / 영향받는 필드 / 요약 추출.
 
 설계 의도:
 - 기존 ``--closure-llm`` 은 화면 file 통째 (closure import 그래프 BFS)
@@ -38,8 +39,13 @@ Bundle dict 구조::
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
+import os
 import re
 from typing import Any, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 # 사용자 코드 (scanner) 의 helper 재사용 — Phase 1 은 추출 로직만, LLM
 # 호출/캐시는 Phase 2.
@@ -459,3 +465,180 @@ def _collect_factual_urls(
     except Exception:
         return []
     return sorted(urls or set())
+
+
+# ─────────────────────────────────────────────────────────────────
+# Phase 2 — LLM 분석 + 캐시
+# ─────────────────────────────────────────────────────────────────
+
+
+_TRIGGER_LLM_SYSTEM = """당신은 React 화면 trigger 분석 전문가입니다.
+주어진 trigger 한 건의 JSX + handler chain + factual setState/URL 정보를
+보고, 사용자에게 보여줄 분석 결과를 JSON 으로 반환하세요.
+
+**중요 원칙**:
+- 추측 금지. handler chain 안에 명확히 보이는 동작/상태/URL 만.
+- factual_urls 와 setstate_writes 는 parser 가 이미 추출한 ground truth.
+  이 값들을 그대로 신뢰. 추가 URL 추측 X.
+- 사용자 화면 관점에서 설명 — 코드 디테일 노출 X.
+- 빈 칸은 빈 문자열. null/None 금지.
+
+**분석 항목**:
+- action_description: 이 trigger 가 발생하면 일어나는 일 1-2 문장
+  (예: "FAB 선택 시 Team / SDPT / FL / Model 콤보를 초기화하고
+  기본 파라미터를 새로 로드함"). cascading dependency 가 있으면 그
+  관계까지.
+- validation_rule: 유효성 규칙 / 사용 제약 / 비고 (예: "FAB 선택 필수
+  — 미선택 시 하위 콤보 비활성"). 없으면 빈 문자열.
+- affected_fields: 이 trigger 가 변경하는 다른 화면 필드들의 이름 또는
+  라벨 리스트 (setstate_writes 에서 자기 자신 제외한 키). cascading
+  child 들.
+- backend_calls: 호출되는 backend URL 리스트 (factual_urls 그대로).
+- business_summary: 비즈니스 관점 1줄 요약 (예: "FAB 변경 시 기본
+  파라미터 재로드").
+
+**반환 schema (JSON 만)**:
+{
+  "action_description": "...",
+  "validation_rule": "...",
+  "affected_fields": ["Team", "SDPT", "FL", "Model"],
+  "backend_calls": ["/api/default-param"],
+  "business_summary": "..."
+}
+"""
+
+
+def analyze_trigger_with_llm(
+    bundle: dict,
+    config: Optional[dict] = None,
+    *,
+    cache_dir: Optional[str] = None,
+    use_cache: bool = True,
+    timeout: int = 60,
+) -> dict:
+    """Bundle → LLM 호출 → 분석 dict.
+
+    캐시 키 = ``bundle_cache_key(bundle)``. ``cache_dir`` 주어지고
+    ``use_cache=True`` 면 디스크 캐시 사용 (json 파일).
+
+    LLM 응답 dict 형식 — `_TRIGGER_LLM_SYSTEM` schema 참조.
+    실패 시 빈 dict 반환 (호출자가 정적 결과 그대로 사용).
+    """
+    cache_key = bundle_cache_key(bundle)
+    cache_path = None
+    if use_cache and cache_dir:
+        os.makedirs(cache_dir, exist_ok=True)
+        cache_path = os.path.join(cache_dir, f"{cache_key}.json")
+        if os.path.exists(cache_path):
+            try:
+                with open(cache_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            except Exception:
+                pass  # 캐시 깨졌으면 재호출
+
+    try:
+        from openai import OpenAI
+    except Exception as e:
+        logger.warning("openai 미설치 — trigger LLM 분석 skip: %s", e)
+        return {}
+
+    config = config or {}
+    llm_cfg = config.get("llm", {}) or {}
+    api_key = os.environ.get("LLM_API_KEY") or llm_cfg.get("api_key", "ollama")
+    api_base = (os.environ.get("LLM_API_BASE")
+                or llm_cfg.get("api_base", "http://localhost:11434/v1"))
+    model = (os.environ.get("LLM_MODEL")
+             or llm_cfg.get("model", "llama3"))
+
+    client = OpenAI(api_key=api_key, base_url=api_base)
+    user_prompt = serialize_bundle_for_llm(bundle) + (
+        "\n\n위 schema 의 JSON 만 반환하세요. 코드블록 / 설명 없이 raw JSON."
+    )
+
+    try:
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": _TRIGGER_LLM_SYSTEM},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.1,
+            timeout=timeout,
+        )
+        text = resp.choices[0].message.content or ""
+    except Exception as e:
+        logger.warning("trigger LLM 호출 실패 (%s/%s): %s",
+                       bundle.get("event_type"), bundle.get("handler_name"), e)
+        return {}
+
+    parsed = _parse_llm_json(text)
+
+    # parser facts 강제 적용 — LLM 환각 방지
+    if parsed:
+        parsed["backend_calls"] = bundle.get("factual_urls") or []
+
+    if cache_path and parsed:
+        try:
+            with open(cache_path, "w", encoding="utf-8") as f:
+                json.dump(parsed, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    return parsed
+
+
+def _parse_llm_json(text: str) -> dict:
+    """LLM 응답 텍스트에서 JSON dict 추출. 코드블록 fence 안에 들어있어도 OK."""
+    if not text:
+        return {}
+    s = text.strip()
+    # ```json ... ``` 펜스 제거
+    fence_m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", s, re.DOTALL)
+    if fence_m:
+        s = fence_m.group(1)
+    else:
+        # 첫 { 부터 마지막 } 까지
+        l = s.find("{")
+        r = s.rfind("}")
+        if 0 <= l < r:
+            s = s[l:r + 1]
+    try:
+        return json.loads(s)
+    except Exception:
+        return {}
+
+
+def analyze_triggers_batch(
+    bundles: list[dict],
+    config: Optional[dict] = None,
+    *,
+    cache_dir: Optional[str] = None,
+    use_cache: bool = True,
+    progress: bool = True,
+) -> list[dict]:
+    """여러 bundle 일괄 분석. 각 bundle 의 분석 결과 list. 캐시 hit 통계 emit."""
+    results: list[dict] = []
+    hits = 0
+    misses = 0
+    fails = 0
+    for i, b in enumerate(bundles, 1):
+        cache_key = bundle_cache_key(b)
+        cache_path = (os.path.join(cache_dir, f"{cache_key}.json")
+                      if (cache_dir and use_cache) else None)
+        was_cached = cache_path and os.path.exists(cache_path)
+        r = analyze_trigger_with_llm(
+            b, config, cache_dir=cache_dir, use_cache=use_cache)
+        if was_cached:
+            hits += 1
+        elif r:
+            misses += 1
+        else:
+            fails += 1
+        results.append(r)
+        if progress and i % 10 == 0:
+            print(f"  trigger LLM: {i}/{len(bundles)} "
+                  f"(cache={hits}, llm={misses}, fail={fails})")
+    if progress:
+        print(f"  trigger LLM 완료: {len(bundles)} bundles "
+              f"(cache={hits}, llm={misses}, fail={fails})")
+    return results
