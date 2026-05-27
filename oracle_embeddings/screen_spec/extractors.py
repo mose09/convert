@@ -2069,11 +2069,18 @@ def _apply_save_validations(fields: list[FormField], detected: dict) -> None:
 def extract_input_panel_fields(closure: ScreenClosure,
                                patterns: dict | None = None
                                ) -> list[FormField]:
-    """closure 안 ``<table>`` 기반 입력 폼 → FormField 리스트
-    (panel_type='input'). search panel 과 parallel.
+    """closure 의 **entry 파일** 안 ``<table>`` 기반 입력 폼 → FormField
+    리스트 (panel_type='input'). search panel 과 parallel.
+
+    Entry 파일만 보는 이유 (사용자 보고): closure 가 transitive import 로
+    popup / 공통 컴포넌트 / 다른 화면까지 끌고 들어와서 그 안 ``<table>``
+    까지 input panel 로 잡히던 false positive 차단. entry 파일에 ``<table>``
+    이 없으면 input panel 0건이 정확.
 
     onSave / handleSave 등 핸들러 안 ``isNull(X)`` 검증 → required,
-    그 외 ``isNumber`` / ``< 0`` 등 → validation_rule 머지.
+    그 외 ``isNumber`` / ``< 0`` 등 → validation_rule 머지. (handler body
+    검색은 closure 전체 파일 — handler 가 helper / saga 파일에 있을 수
+    있으므로.)
     """
     pat = _patterns_section(patterns)
     input_comps = _comp_list(pat, "input_components", DEFAULT_INPUT_COMPONENTS)
@@ -2086,11 +2093,27 @@ def extract_input_panel_fields(closure: ScreenClosure,
     fields: list[FormField] = []
     order = 0
     file_sources: dict[str, str] = {}
+    # entry 파일만 input panel 후보. (handler 검증 추출은 closure 전체.)
+    entry_rel_path = ""
+    try:
+        from pathlib import Path as _Path
+        entry_abs = str(_Path(closure.entry_file).resolve()).replace("\\", "/")
+    except Exception:
+        entry_abs = ""
     for f in closure.files:
         tree, source, _ = parse_file(f.abs_path)
         if tree is None:
             continue
         file_sources[f.rel_path] = source.decode("utf-8", errors="replace")
+        # entry 파일 식별 — absolute path 비교
+        try:
+            f_abs = str(_Path(f.abs_path).resolve()).replace("\\", "/")
+        except Exception:
+            f_abs = ""
+        is_entry = bool(entry_abs and f_abs and entry_abs == f_abs)
+        if not is_entry:
+            continue
+        entry_rel_path = f.rel_path
         tables = _find_input_tables(tree, source, input_comps, container_tokens)
         for tbl in tables:
             new = _extract_input_panel_from_table(
