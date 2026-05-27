@@ -882,10 +882,13 @@ def _extract_dropdown_options(input_element_node, source: bytes,
 
     # children 으로 못 잡으면 ``options`` prop 의 array literal 탐색.
     # 사용자 케이스: ``<Select options={[{value:'A',label:'전체'},...]}/>``
+    # **엄격 조건**: prop 값이 inline array literal (``[``로 시작) 인 경우만.
+    # ``options={someVar}`` / ``options={getList()}`` 같은 함수/변수 참조는
+    # skip — false positive (다른 필드 옵션 cross-pollination) 방지.
     if not values:
         attrs = _jsx_attributes(input_element_node, source)
-        opts_expr = attrs.get("options") or attrs.get("dataSource") or ""
-        if opts_expr and "{" in opts_expr:
+        opts_expr = (attrs.get("options") or attrs.get("dataSource") or "").strip()
+        if opts_expr.startswith("[") and "{" in opts_expr:
             for block in _OPTION_OBJ_BLOCK_RE.finditer(opts_expr):
                 blk = block.group(0)
                 lm = _OBJ_LABEL_KEY_RE.search(blk)
