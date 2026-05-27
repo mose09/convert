@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v15"  # v15: required 검출 일반화 — if (X === '' || X === null) errorList.push 같은 한국 SI 패턴 인식 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v16"  # v16: LLM 응답의 required_fields 머지 — parser 가 못 잡은 비표준 검증 패턴 보완 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -864,6 +864,31 @@ def _merge_trigger_llm_into_layout(layout: "ScreenLayout",
                 if bs and bs not in (ev.narrative or ""):
                     ev.narrative = (ev.narrative + ", " + bs).lstrip(", ")
                 break
+
+    # required_fields — LLM 이 onSave / onSubmit 등 저장 흐름에서 필수
+    # 검증을 받는 field 들을 식별. parser `_detect_save_validations` 가
+    # 한국 SI 표준 패턴 (isNull / X===''||null / errorList.push 등) 은
+    # 이미 잡지만, 커스텀 validation 라이브러리 / async 검증 / 비표준
+    # 분기 같은 long-tail 은 LLM 이 보완. **parser 가 false 인 경우만**
+    # LLM 응답으로 required=True 설정 (parser ground truth 우선).
+    llm_required: set[str] = set()
+    for analysis in trigger_analyses.values():
+        for raw in (analysis.get("required_fields") or []):
+            if not raw:
+                continue
+            # name 우선 매칭 — 정규화 (대소문자 / 특수문자 제거)
+            llm_required.add(re.sub(r"[\W_]+", "", str(raw)).lower())
+    if llm_required:
+        for f in (layout.search_panel or []) + (layout.input_panel or []):
+            if f.required:
+                continue  # parser 가 이미 잡음 — 그대로
+            keys = []
+            if getattr(f, "name", ""):
+                keys.append(re.sub(r"[\W_]+", "", f.name).lower())
+            if f.label:
+                keys.append(re.sub(r"[\W_]+", "", f.label).lower())
+            if any(k and k in llm_required for k in keys):
+                f.required = True
 
 
 # ── Fallback (LLM 없을 때) — 정적 분석 결과만 가지고 events 만 채움 ──
