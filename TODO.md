@@ -151,6 +151,31 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: search panel 9컬럼 — LLM 값 보존 + Popover UI + 옵션 prop 추출
+
+PR #263 후속, 사용자 보고 3가지:
+1. 유효성 규칙 / 동작 LLM 칸이 결과에서 빈 채 — `_parser_fill_layout`
+   이 layout.search_panel 통째로 덮어쓰면서 LLM 값 손실.
+2. Popover UI 타입이 Select 로 잘못 분류.
+3. Select(Single) 의 `options=[{value, label}]` prop 형태에서 옵션 값
+   추출 안 됨 — children `<Option>` 만 보던 한계.
+
+Fix:
+- `_parser_fill_layout` 에 LLM 값 라벨 매칭 보존 — `validation_rule` 은
+  LLM 만 채울 수 있는 값이라 그대로 사용. `action` 은 LLM cascading 설명
+  있으면 우선 + 옵션 list 보강.
+- `_infer_form_ui_type` 에 `_POPOVER_TAG_KEYWORDS` 분기 (Select 보다 먼저
+  매칭) — Popover / Popconfirm / PopoverSelect 등.
+- `_is_keyboard_input` Popover 도 false (타입·길이 비움).
+- `_compose_form_action` Popover 도 옵션 list 채움.
+- `_extract_dropdown_options` 보강:
+  * namespaced `<Select.Option>` (Ant Design) suffix 매칭
+  * children 으로 못 잡으면 `options=[{value, label},...]` prop array
+    literal 도 시도 (label 우선, 없으면 value)
+
+검증:
+- helper 8종 (Popover x3 + Popover+옵션 + options prop array 4종) 모두 ✓
+
 ### 진행 중: search panel 9컬럼 화면정의서 양식 (grid 와 parallel)
 
 사용자 요청 — 그리드 9컬럼 (#232) 와 같은 화면정의서 표를 검색 영역에도.
