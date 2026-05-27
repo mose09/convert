@@ -151,6 +151,32 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: trigger 단위 LLM 분석 — Phase 1 (bundle builder)
+
+사용자 제안: 이벤트 → handler → helper → action → saga 전체 체인을
+한 덩어리로 묶어서 LLM 한 번 호출 (백엔드 `--extract-biz-logic` 와
+대칭 패턴). cascading / 분기 / setState clear / 검증 등 trigger-specific
+의미 추론을 균일하게 처리.
+
+Phase 1 (이번 PR): bundle builder + 직렬화. LLM 호출/캐시 (Phase 2),
+응답 머지 (Phase 3) 는 후속.
+
+- [x] `oracle_embeddings/legacy_trigger_bundler.py` 신규 모듈
+- [x] `build_trigger_bundle(trigger, file_content, ...)` → bundle dict
+      (trigger_jsx / event_type / handler_name / label / source_file /
+      handler_chain / setstate_writes / factual_urls)
+- [x] handler chain follow — 같은 파일 → fn_index 순으로 helper /
+      action body 따라감 (max_depth 3, cycle 방지)
+- [x] Redux/saga chain — `_DISPATCH_ACTION_RE` + `_THIS_PROPS_CALL_LEAF_RE`
+      + destructured + propTypes → mDTP → action body. type_key 같이 노출.
+- [x] setState writes / factual URLs — scanner facts 그대로 노출
+      (LLM 환각 방지용 ground truth)
+- [x] `serialize_bundle_for_llm()` — Markdown 형식 LLM user-message body
+- [x] `bundle_cache_key()` — MD5 캐시 키 (Phase 2 에서 사용)
+- [x] `_slice_trigger_jsx()` — self-closing 처리 fix (outer `</div>` 안 잡힘)
+- [x] 사용자 FAB 케이스 E2E: handler + helper (handleCleanEQID) + action
+      (loadingDefaultParam) 3-chain + setState 5 writes + URL 1개 정확
+
 ### 진행 중: search panel — cascading clear 검출 (FAB→Team→SDPT 계층)
 
 사용자 보고: FAB / Team / SDPT 참조관계가 동작·유효성 컬럼에 안 잡힘.
