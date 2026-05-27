@@ -300,14 +300,16 @@ _RADIO_TAG_KEYWORDS = ("radio",)
 def _is_keyboard_input(tag: str, field_type: str) -> bool:
     """키보드로 직접 타이핑하는 입력 필드인지 — 타입/길이 칸을 채울지 결정.
 
-    select / checkbox / radio / date / time picker 류는 키보드 타이핑이
-    아니므로 타입·길이 칸 비움. text / textarea / number / password /
-    search / email / tel / url 류만 채움.
+    select / checkbox / radio / date / time picker / popover 류는 키보드
+    타이핑이 아니므로 타입·길이 칸 비움. text / textarea / number /
+    password / search / email / tel / url 류만 채움.
     """
     tag_l = (tag or "").lower()
     ft = (field_type or "").lower()
     if any(k in tag_l for k in _SELECT_TAG_KEYWORDS + _DATE_TAG_KEYWORDS
            + _CHECKBOX_TAG_KEYWORDS + _RADIO_TAG_KEYWORDS):
+        return False
+    if any(k in tag_l for k in ("popover", "popconfirm")):
         return False
     if ft in ("select", "checkbox", "radio", "date", "daterange", "time"):
         return False
@@ -328,16 +330,25 @@ def _input_data_type(tag: str, attrs: dict[str, str], field_type: str) -> str:
     return "String"
 
 
+_POPOVER_TAG_KEYWORDS = ("popover", "popconfirm", "popselect", "popoverselect")
+
+
 def _infer_form_ui_type(tag: str, attrs: dict[str, str], field_type: str,
                         options: str) -> str:
     """검색 패널 입력 컴포넌트의 UI 타입 라벨.
 
     예: Select(Single), Select(Multi), Text Field(Search Box), Text Field
     (Basic), DatePicker, Date Range, Checkbox, Radio Group, Number Field,
-    Password.
+    Password, Popover. 컴포넌트 이름에 ``Popover`` / ``Popconfirm`` 키워드
+    포함되면 Popover (Ant Design 등 — Select 와 비슷한 click trigger).
     """
     tag_l = (tag or "").lower()
     ft = (field_type or "").lower()
+    # Popover 류 — 다른 입력 키워드보다 우선 매칭 (사용자 보고: Popover 가
+    # Select 로 잘못 분류되던 케이스). children 에 Select/Option 있으면
+    # 그래도 Popover 가 사용자 화면 인터랙션 타입.
+    if any(k in tag_l for k in _POPOVER_TAG_KEYWORDS):
+        return "Popover"
     # Select 류 — multi 인지 검사
     if any(k in tag_l for k in _SELECT_TAG_KEYWORDS) or ft == "select":
         if (attrs.get("mode") == "multiple" or attrs.get("multiple") == "true"
@@ -368,7 +379,8 @@ def _infer_form_ui_type(tag: str, attrs: dict[str, str], field_type: str,
 
 
 def _compose_form_action(field_type: str, options: str, ui_type: str) -> str:
-    """동작 컬럼 기본값 — 단순 dropdown/checkbox/radio 면 옵션 값을 줄바꿈으로.
+    """동작 컬럼 기본값 — 단순 dropdown/checkbox/radio/Popover (선택형) 면
+    옵션 값을 줄바꿈으로.
 
     예: "전체\\nY\\nN". cascading dependency 패턴이 LLM 으로 추출되면
     LLM 응답이 이 값을 덮어쓴다 (선택지가 행위가 아닌 단순 enum 일 때만
@@ -379,7 +391,7 @@ def _compose_form_action(field_type: str, options: str, ui_type: str) -> str:
     ft = (field_type or "").lower()
     if (ft in ("select", "checkbox", "radio")
             or ui_type.startswith("Select")
-            or ui_type in ("Checkbox", "Radio Group")):
+            or ui_type in ("Checkbox", "Radio Group", "Popover")):
         items = [o.strip() for o in options.split(",") if o.strip()]
         if items:
             return "\n".join(items)
@@ -576,44 +588,89 @@ def _extract_event_props(attrs: dict[str, str]) -> str:
     return " / ".join(sorted(evts))
 
 
-def _extract_dropdown_options(input_element_node, source: bytes,
-                              option_comps: set[str]) -> str:
-    """드롭다운(Select 등) 의 children 중 ``<Option value=...>`` 의 value
-    (또는 text child) 모아 ``"Y, N"`` 형식. children 이 없으면 빈 문자열.
+# ``options={[{...}, {...}]}`` 의 각 ``{...}`` 객체 블록.
+_OPTION_OBJ_BLOCK_RE = re.compile(r"\{[^{}]+?\}", re.DOTALL)
+# 객체 안 표시용 라벨 키 (label/title/name/text) — 우선.
+_OBJ_LABEL_KEY_RE = re.compile(
+    r"""\b(?:label|title|name|text)\s*:\s*['"`]([^'"`]+)['"`]"""
+)
+# 객체 안 value 키 — 라벨 없으면 fallback.
+_OBJ_VALUE_KEY_RE = re.compile(
+    r"""\bvalue\s*:\s*['"`]([^'"`]+)['"`]"""
+)
 
-    ``input_element_node`` 가 jsx_opening_element 이면 wrapping element 까지
-    올라가서 children 탐색. self-closing 이면 children 없음 → "".
+
+def _option_tag_matches(tag: str, option_comps) -> bool:
+    """tag 가 Option 컴포넌트인지 — 단순 일치 + ``Select.Option`` 같이
+    namespaced 형태도 suffix 매칭.
     """
+    if tag in option_comps:
+        return True
+    if "." in tag:
+        suffix = tag.rsplit(".", 1)[-1]
+        if suffix in option_comps:
+            return True
+    return False
+
+
+def _extract_dropdown_options(input_element_node, source: bytes,
+                              option_comps) -> str:
+    """드롭다운(Select 등) 의 children 중 ``<Option value=...>`` 의 value
+    (또는 text child) 모아 ``"Y, N"`` 형식. children 이 없으면 ``options``
+    prop 의 array literal (``[{value:'A',label:'AA'},...]``) 도 시도.
+    여전히 없으면 빈 문자열.
+
+    namespaced ``<Select.Option>`` (Ant Design 등) 도 suffix 매칭으로
+    인식. ``input_element_node`` 가 jsx_opening_element 이면 wrapping
+    element 까지 올라가서 children 탐색. self-closing 이면 children
+    없음 → ``options`` prop array 만 확인.
+    """
+    values: list[str] = []
+    # children 기반 (Option 컴포넌트들)
     cur = input_element_node
     if cur.type == "jsx_opening_element" and cur.parent is not None:
         cur = cur.parent
-    if cur.type != "jsx_element":
-        return ""
-    values: list[str] = []
-    for n in walk(cur):
-        if n is cur:
-            continue
-        if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
-            continue
-        nm = child_by_field(n, "name")
-        if nm is None:
-            continue
-        tag = text_of(nm, source).strip()
-        if tag not in option_comps:
-            continue
-        attrs = _jsx_attributes(n, source)
-        val = (attrs.get("value") or attrs.get("key") or "").strip()
-        if not val:
-            # text child 사용 — <Option>Yes</Option>
-            if n.type == "jsx_opening_element" and n.parent is not None:
-                for c in n.parent.children:
-                    if c.type == "jsx_text":
-                        t = text_of(c, source).strip()
-                        if t:
-                            val = t
-                            break
-        if val and val not in values:
-            values.append(val)
+    if cur.type == "jsx_element":
+        for n in walk(cur):
+            if n is cur:
+                continue
+            if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+                continue
+            nm = child_by_field(n, "name")
+            if nm is None:
+                continue
+            tag = text_of(nm, source).strip()
+            if not _option_tag_matches(tag, option_comps):
+                continue
+            attrs = _jsx_attributes(n, source)
+            val = (attrs.get("value") or attrs.get("key") or "").strip()
+            if not val:
+                # text child 사용 — <Option>Yes</Option>
+                if n.type == "jsx_opening_element" and n.parent is not None:
+                    for c in n.parent.children:
+                        if c.type == "jsx_text":
+                            t = text_of(c, source).strip()
+                            if t:
+                                val = t
+                                break
+            if val and val not in values:
+                values.append(val)
+
+    # children 으로 못 잡으면 ``options`` prop 의 array literal 탐색.
+    # 사용자 케이스: ``<Select options={[{value:'A',label:'전체'},...]}/>``
+    if not values:
+        attrs = _jsx_attributes(input_element_node, source)
+        opts_expr = attrs.get("options") or attrs.get("dataSource") or ""
+        if opts_expr and "{" in opts_expr:
+            for block in _OPTION_OBJ_BLOCK_RE.finditer(opts_expr):
+                blk = block.group(0)
+                lm = _OBJ_LABEL_KEY_RE.search(blk)
+                vm = _OBJ_VALUE_KEY_RE.search(blk)
+                # 표시용 — label 우선 (사용자 가시값), 없으면 value
+                shown = (lm.group(1) if lm else (vm.group(1) if vm else ""))
+                shown = shown.strip()
+                if shown and shown not in values:
+                    values.append(shown)
     return ", ".join(values)
 
 

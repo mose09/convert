@@ -517,6 +517,38 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         logger.warning("파서 기반 화면 추출 실패: %s", e)
         return 0, 0
     if fields:
+        # 파서 fill 전에 LLM 응답의 LLM-only 필드 (validation_rule / cascading
+        # action) 를 라벨로 보존. 파서는 cascading 패턴을 못 추론하므로 LLM
+        # 이 채워준 값을 잃지 않게 다시 머지. action 은 LLM 이 cascading
+        # 설명을 채웠으면 (옵션 값 줄바꿈 list 가 아니면) 우선, 아니면 파서
+        # 의 옵션 list 가 default.
+        llm_extra: Dict[str, Dict[str, str]] = {}
+        for sf in (layout.search_panel or []):
+            key = (sf.label or "").strip()
+            if not key:
+                continue
+            llm_extra[key] = {
+                "validation_rule": (sf.validation_rule or ""),
+                "action": (sf.action or ""),
+            }
+
+        def _merge_action(parser_act: str, llm_act: str) -> str:
+            """parser_act (옵션 list 줄바꿈) vs llm_act (cascading 설명 등).
+
+            LLM 이 의미있는 cascading 설명을 채웠으면 우선. LLM 값이 비었거나
+            parser 와 동일한 옵션 list 이면 parser 유지.
+            """
+            llm_clean = (llm_act or "").strip()
+            if not llm_clean:
+                return parser_act or ""
+            if llm_clean == (parser_act or "").strip():
+                return parser_act or ""
+            # LLM 값이 cascading 설명일 가능성 — 옵션 list 면 그대로, 아니면
+            # parser 옵션 list 와 같이 보여줌 (LLM 설명이 우선 + 옵션 list 보강).
+            if parser_act and parser_act.strip() != llm_clean:
+                return llm_clean + "\n\n" + parser_act
+            return llm_clean
+
         # component 는 원본 JSX tag 우선 (예: "Select", "DatePicker") —
         # field_type 의 소문자 분류 ("select"/"date") 대신 사용자가 보는
         # 화면에 실제 컴포넌트 이름이 그대로 표시되도록.
@@ -534,8 +566,14 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 max_length=f.max_length or "",
                 input_data_type=f.input_data_type or "",
                 ui_type=f.ui_type or "",
-                action=f.action or "",
-                validation_rule=f.validation_rule or "",
+                action=_merge_action(
+                    f.action or "",
+                    llm_extra.get((f.label or "").strip(), {}).get("action", ""),
+                ),
+                validation_rule=(
+                    llm_extra.get((f.label or "").strip(), {})
+                    .get("validation_rule", "")
+                ),
             )
             for f in fields
         ]
