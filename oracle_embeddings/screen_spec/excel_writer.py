@@ -92,7 +92,7 @@ def _rows_for_grid_columns(s: ScreenSpec):
     for c in s.grid_columns:
         attribute = _compose_attribute(c.visible, c.editable)
         yield [s.screen_id, c.order, c.data_key, c.header, c.data_type,
-               "필수" if c.required else "",
+               "필수" if c.required else "선택",
                attribute,
                c.ui_type or "Text Field(Basic)",
                c.description, c.action,

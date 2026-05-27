@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v16"  # v16: LLM 응답의 required_fields 머지 — parser 가 못 잡은 비표준 검증 패턴 보완 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v17"  # v17: grid 정의서 필수여부 빈 값 → "선택" — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1500,7 +1500,7 @@ def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
         attribute = c.attribute or ("H" if c.hide else "O/R")
         ui = c.ui_type or "Text Field(Basic)"
         dtype = (c.data_type or "String").capitalize()
-        required = "필수" if c.required else ""
+        required = "필수" if c.required else "선택"
         length = getattr(c, "length", "") or ""
         row = (
             f"<tr>"
