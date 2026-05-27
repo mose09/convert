@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v12"  # v12: input panel false positive fix — search-area 안 table / <th> 없는 display table 제외 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v13"  # v13: input panel false positive 2nd fix — entry 파일만 (popup/공통 imported file 의 table 제외) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
