@@ -588,6 +588,20 @@ python main.py analyze-legacy `
 | **`--closure-popup-augment`** | (옵트인, tree-sitter 필요) AST closure 의 popup_refs 로 popup_set 보강. 메인의 `<Modal>` 안 import 만 보는 기존 휴리스틱이 놓친 popup (`*Dialog` / `*Popup` / `*Layer` suffix 컴포넌트가 `<Modal>` 없이 렌더되는 케이스) 을 잡음. |
 | **`--llm-per-trigger`** | (옵트인) 화면 단위 LLM 호출 외에 **trigger 단위로도** LLM 분석 — 이벤트 → handler → helper → action → saga 전체 체인을 한 덩어리로 묶어 cascading / 유효성 / 영향받는 필드 / 비즈 요약 추출. 결과는 `search_panel` 의 action / validation_rule + events 의 narrative 에 머지. 캐시: `output/legacy_analysis/.trigger_cache/`. trigger 당 1회 LLM 호출 — 큰 화면이면 비용 N×M (캐시 무효화 시까지 재호출 없음). FAB→Team→SDPT 같은 cascading dependency, 분기 처리, 비즈 의미 등 parser regex 로는 추론 불가능한 영역에 사용. |
 
+**🧾 Search Panel vs Input Panel 정의서 (9컬럼)**
+
+`--extract-screen-layout` 결과 HTML / `screen-spec` xlsx 에 두 종류의 입력 영역 정의서가 자동 분리됩니다:
+
+- **Search Panel (검색영역)** — `<section className="search-area">` (또는 `search-form` / `filter-area` / `criteria-area`) 안의 `<div className="search-item">` 단위 입력. search-area container 가 없으면 검색영역 추출 자체를 skip.
+- **Input Panel (입력영역)** — `<table>` 기반 입력 폼 (한국 SI 흔한 패턴 — `<tr><th>라벨</th><td><Input/></td></tr>`). edit form / modal popup form 등. 검색영역과 별도 섹션으로 출력.
+
+두 영역 모두 같은 9컬럼: **No / 라벨 / 타입 (keyboard input 만) / 길이 / 필수 / 기본값 (placeholder 우선) / 유효성 규칙 및 비고 / UI 타입 / 동작**.
+
+- **필수** 자동 추출: `onSave` / `handleSave` / `onSubmit` 등 핸들러 body 안 `if (isNull(X)) errorMsg.push('[X]')` 패턴 → X 가 필수
+- **유효성 규칙** 자동 추출: `isNumber` / `isNegative` / `< 0` / `.length > N` / `.test()` 등 → "숫자만 허용" / "음수 불가" / "길이 제한 (N)" 등으로 변환
+- **UI 타입** 자동 분류: `Select(Single/Multi)` / `Text Field(Basic/Search Box)` / `DatePicker` / `Date Range` / `Checkbox` / `Radio Group` / `Number Field` / `Password` / `Popover`
+- **동작** 자동 추출: 단순 dropdown 은 옵션 값 줄바꿈 (예: `전체\nY\nN`). cascading dependency (FAB→Team 등) 는 `_detect_cascading_clears` 가 setState clear 패턴 분석해서 "변경 시 X, Y 초기화" 자동 채움. LLM (`--llm-per-trigger`) 사용 시 더 풍부한 설명으로 보강.
+
 ---
 
 **🧠 비즈니스 로직 + Validation 추출 (Quick Start)**

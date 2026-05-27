@@ -32,6 +32,7 @@ class FormField:
     action: str = ""                  # 동작 — 단순 dropdown 은 옵션 값 줄바꿈 / 그 외 LLM cascading 판단
     validation_rule: str = ""         # 유효성 규칙 및 비고 — LLM 판단 (계층 cascading 등)
     change_handler: str = ""          # 내부 — onChange 의 leaf handler 이름 (cascading 분석용)
+    panel_type: str = "search"        # "search" (검색영역) / "input" (입력영역 — table 기반)
 
 
 @dataclass
