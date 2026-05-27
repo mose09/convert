@@ -29,6 +29,9 @@ _HEADERS = {
     "검색조건": ["화면명", "No", "라벨", "타입", "길이",
                 "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
                 "동작", "필드명", "소스파일"],
+    "입력영역": ["화면명", "No", "라벨", "타입", "길이",
+                "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
+                "동작", "필드명", "소스파일"],
     "그리드컬럼": ["화면명", "NO", "필드명(영문)", "필드설명", "타입",
                   "필수여부", "속성", "UI타입", "설명", "동작",
                   "너비", "정렬", "소스파일"],
@@ -58,8 +61,11 @@ def _row_for_overview(s: ScreenSpec) -> list:
     ]
 
 
-def _rows_for_form_fields(s: ScreenSpec):
+def _rows_for_form_fields(s: ScreenSpec, panel_type: str = "search"):
     for ff in s.form_fields:
+        # panel_type 으로 필터 — "search" / "input" 별도 시트.
+        if getattr(ff, "panel_type", "search") != panel_type:
+            continue
         # 기본값: placeholder 우선 (UI 가시값) → defaultValue fallback.
         # placeholder 가 "Select 하세요" 같은 빈 안내문이라도 default 보다
         # 사용자 화면에 보이는 값이므로 우선.
@@ -171,7 +177,8 @@ def write_master_xlsx(specs: list[ScreenSpec], output_path: Path) -> None:
 
     # 시트별 데이터 집계
     overview_rows = [_row_for_overview(s) for s in specs]
-    form_rows = [r for s in specs for r in _rows_for_form_fields(s)]
+    form_rows = [r for s in specs for r in _rows_for_form_fields(s, "search")]
+    input_rows = [r for s in specs for r in _rows_for_form_fields(s, "input")]
     grid_rows = [r for s in specs for r in _rows_for_grid_columns(s)]
     tab_rows = [r for s in specs for r in _rows_for_tabs(s)]
     btn_rows = [r for s in specs for r in _rows_for_buttons(s)]
@@ -180,6 +187,7 @@ def write_master_xlsx(specs: list[ScreenSpec], output_path: Path) -> None:
 
     _add_sheet("개요",       _HEADERS["개요"],       overview_rows)
     _add_sheet("검색조건",   _HEADERS["검색조건"],   form_rows)
+    _add_sheet("입력영역",   _HEADERS["입력영역"],   input_rows)
     _add_sheet("그리드컬럼", _HEADERS["그리드컬럼"], grid_rows)
     _add_sheet("탭",         _HEADERS["탭"],         tab_rows)
     _add_sheet("이벤트",     _HEADERS["이벤트"],     btn_rows)

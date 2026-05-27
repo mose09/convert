@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v9"   # v9: search_panel 9컬럼 화면정의서 양식 (placeholder/max_length/input_data_type/ui_type/action/validation_rule 추가) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v10"  # v10: input_panel 추가 (table 기반 입력 폼, onSave isNull 검증으로 required 추출) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -93,6 +93,8 @@ class ScreenLayout:
     file: str = ""           # React 파일 상대경로
     page_title: str = ""
     search_panel: List[ScreenField] = field(default_factory=list)
+    # 입력 영역 — table 기반 입력 폼 (검색영역과 별도). panel_type='input'.
+    input_panel: List[ScreenField] = field(default_factory=list)
     data_table_columns: List[TableColumn] = field(default_factory=list)
     edit_mode_fields: List[ScreenField] = field(default_factory=list)
     tabs: List[str] = field(default_factory=list)
@@ -510,6 +512,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
         from .screen_spec.extractors import (
             extract_form_fields,
             extract_grid_columns,
+            extract_input_panel_fields,
         )
     except Exception as e:
         logger.warning("screen_spec extractors import 실패: %s", e)
@@ -517,6 +520,7 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
     try:
         fields = extract_form_fields(closure, patterns)
         cols = extract_grid_columns(closure, patterns)
+        input_fields = extract_input_panel_fields(closure, patterns)
     except Exception as e:
         logger.warning("파서 기반 화면 추출 실패: %s", e)
         return 0, 0
@@ -581,6 +585,28 @@ def _parser_fill_layout(layout: "ScreenLayout", closure,
                 change_handler=getattr(f, "change_handler", "") or "",
             )
             for f in fields
+        ]
+    # input_panel — table 기반 입력 폼. search panel 과 같은 ScreenField
+    # 구조 사용. parser 가 단독 제공 (LLM 머지 없음 — onSave 검증 자동
+    # 추출이 deterministic 이라 충분).
+    if input_fields:
+        layout.input_panel = [
+            ScreenField(
+                label=(f.label or ""),
+                component=(f.jsx_tag or f.field_type or ""),
+                default=f.default or "",
+                options=f.options or "",
+                events=f.events or "",
+                required=f.required,
+                placeholder=f.placeholder or "",
+                max_length=f.max_length or "",
+                input_data_type=f.input_data_type or "",
+                ui_type=f.ui_type or "",
+                action=f.action or "",
+                validation_rule=f.validation_rule or "",
+                change_handler=getattr(f, "change_handler", "") or "",
+            )
+            for f in input_fields
         ]
     if cols:
         from .screen_spec.extractors import _compose_attribute
@@ -1236,6 +1262,7 @@ if (window.mermaid) {{
 <main>
 {summary_block}
 {search_block}
+{input_block}
 {tab_block}
 {table_block}
 {flowchart_block}
@@ -1286,6 +1313,43 @@ def _render_search(fields: List[ScreenField]) -> str:
             + _render_field_list(fields)
             + _render_search_table(fields)
             + "</section>")
+
+
+def _render_input_panel(fields: List[ScreenField]) -> str:
+    """입력 영역 (table 기반 입력 폼) 정의서 — 검색영역과 같은 9컬럼 양식.
+
+    onSave 의 isNull 검증은 ``required`` 로, isNumber/isNegative 등 그 외
+    검증은 ``validation_rule`` 로 parser 가 채움.
+    """
+    if not fields:
+        return ""
+    rows = []
+    for i, f in enumerate(fields, start=1):
+        display_default = f.placeholder or f.default or ""
+        action_html = _esc(f.action or "").replace("\n", "<br/>")
+        rows.append(
+            "<tr>"
+            f"<td class='no'>{i}</td>"
+            f"<td>{_esc(f.label or '')}</td>"
+            f"<td>{_esc(f.input_data_type or '')}</td>"
+            f"<td>{_esc(f.max_length or '')}</td>"
+            f"<td>{'필수' if f.required else '선택'}</td>"
+            f"<td>{_esc(display_default)}</td>"
+            f"<td>{_esc(f.validation_rule or '')}</td>"
+            f"<td>{_esc(f.ui_type or '')}</td>"
+            f"<td>{action_html}</td>"
+            "</tr>"
+        )
+    return (
+        "<section><h2>Input Panel — 입력 영역 정의서</h2>"
+        "<table class='input-spec'><thead><tr>"
+        "<th>No</th><th>라벨</th><th>타입</th><th>길이</th>"
+        "<th>필수</th><th>기본값</th><th>유효성 규칙 및 비고</th>"
+        "<th>UI 타입</th><th>동작</th>"
+        "</tr></thead><tbody>"
+        + "".join(rows)
+        + "</tbody></table></section>"
+    )
 
 
 def _render_search_table(fields: List[ScreenField]) -> str:
@@ -1630,6 +1694,7 @@ def render_screen_html(layout: ScreenLayout) -> str:
         title_html=_esc(title),
         summary_block=summary_block,
         search_block=_render_search(layout.search_panel),
+        input_block=_render_input_panel(layout.input_panel or []),
         tab_block=_render_tabs(layout.tabs),
         table_block=_render_table(layout.data_table_columns),
         flowchart_block=_render_flowchart(layout.flowchart_mermaid),

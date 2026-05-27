@@ -985,8 +985,11 @@ def extract_form_fields(closure: ScreenClosure,
             any_item = True
         file_data.append((f, tree, source, containers, items))
 
-    # Phase 2a: search-item 우선 — 1 item = 1 field (Popover 등 자동 흡수)
-    if any_item:
+    # Phase 2a: search-item 우선 — 1 item = 1 field (Popover 등 자동 흡수).
+    # **단 search-area container 없으면 skip** — search-item 이 search 영역
+    # 밖에 있는 경우 (edit modal 등 다른 영역) 까지 search panel 로 잡히던
+    # 문제 방지. container 없는 화면은 search panel 0건.
+    if any_item and any_container:
         fields: list[FormField] = []
         order = 0
         for f, tree, source, containers, items in file_data:
@@ -1747,3 +1750,283 @@ def build_and_extract(entry_file: Path, frontend_dir: Path,
         verbose=False,
     )
     return extract_screen_spec(closure, screen_id=screen_id, patterns=patterns)
+
+
+# ─────────────────────────────────────────────────────────────────
+# 입력 영역 (input panel) — <table> 기반 입력 폼
+# ─────────────────────────────────────────────────────────────────
+
+
+def _find_input_tables(tree, source: bytes, input_comps) -> list:
+    """closure 안 `<table>` element 중 input component 가 children 으로
+    포함된 것만 input panel 후보로 반환. 단순 표 display table 은 제외
+    (input 없으면 skip)."""
+    out = []
+    for n in find_by_type(tree.root_node,
+                          {"jsx_opening_element", "jsx_self_closing_element"}):
+        nm = child_by_field(n, "name")
+        if nm is None:
+            continue
+        tag = text_of(nm, source).strip().lower()
+        if tag != "table":
+            continue
+        # opening element → wrapping jsx_element
+        cur = n.parent if (n.type == "jsx_opening_element" and n.parent) else n
+        if cur.type != "jsx_element":
+            continue
+        # children 안 input 컴포넌트 존재 검사
+        has_input = False
+        for sub in walk(cur):
+            if sub is cur:
+                continue
+            if sub.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+                continue
+            sub_nm = child_by_field(sub, "name")
+            if sub_nm is None:
+                continue
+            sub_tag = text_of(sub_nm, source).strip()
+            if sub_tag in input_comps:
+                has_input = True
+                break
+        if has_input:
+            out.append(cur)
+    return out
+
+
+def _extract_input_panel_from_table(table_node, source: bytes,
+                                    input_comps, option_comps,
+                                    rel_path: str, start_order: int
+                                    ) -> list[FormField]:
+    """1 ``<table>`` → input panel FormField 리스트.
+
+    각 ``<tr>`` 안에서 ``<th>`` (또는 첫 ``<td>`` 텍스트) 를 label,
+    그 다음 ``<td>`` 의 input 컴포넌트를 input 으로 페어. 한 ``<tr>`` 에
+    여러 label/input 페어가 있어도 순서대로 추출.
+    """
+    fields: list[FormField] = []
+    order = start_order
+    # 모든 tr 순회
+    for tr in walk(table_node):
+        if tr is table_node:
+            continue
+        if tr.type != "jsx_element":
+            continue
+        opening = next((c for c in tr.children if c.type == "jsx_opening_element"), None)
+        if opening is None:
+            continue
+        tr_name = child_by_field(opening, "name")
+        if tr_name is None or text_of(tr_name, source).strip().lower() != "tr":
+            continue
+        # tr 의 cells (th / td) 순서대로
+        cells: list[tuple[str, object]] = []   # ("label_text" or "input_node", node)
+        for child in tr.children:
+            if child.type != "jsx_element":
+                continue
+            opn = next((c for c in child.children if c.type == "jsx_opening_element"), None)
+            if opn is None:
+                continue
+            cnm = child_by_field(opn, "name")
+            if cnm is None:
+                continue
+            ctag = text_of(cnm, source).strip().lower()
+            if ctag == "th":
+                txt = _find_label_text_in_children(child, exclude=None, source=source)
+                if isinstance(txt, tuple):
+                    txt = txt[0]
+                cells.append(("label", (txt or "").strip()))
+            elif ctag == "td":
+                # td 안 첫 input 컴포넌트
+                input_el = None
+                input_tag = ""
+                for sub in walk(child):
+                    if sub is child:
+                        continue
+                    if sub.type not in ("jsx_opening_element", "jsx_self_closing_element"):
+                        continue
+                    sn = child_by_field(sub, "name")
+                    if sn is None:
+                        continue
+                    t = text_of(sn, source).strip()
+                    if t in input_comps:
+                        input_el = sub
+                        input_tag = t
+                        break
+                # input 없으면 label-only td (label 위치) 로 처리
+                if input_el is None:
+                    txt = _find_label_text_in_children(child, exclude=None, source=source)
+                    if isinstance(txt, tuple):
+                        txt = txt[0]
+                    cells.append(("label", (txt or "").strip()))
+                else:
+                    cells.append(("input", (input_el, input_tag)))
+
+        # 페어링 — label 직후 input 페어
+        pending_label = ""
+        for kind, val in cells:
+            if kind == "label":
+                if val:
+                    pending_label = val
+            else:  # input
+                input_el, input_tag = val
+                attrs = _jsx_attributes(input_el, source)
+                ft = _classify_field_type(input_tag, attrs)
+                opts = _extract_dropdown_options(input_el, source, option_comps)
+                ui = _infer_form_ui_type(input_tag, attrs, ft, opts)
+                order += 1
+                fields.append(FormField(
+                    order=order,
+                    label=(pending_label
+                           or attrs.get("label")
+                           or attrs.get("placeholder")
+                           or attrs.get("title")
+                           or attrs.get("aria-label")
+                           or ""),
+                    name=(attrs.get("name") or attrs.get("id")
+                          or attrs.get("field") or ""),
+                    field_type=ft,
+                    required=(attrs.get("required") == "true"
+                              or "required" in (attrs.get("className") or "").lower()),
+                    default=(attrs.get("defaultValue") or attrs.get("value") or ""),
+                    validation=_format_inline_validation(attrs),
+                    source_file=rel_path,
+                    jsx_tag=input_tag,
+                    events=_extract_event_props(attrs),
+                    options=opts,
+                    placeholder=attrs.get("placeholder", ""),
+                    max_length=attrs.get("maxLength", ""),
+                    input_data_type=_input_data_type(input_tag, attrs, ft),
+                    ui_type=ui,
+                    action=_compose_form_action(ft, opts, ui),
+                    change_handler=_extract_handler_leaf(attrs.get("onChange", "")),
+                    panel_type="input",
+                ))
+                pending_label = ""
+    return fields
+
+
+# onSave / handleSave / submit 류 핸들러 안 isNull / isNumber / isNegative
+# 등 검증 패턴 추출 — input panel field 의 required / validation_rule 채움.
+
+_SAVE_HANDLER_NAMES = (
+    "onSave", "handleSave", "save", "doSave", "onSubmit", "handleSubmit",
+    "submit", "doSubmit", "onApply", "handleApply", "apply",
+    "onConfirm", "handleConfirm", "confirm", "onOk",
+)
+
+_ISNULL_RE = re.compile(r"\bis[Nn]ull\s*\(\s*([\w$.]+)\s*\)")
+_VALIDATION_PATTERN_RES = [
+    # (regex, label-format) — label 안 ``{field}`` 는 매칭 그룹 1 로 대체
+    (re.compile(r"\bis[Nn]egative\s*\(\s*([\w$.]+)\s*\)"),  "음수 불가"),
+    (re.compile(r"\bisNotNumber\s*\(\s*([\w$.]+)\s*\)"),    "숫자만 허용"),
+    (re.compile(r"\b(?:!\s*is[Nn]umber|isNaN)\s*\(\s*([\w$.]+)\s*\)"),
+                                                            "숫자만 허용"),
+    (re.compile(r"\bisNotEmail\s*\(\s*([\w$.]+)\s*\)"),     "이메일 형식"),
+    (re.compile(r"([\w$.]+)\s*\.\s*length\s*[<>]=?\s*(\d+)"),
+                                                            "길이 제한 ({1})"),
+    (re.compile(r"([\w$.]+)\s*<\s*0\b"),                    "음수 불가"),
+    (re.compile(r"([\w$.]+)\s*\.\s*test\s*\(\s*([\w$.]+)\s*\)"),
+                                                            "정규식 패턴 검증"),
+]
+
+
+def _detect_save_validations(closure, file_sources: dict) -> dict:
+    """closure 안 save 류 handler 들에서 검증 패턴 추출.
+
+    Returns: ``{field_name: {"required": bool, "rules": [str, ...]}}``
+    """
+    from ..legacy_react_api_scanner import _locate_handler_body
+    out: dict = {}
+    for fp, content in file_sources.items():
+        for handler_name in _SAVE_HANDLER_NAMES:
+            body = _locate_handler_body(content, handler_name)
+            if not body:
+                continue
+            # isNull → required
+            for m in _ISNULL_RE.finditer(body):
+                field = m.group(1).split(".")[-1]
+                entry = out.setdefault(field, {"required": False, "rules": []})
+                entry["required"] = True
+            # 기타 검증 패턴 → rules
+            for regex, label in _VALIDATION_PATTERN_RES:
+                for m in regex.finditer(body):
+                    field = m.group(1).split(".")[-1]
+                    entry = out.setdefault(field, {"required": False, "rules": []})
+                    # label 에 {1} 자리표시자 있으면 group(2) 로 치환
+                    note = label
+                    if "{1}" in note and m.lastindex and m.lastindex >= 2:
+                        note = note.replace("{1}", m.group(2))
+                    if note not in entry["rules"]:
+                        entry["rules"].append(note)
+    return out
+
+
+def _apply_save_validations(fields: list[FormField], detected: dict) -> None:
+    """onSave 검증 결과를 input panel field 의 required / validation_rule 에 머지."""
+    if not detected or not fields:
+        return
+    # field name (lowercase) 기준 매칭
+    for f in fields:
+        keys = []
+        if f.name:
+            keys.append(f.name.lower())
+        if f.label:
+            # 'SDPT' label 도 isNull(sdpt) 와 매칭되도록
+            keys.append(re.sub(r"[\W_]+", "", f.label).lower())
+        for k in keys:
+            if k in {kk.lower() for kk in detected}:
+                # 정확 매칭 key 다시 찾기
+                for orig_k, info in detected.items():
+                    if orig_k.lower() != k:
+                        continue
+                    if info.get("required"):
+                        f.required = True
+                    rules = info.get("rules") or []
+                    if rules:
+                        text = " / ".join(rules)
+                        if f.validation_rule:
+                            if text not in f.validation_rule:
+                                f.validation_rule = (f.validation_rule
+                                                     + " / " + text)
+                        else:
+                            f.validation_rule = text
+                break
+
+
+def extract_input_panel_fields(closure: ScreenClosure,
+                               patterns: dict | None = None
+                               ) -> list[FormField]:
+    """closure 안 ``<table>`` 기반 입력 폼 → FormField 리스트
+    (panel_type='input'). search panel 과 parallel.
+
+    onSave / handleSave 등 핸들러 안 ``isNull(X)`` 검증 → required,
+    그 외 ``isNumber`` / ``< 0`` 등 → validation_rule 머지.
+    """
+    pat = _patterns_section(patterns)
+    input_comps = _comp_list(pat, "input_components", DEFAULT_INPUT_COMPONENTS)
+    option_comps = _comp_list(pat, "option_components",
+                              DEFAULT_OPTION_COMPONENTS)
+
+    from ..legacy_react_ast import parse_file
+    fields: list[FormField] = []
+    order = 0
+    file_sources: dict[str, str] = {}
+    for f in closure.files:
+        tree, source, _ = parse_file(f.abs_path)
+        if tree is None:
+            continue
+        file_sources[f.rel_path] = source.decode("utf-8", errors="replace")
+        tables = _find_input_tables(tree, source, input_comps)
+        for tbl in tables:
+            new = _extract_input_panel_from_table(
+                tbl, source, input_comps, option_comps,
+                f.rel_path, order)
+            order += len(new)
+            fields.extend(new)
+
+    if fields:
+        # cascading clears (search panel 과 동일) — input panel 도 같은 로직
+        _detect_cascading_clears(fields, file_sources)
+        # onSave 검증 결과 머지
+        save_validations = _detect_save_validations(closure, file_sources)
+        _apply_save_validations(fields, save_validations)
+    return fields
