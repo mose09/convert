@@ -1900,8 +1900,10 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
             closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
             closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
             llm_per_trigger=bool(getattr(args, "llm_per_trigger", False)),
+            # screens_root = ``<base>/legacy_analysis/<date>`` 이므로 부모가
+            # ``<base>/legacy_analysis``. 그 아래 영구 trigger 캐시.
             trigger_cache_dir=os.path.join(
-                base_output, "legacy_analysis", ".trigger_cache"),
+                os.path.dirname(screens_root), ".trigger_cache"),
         )
         if layouts:
             from datetime import datetime as _dt
