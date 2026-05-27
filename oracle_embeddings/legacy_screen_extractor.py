@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v14"  # v14: search/input panel 에 필드(영문) 컬럼 추가 (No 다음, id 우선) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v15"  # v15: required 검출 일반화 — if (X === '' || X === null) errorList.push 같은 한국 SI 패턴 인식 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)

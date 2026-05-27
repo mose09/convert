@@ -1988,6 +1988,63 @@ _SAVE_HANDLER_NAMES = (
 )
 
 _ISNULL_RE = re.compile(r"\bis[Nn]ull\s*\(\s*([\w$.]+)\s*\)")
+
+# `if (...) { errorList.push(...) }` 블록 추출 — required 추론 시 진짜
+# 에러 누적 패턴인지 확인. 한국 SI 흔한 변수명: errorList / errorMsg /
+# errors / errMsg / err / errArr.
+_IF_ERROR_PUSH_RE = re.compile(
+    r"\bif\s*\(\s*(?P<cond>[^()]*(?:\([^()]*\)[^()]*)*)\s*\)"
+    r"\s*\{[^{}]*?\b(?:err(?:or)?(?:s|Msg|List|Arr|Array)?)\b"
+    r"\s*\.\s*push\s*\(",
+    re.DOTALL,
+)
+
+# if 조건 안 field 추출 — 빈/null/undefined check 패턴들.
+_COND_FIELD_RES = [
+    # X === '' / X === null / X === undefined / X === 0 (or ==, 양변 swap 가능)
+    re.compile(
+        r"([\w$.]+)\s*(?:===|==)\s*(?:''|\"\"|null|undefined|0)"),
+    re.compile(
+        r"(?:''|\"\"|null|undefined|0)\s*(?:===|==)\s*([\w$.]+)"),
+    # isNull(X) / isEmpty(X) / isBlank(X) — 일반 helper
+    re.compile(r"\bis(?:Null|Empty|Blank|Nil)\s*\(\s*([\w$.]+)\s*\)"),
+    # !X (truthy 부정) — X 가 식별자일 때만
+    re.compile(r"(?<![=!<>])!\s*([\w$.]+)(?!\s*[=!<>])"),
+    # X.length === 0 / X.length <= 0
+    re.compile(r"([\w$.]+)\s*\.\s*length\s*(?:===|==|<=|<)\s*0\b"),
+    # X.trim() === '' / X.trim().length === 0
+    re.compile(r"([\w$.]+)\s*\.\s*trim\s*\(\s*\)"),
+]
+
+# 무시할 식별자 (조건 안 등장하지만 field 가 아님)
+_NOT_A_FIELD = frozenset({
+    "true", "false", "null", "undefined", "0", "1",
+    "node", "item", "row", "data", "params", "args", "props", "state",
+    "this", "self", "obj", "el", "e", "evt", "event",
+    "i", "j", "k", "idx", "index",
+    # JS builtin / 일반 property — ``X.length === 0`` 의 ``length`` 같은 게
+    # 단독 field 로 잡히던 false positive 방지.
+    "length", "size", "value", "type", "key",
+})
+
+
+def _extract_fields_from_condition(cond: str) -> set:
+    """if 조건 텍스트 → field 이름 set (각 식별자의 leaf segment).
+
+    예: ``node.DATA_TYPE === '' || node.DATA_TYPE === null`` → {'DATA_TYPE'}
+        ``isNull(this.state.fab)`` → {'fab'}
+        ``!sdpt || sdpt.length === 0`` → {'sdpt'}
+    """
+    out: set = set()
+    for regex in _COND_FIELD_RES:
+        for m in regex.finditer(cond):
+            token = m.group(1)
+            leaf = token.split(".")[-1]
+            if leaf and leaf.lower() not in _NOT_A_FIELD and leaf not in _NOT_A_FIELD:
+                out.add(leaf)
+    return out
+
+
 _VALIDATION_PATTERN_RES = [
     # (regex, label-format) — label 안 ``{field}`` 는 매칭 그룹 1 로 대체
     (re.compile(r"\bis[Nn]egative\s*\(\s*([\w$.]+)\s*\)"),  "음수 불가"),
@@ -2006,6 +2063,13 @@ _VALIDATION_PATTERN_RES = [
 def _detect_save_validations(closure, file_sources: dict) -> dict:
     """closure 안 save 류 handler 들에서 검증 패턴 추출.
 
+    Required 추론 — handler body 의 ``if (...) { error.push(...) }`` 패턴.
+    조건 안 빈/null check (``X === '' || X === null`` / ``isNull(X)`` /
+    ``!X`` / ``X.length === 0`` / ``X.trim() === ''`` 등) 의 field 가
+    required.
+
+    Validation rules — isNumber / isNegative / .length [<>] N / .test() 등.
+
     Returns: ``{field_name: {"required": bool, "rules": [str, ...]}}``
     """
     from ..legacy_react_api_scanner import _locate_handler_body
@@ -2015,9 +2079,17 @@ def _detect_save_validations(closure, file_sources: dict) -> dict:
             body = _locate_handler_body(content, handler_name)
             if not body:
                 continue
-            # isNull → required
+            # required — if-block with error push
+            for m in _IF_ERROR_PUSH_RE.finditer(body):
+                cond = m.group("cond")
+                for field in _extract_fields_from_condition(cond):
+                    entry = out.setdefault(field, {"required": False, "rules": []})
+                    entry["required"] = True
+            # legacy isNull(X) — 직접 호출 (if-block 밖에도 있을 수 있음)
             for m in _ISNULL_RE.finditer(body):
                 field = m.group(1).split(".")[-1]
+                if field.lower() in _NOT_A_FIELD or field in _NOT_A_FIELD:
+                    continue
                 entry = out.setdefault(field, {"required": False, "rules": []})
                 entry["required"] = True
             # 기타 검증 패턴 → rules
