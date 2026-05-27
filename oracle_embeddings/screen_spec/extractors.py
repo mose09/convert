@@ -330,6 +330,148 @@ def _input_data_type(tag: str, attrs: dict[str, str], field_type: str) -> str:
     return "String"
 
 
+# ── 화면정의서 9컬럼 (검색영역) — UI 타입 / data type / action 휴리스틱 ──
+
+# JSX onChange={...} 의 leaf handler 이름. ``{this.handleFabChange}`` /
+# ``{handleFabChange}`` / ``{(e) => this.handleFabChange(e)}`` 모두 처리.
+# arrow body 안 첫 식별자 호출이 진짜 handler 인 경우가 많다.
+_HANDLER_LEAF_RE = re.compile(
+    r"""(?:^|[\s({,])
+        (?:this\s*\.\s*)?
+        (?P<name>[A-Za-z_$][\w$]*)
+        \s*(?=\(|\)|,|$)""",
+    re.VERBOSE,
+)
+
+
+def _extract_handler_leaf(attr_value: str) -> str:
+    """JSX attribute value 텍스트 → leaf handler 이름.
+
+    예: ``{this.handleFabChange}`` → ``handleFabChange``
+        ``{handleFabChange}`` → ``handleFabChange``
+        ``{(e) => this.handleFabChange(e)}`` → ``handleFabChange``
+        ``{() => { this.setState({...}); }}`` → "" (inline body, leaf 없음)
+
+    arrow 안에 fn 호출이 1개면 그것을 leaf, 여러 개면 보수적으로 ``""``
+    (정확도 우선 — 잘못된 매칭 방지).
+    """
+    if not attr_value:
+        return ""
+    s = attr_value.strip()
+    # 양 끝 {}/공백 제거
+    if s.startswith("{") and s.endswith("}"):
+        s = s[1:-1].strip()
+    # 1) 단순 reference: ``this.X`` 또는 ``X``
+    m = re.fullmatch(r"(?:this\s*\.\s*)?([A-Za-z_$][\w$]*)", s)
+    if m:
+        return m.group(1)
+    # 2) ``X.bind(this)`` / ``X.bind(this, arg)``
+    m = re.fullmatch(
+        r"(?:this\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\.\s*bind\s*\([^)]*\)", s)
+    if m:
+        return m.group(1)
+    # 3) arrow: ``(args) => this.X(args)`` 또는 ``arg => X(arg)``
+    arrow_m = re.search(
+        r"=>\s*\{?\s*(?:return\s+)?(?:this\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(", s)
+    if arrow_m:
+        # arrow body 안 fn 호출 갯수 — 1개일 때만 leaf 신뢰
+        body_calls = re.findall(r"\b(?:this\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\(", s)
+        # setState 같은 noise 는 제외
+        meaningful = [c for c in body_calls
+                      if c not in ("setState", "bind", "call", "apply")]
+        if len(meaningful) == 1:
+            return meaningful[0]
+        # 여러 호출이면 첫 번째 (보통 의도된 handler 가 먼저)
+        if meaningful:
+            return meaningful[0]
+    return ""
+
+
+# ── cascading clear 검출 — onChange handler 안 setState 가 다른 field 들을
+# undefined/null/''/false 로 초기화하는 패턴. 한국 SI 흔한 hierarchy
+# (FAB → Team → SDPT → Model). 발견 시 parent.action 에 "변경 시 X, Y
+# 초기화" + child.validation_rule 에 "{parent} 변경 시 자동 초기화" 채움.
+
+_SETSTATE_BODY_RE = re.compile(
+    r"\b(?:this\s*\.\s*)?setState\s*\(\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}",
+    re.DOTALL,
+)
+_CLEAR_KV_RE = re.compile(
+    r"""(\w+)\s*:\s*
+        (?:undefined|null|''|""|``|false|\[\s*\]|\{\s*\})""",
+    re.VERBOSE,
+)
+
+
+def _detect_cascading_clears(fields, file_sources: dict) -> None:
+    """fields 리스트를 mutate — onChange handler 안 setState 가 다른 field
+    들을 초기화하면 ``action`` / ``validation_rule`` 에 cascading 동작 추가.
+
+    file_sources: ``{rel_path: source_text}``. 각 field 의 ``source_file``
+    이 이 dict 의 key 와 일치하면 그 파일에서 handler body 탐색.
+
+    field 매칭은 (a) ``name`` (form key) 와 (b) ``label`` 둘 다 lowercase
+    로 시도 — 일반적으로 ``name`` 이 setState key 와 일치.
+    """
+    if not fields:
+        return
+    # name / label → field 매핑 (lowercase)
+    name_to_field = {}
+    for f in fields:
+        for key in ((f.name or "").lower(), (f.label or "").lower()):
+            if key and key not in name_to_field:
+                name_to_field[key] = f
+    if not name_to_field:
+        return
+
+    from ..legacy_react_api_scanner import _locate_handler_body
+
+    for f in fields:
+        if not f.change_handler:
+            continue
+        src = file_sources.get(f.source_file or "")
+        if not src:
+            continue
+        body = _locate_handler_body(src, f.change_handler)
+        if not body:
+            continue
+        cleared: list[str] = []
+        for ss in _SETSTATE_BODY_RE.finditer(body):
+            inner = ss.group(1)
+            for km in _CLEAR_KV_RE.finditer(inner):
+                key = km.group(1).lower()
+                # 자기 자신은 제외 (FAB 의 setState 안 fab: event 는 정상)
+                if key == (f.name or "").lower():
+                    continue
+                if key == (f.label or "").lower():
+                    continue
+                if key in name_to_field and key not in cleared:
+                    cleared.append(key)
+        if not cleared:
+            continue
+        parent_label = f.label or f.name or "?"
+        # cleared field 들의 사용자 가시 라벨 list
+        child_labels = [
+            (name_to_field[k].label or name_to_field[k].name or k)
+            for k in cleared
+        ]
+        # parent 의 action — 기존 옵션 list 가 있으면 cascading 설명 prepend
+        cascade_desc = f"변경 시 {', '.join(child_labels)} 초기화"
+        if f.action:
+            f.action = cascade_desc + "\n\n" + f.action
+        else:
+            f.action = cascade_desc
+        # 각 child 의 validation_rule — parent 의존성 명시
+        for k in cleared:
+            child = name_to_field[k]
+            note = f"{parent_label} 변경 시 자동 초기화 (의존)"
+            if child.validation_rule:
+                if note not in child.validation_rule:
+                    child.validation_rule += "\n" + note
+            else:
+                child.validation_rule = note
+
+
 _POPOVER_TAG_KEYWORDS = ("popover", "popconfirm", "popselect", "popoverselect")
 
 
@@ -573,6 +715,7 @@ def _extract_field_from_item(item_node, source: bytes,
         input_data_type=_input_data_type(input_tag, attrs, field_type),
         ui_type=ui_type,
         action=_compose_form_action(field_type, options, ui_type),
+        change_handler=_extract_handler_leaf(attrs.get("onChange", "")),
     )
 
 
@@ -770,6 +913,13 @@ def extract_form_fields(closure: ScreenClosure,
                     continue
                 fields.append(fd)
                 order += 1
+        # cascading clears 검출 — onChange handler 안 setState 가 다른 field
+        # 들을 undefined 로 초기화하는 hierarchy 패턴 (FAB→Team→SDPT 등)
+        _detect_cascading_clears(
+            fields,
+            {f.rel_path: source.decode("utf-8", errors="replace")
+             for f, _t, source, _c, _i in file_data},
+        )
         return fields
 
     # Phase 2b: search-item 없으면 search-area boundary 안 default input.
@@ -829,7 +979,14 @@ def extract_form_fields(closure: ScreenClosure,
                 input_data_type=_input_data_type(tag, attrs, field_type_),
                 ui_type=ui_type_,
                 action=_compose_form_action(field_type_, options_, ui_type_),
+                change_handler=_extract_handler_leaf(attrs.get("onChange", "")),
             ))
+    # cascading clears 검출 — Phase 2a 와 동일.
+    _detect_cascading_clears(
+        fields,
+        {f.rel_path: source.decode("utf-8", errors="replace")
+         for f, _t, source, _c, _i in file_data},
+    )
     return fields
 
 

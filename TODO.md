@@ -151,6 +151,37 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: search panel — cascading clear 검출 (FAB→Team→SDPT 계층)
+
+사용자 보고: FAB / Team / SDPT 참조관계가 동작·유효성 컬럼에 안 잡힘.
+실제 onChange handler 안 setState 가 다른 field 들을 undefined 로 초기화
+하는 패턴이라 parser 가 deterministic 하게 추론 가능.
+
+예::
+
+    handleFabChange = (event) => {
+      handleLoadingDefaultParam(event, '', '', '');
+      this.setState({
+        fab: event,
+        team: undefined, sdpt: undefined, fl: undefined, model: undefined,
+      });
+      this.handleCleanEQID();
+    }
+
+→ FAB.action: "변경 시 Team, SDPT, FL, Model 초기화"
+→ Team/SDPT/FL/Model.validation_rule: "FAB 변경 시 자동 초기화 (의존)"
+
+- [x] `FormField.change_handler` 필드 추가 (내부용 — onChange leaf name)
+- [x] `_extract_handler_leaf()` — `{this.X}` / `{X}` / `{X.bind(this)}` /
+      `{(e)=>this.X(e)}` 4 변종 처리
+- [x] `_SETSTATE_BODY_RE` + `_CLEAR_KV_RE` — undefined/null/''/false/[]
+      검출
+- [x] `_detect_cascading_clears()` — 모든 field 의 onChange handler 찾아
+      cleared field 자동 매핑. parent.action / child.validation_rule
+      양쪽에 cascading 정보 채움.
+- [x] Phase 2a / 2b 끝에 post-process 호출 (file_sources dict 같이 넘김)
+- [x] helper 7케이스 + setState 검출 unit test 전부 ✓
+
 ### 진행 중: search panel 9컬럼 — LLM 값 보존 + Popover UI + 옵션 prop 추출
 
 PR #263 후속, 사용자 보고 3가지:
