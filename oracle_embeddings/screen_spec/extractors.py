@@ -287,6 +287,105 @@ def _format_inline_validation(attrs: dict[str, str]) -> str:
     return "; ".join(parts)
 
 
+# ── 화면정의서 9컬럼 (검색영역) — UI 타입 / data type / action 휴리스틱 ──
+
+_INPUT_TAG_KEYWORDS = ("input", "textfield", "textbox", "textarea",
+                       "search", "password", "number")
+_SELECT_TAG_KEYWORDS = ("select", "dropdown", "combobox", "combo")
+_DATE_TAG_KEYWORDS = ("date", "calendar", "time")
+_CHECKBOX_TAG_KEYWORDS = ("checkbox",)
+_RADIO_TAG_KEYWORDS = ("radio",)
+
+
+def _is_keyboard_input(tag: str, field_type: str) -> bool:
+    """키보드로 직접 타이핑하는 입력 필드인지 — 타입/길이 칸을 채울지 결정.
+
+    select / checkbox / radio / date / time picker 류는 키보드 타이핑이
+    아니므로 타입·길이 칸 비움. text / textarea / number / password /
+    search / email / tel / url 류만 채움.
+    """
+    tag_l = (tag or "").lower()
+    ft = (field_type or "").lower()
+    if any(k in tag_l for k in _SELECT_TAG_KEYWORDS + _DATE_TAG_KEYWORDS
+           + _CHECKBOX_TAG_KEYWORDS + _RADIO_TAG_KEYWORDS):
+        return False
+    if ft in ("select", "checkbox", "radio", "date", "daterange", "time"):
+        return False
+    return True
+
+
+def _input_data_type(tag: str, attrs: dict[str, str], field_type: str) -> str:
+    """키보드 입력 필드의 data type — String / Number / Date / "" (비입력)."""
+    if not _is_keyboard_input(tag, field_type):
+        return ""
+    tag_l = (tag or "").lower()
+    ft = (field_type or "").lower()
+    type_attr = (attrs.get("type") or "").strip("'\"").lower()
+    if "number" in tag_l or ft == "number" or type_attr == "number":
+        return "Number"
+    if "date" in tag_l or ft in ("date", "daterange") or type_attr == "date":
+        return "Date"
+    return "String"
+
+
+def _infer_form_ui_type(tag: str, attrs: dict[str, str], field_type: str,
+                        options: str) -> str:
+    """검색 패널 입력 컴포넌트의 UI 타입 라벨.
+
+    예: Select(Single), Select(Multi), Text Field(Search Box), Text Field
+    (Basic), DatePicker, Date Range, Checkbox, Radio Group, Number Field,
+    Password.
+    """
+    tag_l = (tag or "").lower()
+    ft = (field_type or "").lower()
+    # Select 류 — multi 인지 검사
+    if any(k in tag_l for k in _SELECT_TAG_KEYWORDS) or ft == "select":
+        if (attrs.get("mode") == "multiple" or attrs.get("multiple") == "true"
+                or "multi" in tag_l):
+            return "Select(Multi)"
+        return "Select(Single)"
+    if any(k in tag_l for k in _CHECKBOX_TAG_KEYWORDS) or ft == "checkbox":
+        return "Checkbox"
+    if any(k in tag_l for k in _RADIO_TAG_KEYWORDS) or ft == "radio":
+        return "Radio Group"
+    # Date 류
+    if ft == "daterange" or "range" in tag_l:
+        return "Date Range"
+    if any(k in tag_l for k in _DATE_TAG_KEYWORDS) or ft in ("date", "time"):
+        return "DatePicker"
+    # Input 류
+    type_attr = (attrs.get("type") or "").strip("'\"").lower()
+    if "number" in tag_l or ft == "number" or type_attr == "number":
+        return "Number Field"
+    if type_attr == "password" or "password" in tag_l:
+        return "Password"
+    # search / textarea / 일반 텍스트
+    if "search" in tag_l or type_attr == "search":
+        return "Text Field(Search Box)"
+    if "textarea" in tag_l:
+        return "Text Area"
+    return "Text Field(Basic)"
+
+
+def _compose_form_action(field_type: str, options: str, ui_type: str) -> str:
+    """동작 컬럼 기본값 — 단순 dropdown/checkbox/radio 면 옵션 값을 줄바꿈으로.
+
+    예: "전체\\nY\\nN". cascading dependency 패턴이 LLM 으로 추출되면
+    LLM 응답이 이 값을 덮어쓴다 (선택지가 행위가 아닌 단순 enum 일 때만
+    parser 기본값 유지).
+    """
+    if not options:
+        return ""
+    ft = (field_type or "").lower()
+    if (ft in ("select", "checkbox", "radio")
+            or ui_type.startswith("Select")
+            or ui_type in ("Checkbox", "Radio Group")):
+        items = [o.strip() for o in options.split(",") if o.strip()]
+        if items:
+            return "\n".join(items)
+    return ""
+
+
 def _find_label_text_in_children(parent, exclude, source: bytes
                                  ) -> tuple[str, str]:
     """parent 의 자식 element 중 ``className`` 에 'label' 포함된 element 의
@@ -433,6 +532,11 @@ def _extract_field_from_item(item_node, source: bytes,
         return None
     attrs = _jsx_attributes(input_el, source) if input_el is not None else {}
     sibling_required = "required" in label_cls.split()
+    field_type = _classify_field_type(input_tag, attrs) if input_tag else ""
+    options = (_extract_dropdown_options(input_el, source, option_comps)
+               if input_el is not None else "")
+    ui_type = (_infer_form_ui_type(input_tag, attrs, field_type, options)
+               if input_tag else "")
     return FormField(
         order=order,
         label=(label_text
@@ -442,8 +546,7 @@ def _extract_field_from_item(item_node, source: bytes,
                or attrs.get("aria-label")
                or ""),
         name=(attrs.get("name") or attrs.get("id") or attrs.get("field") or ""),
-        field_type=(_classify_field_type(input_tag, attrs)
-                    if input_tag else ""),
+        field_type=field_type,
         required=(attrs.get("required") == "true"
                   or "required" in (attrs.get("className") or "").lower().split()
                   or sibling_required),
@@ -452,8 +555,12 @@ def _extract_field_from_item(item_node, source: bytes,
         source_file=rel_path,
         jsx_tag=input_tag,
         events=_extract_event_props(attrs),
-        options=(_extract_dropdown_options(input_el, source, option_comps)
-                 if input_el is not None else ""),
+        options=options,
+        placeholder=attrs.get("placeholder", ""),
+        max_length=attrs.get("maxLength", ""),
+        input_data_type=_input_data_type(input_tag, attrs, field_type),
+        ui_type=ui_type,
+        action=_compose_form_action(field_type, options, ui_type),
     )
 
 
@@ -642,11 +749,14 @@ def extract_form_fields(closure: ScreenClosure,
                     or attrs.get("field")
                     or "")
             order += 1
+            field_type_ = _classify_field_type(tag, attrs)
+            options_ = _extract_dropdown_options(el, source, option_comps)
+            ui_type_ = _infer_form_ui_type(tag, attrs, field_type_, options_)
             fields.append(FormField(
                 order=order,
                 label=label,
                 name=name,
-                field_type=_classify_field_type(tag, attrs),
+                field_type=field_type_,
                 required=(attrs.get("required") == "true"
                           or "required" in (attrs.get("className") or "").lower()
                           or sibling_required),
@@ -656,7 +766,12 @@ def extract_form_fields(closure: ScreenClosure,
                 source_file=f.rel_path,
                 jsx_tag=tag,
                 events=_extract_event_props(attrs),
-                options=_extract_dropdown_options(el, source, option_comps),
+                options=options_,
+                placeholder=attrs.get("placeholder", ""),
+                max_length=attrs.get("maxLength", ""),
+                input_data_type=_input_data_type(tag, attrs, field_type_),
+                ui_type=ui_type_,
+                action=_compose_form_action(field_type_, options_, ui_type_),
             ))
     return fields
 

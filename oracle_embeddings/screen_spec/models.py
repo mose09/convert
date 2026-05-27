@@ -24,6 +24,13 @@ class FormField:
     jsx_tag: str = ""                 # 원본 JSX 컴포넌트 이름 (예: "Select", "DatePicker")
     events: str = ""                  # onChange / onClick / onBlur 등 (공백 구분)
     options: str = ""                 # 드롭다운 Option 자식 value 목록 (예: "Y, N")
+    # 화면정의서 9컬럼 표 양식 (grid 와 parallel)
+    placeholder: str = ""             # placeholder attr — 표시되면 default 보다 우선 (UI 가시값)
+    max_length: str = ""              # maxLength attr — keyboard 입력 자릿수 제한
+    input_data_type: str = ""         # 키보드 input 일 때만: String / Number / Date / ""
+    ui_type: str = ""                 # "Select(Single)" / "Text Field(Search Box)" / "DatePicker" 등
+    action: str = ""                  # 동작 — 단순 dropdown 은 옵션 값 줄바꿈 / 그 외 LLM cascading 판단
+    validation_rule: str = ""         # 유효성 규칙 및 비고 — LLM 판단 (계층 cascading 등)
 
 
 @dataclass

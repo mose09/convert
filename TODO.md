@@ -151,6 +151,33 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: search panel 9컬럼 화면정의서 양식 (grid 와 parallel)
+
+사용자 요청 — 그리드 9컬럼 (#232) 와 같은 화면정의서 표를 검색 영역에도.
+컬럼: No / 라벨 / 타입 (keyboard input 만) / 길이 (keyboard input 만) /
+필수 (필수·선택) / 기본값 (placeholder 우선) / 유효성 규칙 및 비고 (LLM) /
+UI 타입 (Select(Single) 등) / 동작 (단순 dropdown=옵션 줄바꿈, cascading=LLM).
+
+- [x] `FormField` 모델 — placeholder / max_length / input_data_type /
+      ui_type / action / validation_rule 6 필드 추가 (default "")
+- [x] `_infer_form_ui_type()` — Select(Single/Multi) / Text Field(Basic/
+      Search Box) / DatePicker / Date Range / Checkbox / Radio Group /
+      Number Field / Password / Text Area 휴리스틱
+- [x] `_input_data_type()` — keyboard input 만 String / Number / Date
+- [x] `_compose_form_action()` — 단순 dropdown 이면 옵션 줄바꿈 (전체\nY\nN)
+- [x] `_extract_field_from_item()` + sibling-label 경로 — 새 필드 채움
+- [x] `excel_writer._rows_for_form_fields` — 12컬럼 (화면명 + 9 양식 +
+      필드명 + 소스파일)
+- [x] `ScreenField` (legacy_screen_extractor) — 6 필드 추가
+- [x] `_SYSTEM_PROMPT` — search_panel JSON schema 9컬럼 가이드 + cascading
+      검증 규칙 / 동작 LLM 가이드
+- [x] `_parse_layout_dict` — LLM 응답 새 필드 파싱
+- [x] `_parser_fill_layout` — 파서 결과로 새 필드 덮어쓰기
+- [x] `_render_search_table()` — HTML 9컬럼 표 (bullet list 와 같이 emit)
+- [x] `SCREEN_SCHEMA_VERSION v8 → v9` (캐시 무효화)
+- [x] helper unit test 11종 모두 ✓
+- [x] `user_manual.html` 재빌드 (CLAUDE.md rule 5)
+
 ### 진행 중: wrapper 컴포넌트 event + nested Button 라벨 추출
 
 사용자 보고: ``<Upload onFileUploaded={...}><Button>Upload 생성</Button>
