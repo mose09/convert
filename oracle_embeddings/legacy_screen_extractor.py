@@ -636,6 +636,170 @@ def _call_llm_safe(prompt: str, config: Dict[str, Any],
     return None
 
 
+# ── Phase 3 — trigger 단위 LLM 분석 + 머지 ──
+
+
+def _llm_analyze_triggers_for_screen(
+    rel_path: str,
+    content: str,
+    url_map: Dict[str, Dict[str, Any]],
+    config: Dict[str, Any],
+    *,
+    trigger_cache_dir: Optional[str] = None,
+) -> Dict[str, dict]:
+    """화면 1개의 모든 trigger 에 대해 LLM 분석 → ``{handler_name: analysis}``.
+
+    url_map 은 ``_group_handlers_by_file`` 결과의 한 화면 entry —
+    key 가 ``[event] label`` 형태라 event/handler/label 을 재추출 필요.
+    각 trigger 마다 bundle 만들어 ``analyze_trigger_with_llm`` 호출.
+    """
+    try:
+        from .legacy_react_api_scanner import (
+            _build_call_regex, _DEFAULT_API_METHODS, _collect_url_constants,
+            _collect_function_bodies, _collect_action_to_type,
+            _collect_saga_urls_by_action_type, _collect_mdtp_action_map,
+            _scan_dir, collect_event_handlers,
+        )
+        from .legacy_trigger_bundler import (
+            build_trigger_bundle, analyze_trigger_with_llm,
+        )
+    except Exception as e:
+        logger.warning("trigger LLM 모듈 import 실패: %s", e)
+        return {}
+
+    # 같은 file 안 trigger 모두 (url_map 기준). handler name 으로 dedup.
+    handlers: Dict[str, dict] = {}
+    for handler_label, entry in (url_map or {}).items():
+        # handler_label 포맷: ``[onClick] 조회`` 또는 ``조회`` (event 없을 때)
+        m = re.match(r"\[(?P<ev>[^\]]+)\]\s*(?P<label>.*)", handler_label)
+        if m:
+            ev = m.group("ev").strip()
+            lbl = m.group("label").strip()
+        else:
+            ev, lbl = "", handler_label
+        # event_marker 가 "onChange → parent.fnX" 같이 합성됐을 수 있어
+        # 앞부분 event 만 사용.
+        ev = ev.split()[0] if ev else ""
+        handler = (entry.get("handler") if isinstance(entry, dict) else "") or ""
+        # url_map 에 handler 가 따로 없으면 collect_event_handlers 결과로
+        # label 매칭. 단순 fallback.
+        if not handler:
+            handler = lbl  # 가시 라벨로 대신 — LLM 이 jsx 보고 추론
+        if handler not in handlers:
+            handlers[handler] = {"event": ev, "label": lbl}
+
+    if not handlers:
+        return {}
+
+    # collect_event_handlers 로 trigger entry 재추출 — body / source_offset
+    # 같이 들고 옴 (bundle builder 에 필요).
+    try:
+        events_in_file = collect_event_handlers(content)
+    except Exception:
+        events_in_file = []
+    by_handler = {(e.get("handler") or ""): e for e in events_in_file}
+
+    # 인덱스 — 이미 caller (analyze_legacy) 가 만든 게 있을 수 있지만 단순
+    # 화면 단위라 여기서 다시 빌드. 비싸지 않음.
+    # ⚠ 비용: 같은 화면 frontend_dir 전체 walk → 다중 화면이면 caller
+    # 가 한 번 만들어 넘기는 게 효율 (TODO Phase 후속 최적화).
+    fe_dir = config.get("__frontend_dir") or ""
+    if fe_dir and os.path.isdir(fe_dir):
+        all_files = _scan_dir(fe_dir)
+    else:
+        all_files = []
+    fn_index = _collect_function_bodies(all_files) if all_files else {}
+    action_to_type = _collect_action_to_type(all_files) if all_files else {}
+    call_re = _build_call_regex(list(_DEFAULT_API_METHODS))
+    const_map = _collect_url_constants(all_files, []) if all_files else {}
+    saga_urls = (_collect_saga_urls_by_action_type(
+        all_files, fn_index, call_re, const_map, None) if all_files else {})
+    mdtp_map = _collect_mdtp_action_map(all_files) if all_files else {}
+
+    out: Dict[str, dict] = {}
+    for handler_name, meta in handlers.items():
+        if not handler_name:
+            continue
+        ev = by_handler.get(handler_name) or {
+            "event": meta.get("event") or "",
+            "handler": handler_name,
+            "label": meta.get("label") or "",
+            "body": "",
+            "source_offset": -1,
+        }
+        try:
+            bundle = build_trigger_bundle(
+                ev, content, rel_path,
+                fn_index=fn_index, mdtp_map=mdtp_map,
+                action_to_type=action_to_type, saga_urls_by_type=saga_urls,
+            )
+        except Exception as e:
+            logger.warning("trigger bundle 실패 (%s): %s", handler_name, e)
+            continue
+        analysis = analyze_trigger_with_llm(
+            bundle, config, cache_dir=trigger_cache_dir, use_cache=True)
+        if analysis:
+            out[handler_name] = analysis
+    return out
+
+
+def _merge_trigger_llm_into_layout(layout: "ScreenLayout",
+                                   trigger_analyses: Dict[str, dict]) -> None:
+    """trigger LLM 분석 결과 → ScreenLayout 의 LLM-only 칸 머지.
+
+    매칭 키:
+    - search_panel field: change_handler / events (onChange 매칭)
+    - events: trigger 의 handler/label
+    - parser 가 채운 action / validation_rule 은 보존하면서 LLM 의
+      더 풍부한 설명을 prepend.
+    """
+    if not trigger_analyses:
+        return
+
+    # search_panel — field 의 events (또는 LLM 응답 schema 의 change_handler)
+    # 와 매칭. ScreenField 에 change_handler 가 따로 없으므로 label
+    # 또는 component 로 추정.
+    for f in layout.search_panel or []:
+        # 매칭: handler_name 이 trigger_analyses 에 있는 것 중에서 라벨/이름
+        # 일치하는 첫 분석을 사용.
+        matched = None
+        for handler_name, analysis in trigger_analyses.items():
+            # field 의 label 이 handler 이름에 들어있거나 그 반대면 매칭
+            # 시도 (예: handler='handleFabChange', label='FAB').
+            hlow = handler_name.lower()
+            if f.label and f.label.lower() in hlow:
+                matched = analysis
+                break
+        if not matched:
+            continue
+        # action — LLM 의 cascading 설명이 우선 + parser 옵션 list 보강.
+        llm_action = (matched.get("action_description") or "").strip()
+        if llm_action:
+            if f.action and f.action.strip() != llm_action:
+                f.action = llm_action + "\n\n" + f.action
+            else:
+                f.action = llm_action
+        # validation_rule — LLM 만 채울 수 있는 칸. 기존 값 있으면 그대로
+        # (parser cascading 검출 결과 보존).
+        llm_val = (matched.get("validation_rule") or "").strip()
+        if llm_val and not f.validation_rule:
+            f.validation_rule = llm_val
+        elif llm_val and llm_val not in (f.validation_rule or ""):
+            f.validation_rule = (f.validation_rule + "\n" + llm_val).lstrip("\n")
+
+    # events — handler 이름 매칭
+    for ev in layout.events or []:
+        # ScreenEvent 에 handler 필드가 따로 없으면 trigger 라벨로만 매칭.
+        # narrative 칸에 business_summary 추가.
+        for handler_name, analysis in trigger_analyses.items():
+            label = ev.trigger or ""
+            if label and (label in handler_name or handler_name in label):
+                bs = (analysis.get("business_summary") or "").strip()
+                if bs and bs not in (ev.narrative or ""):
+                    ev.narrative = (ev.narrative + ", " + bs).lstrip(", ")
+                break
+
+
 # ── Fallback (LLM 없을 때) — 정적 분석 결과만 가지고 events 만 채움 ──
 
 
@@ -795,6 +959,8 @@ def extract_screen_layouts(
     closure_llm: bool = False,
     closure_max_depth: int = 3,
     closure_token_budget: int = 12000,
+    llm_per_trigger: bool = False,
+    trigger_cache_dir: Optional[str] = None,
 ) -> Dict[str, ScreenLayout]:
     """파일별로 한 번씩 LLM 호출 + 캐시. ``{file_rel: ScreenLayout}`` 반환.
 
@@ -906,6 +1072,19 @@ def extract_screen_layouts(
             parser_screens += 1
             parser_fields_total += f_n
             parser_grids_total += c_n
+
+        # Phase 3 — trigger 단위 LLM 분석 + 머지 (옵트인 ``--llm-per-trigger``).
+        # 각 trigger 의 handler chain 을 한 덩어리로 LLM 에게 보내 동작 /
+        # 유효성 / cascading 추출 → search_panel.action/validation_rule +
+        # events.narrative 에 머지. parser facts (URL/setState) 는 ground
+        # truth 그대로 유지.
+        if llm_per_trigger:
+            tlm = _llm_analyze_triggers_for_screen(
+                rel, content, url_map, config or {},
+                trigger_cache_dir=trigger_cache_dir,
+            )
+            if tlm:
+                _merge_trigger_llm_into_layout(layout, tlm)
 
         # 진단: 파서 + LLM 모두 0 인 화면 — 사용자가 "그리드/조회영역 안
         # 나옴" 의심할 때 어디서 빠졌는지 보이도록 closure 안 JSX 후보를

@@ -586,6 +586,7 @@ python main.py analyze-legacy `
 | `--closure-max-depth N` | closure BFS 깊이 (기본 3). `--closure-llm` / `--closure-popup-augment` 일 때만 사용. |
 | `--closure-token-budget N` | closure 직렬화 토큰 상한 (기본 12000). |
 | **`--closure-popup-augment`** | (옵트인, tree-sitter 필요) AST closure 의 popup_refs 로 popup_set 보강. 메인의 `<Modal>` 안 import 만 보는 기존 휴리스틱이 놓친 popup (`*Dialog` / `*Popup` / `*Layer` suffix 컴포넌트가 `<Modal>` 없이 렌더되는 케이스) 을 잡음. |
+| **`--llm-per-trigger`** | (옵트인) 화면 단위 LLM 호출 외에 **trigger 단위로도** LLM 분석 — 이벤트 → handler → helper → action → saga 전체 체인을 한 덩어리로 묶어 cascading / 유효성 / 영향받는 필드 / 비즈 요약 추출. 결과는 `search_panel` 의 action / validation_rule + events 의 narrative 에 머지. 캐시: `output/legacy_analysis/.trigger_cache/`. trigger 당 1회 LLM 호출 — 큰 화면이면 비용 N×M (캐시 무효화 시까지 재호출 없음). FAB→Team→SDPT 같은 cascading dependency, 분기 처리, 비즈 의미 등 parser regex 로는 추론 불가능한 영역에 사용. |
 
 ---
 

@@ -151,6 +151,31 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: trigger 단위 LLM 분석 — Phase 2+3 (LLM 호출 + 머지)
+
+Phase 1 (PR #266) 의 bundle 을 받아 LLM 호출 + 응답 캐시 + screen layout 머지.
+CLI 옵션 `--llm-per-trigger` (옵트인) 추가.
+
+- [x] `analyze_trigger_with_llm(bundle, config, *, cache_dir)` — OpenAI client
+      호출, JSON schema (action_description / validation_rule /
+      affected_fields / backend_calls / business_summary), parser
+      factual_urls 강제 적용 (환각 방지)
+- [x] 캐시 — MD5 of serialized bundle. hit 시 0 LLM round-trip
+- [x] `analyze_triggers_batch()` — 일괄 분석 + 진행률 print
+- [x] `_TRIGGER_LLM_SYSTEM` 프롬프트 — 사용자 화면 관점, 추측 금지,
+      facts 신뢰, cascading 명시
+- [x] `_parse_llm_json()` — plain / ```fence / surrounded 3 변종 처리
+- [x] `_llm_analyze_triggers_for_screen()` — 화면 1개의 모든 trigger →
+      bundle build → LLM 호출
+- [x] `_merge_trigger_llm_into_layout()` — search_panel.action /
+      validation_rule + events.narrative 에 머지. parser 결과 보존 +
+      LLM 보강 prepend
+- [x] `extract_screen_layouts` 시그니처 + 메인 루프에 hook
+- [x] `analyze_legacy` / `analyze_legacy_batch` plumbing
+- [x] `main.py` CLI 옵션 + 3 호출처 wiring
+- [x] README + user_manual 갱신
+- [x] LLM 호출 / 캐시 hit / merge 동작 unit test 통과
+
 ### 진행 중: trigger 단위 LLM 분석 — Phase 1 (bundle builder)
 
 사용자 제안: 이벤트 → handler → helper → action → saga 전체 체인을

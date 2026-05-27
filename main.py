@@ -1887,14 +1887,21 @@ def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
 
     if getattr(args, "extract_screen_layout", False):
         from oracle_embeddings import legacy_screen_extractor as screen_ext
+        # __frontend_dir 은 trigger LLM bundler 가 chain follow 시 모든 파일
+        # 스캔하기 위한 marker — config 에 임시 주입 (legacy_screen_extractor
+        # 내부에서만 사용).
+        _trigger_cfg = {"__frontend_dir": frontend_dir}
         layouts = screen_ext.extract_screen_layouts(
             frontend_dir, handlers_by_url, patterns or {},
             max_screens=int(getattr(args, "screen_max", 200)),
             use_cache=False,   # 사용자 명시: 항상 새로 분석
-            config={},
+            config=_trigger_cfg,
             closure_llm=bool(getattr(args, "closure_llm", False)),
             closure_max_depth=int(getattr(args, "closure_max_depth", 3)),
             closure_token_budget=int(getattr(args, "closure_token_budget", 12000)),
+            llm_per_trigger=bool(getattr(args, "llm_per_trigger", False)),
+            trigger_cache_dir=os.path.join(
+                base_output, "legacy_analysis", ".trigger_cache"),
         )
         if layouts:
             from datetime import datetime as _dt
@@ -2123,6 +2130,7 @@ def cmd_analyze_legacy(args):
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
+            llm_per_trigger=getattr(args, "llm_per_trigger", False),
             output_dir=_screens_output_root(output_dir),
         )
     else:
@@ -2155,6 +2163,7 @@ def cmd_analyze_legacy(args):
             closure_max_depth=getattr(args, "closure_max_depth", 3),
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
+            llm_per_trigger=getattr(args, "llm_per_trigger", False),
             output_dir=_screens_output_root(output_dir),
         )
 
@@ -2494,6 +2503,14 @@ def main():
                                 "대신 AST closure markdown (import 그래프 BFS + "
                                 "popup 3 신호) 으로 보강. tree-sitter wheel 필요 "
                                 "(requirements.txt 참고). 미설치 시 자동 fallback.")
+    al_parser.add_argument("--llm-per-trigger", action="store_true",
+                           help="(옵트인) 화면 단위 LLM 호출에 더해 trigger 단위로도 "
+                                "LLM 분석 — 이벤트 → handler → helper → action → saga "
+                                "전체 체인을 한 덩어리로 묶어 cascading / 유효성 / "
+                                "영향받는 필드 / 비즈 요약 추출. 결과는 search_panel 의 "
+                                "action / validation_rule + events 의 narrative 에 머지. "
+                                "캐시: output/legacy_analysis/.trigger_cache/. trigger 당 "
+                                "1회 LLM 호출 — 큰 화면이면 비용 N×M.")
     al_parser.add_argument("--closure-max-depth", type=int, default=3,
                            help="closure BFS 깊이 (default 3). --closure-llm 일 때만 사용.")
     al_parser.add_argument("--closure-token-budget", type=int, default=12000,
