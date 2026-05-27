@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v17"  # v17: grid 정의서 필수여부 빈 값 → "선택" — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v18"  # v18: input panel <th>SDPT</th> 같은 direct text label 추출 (className=label 없는 케이스) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
