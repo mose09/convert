@@ -54,6 +54,7 @@ from .legacy_react_api_scanner import (
     _FN_CALL_LEAF_RE,
     _MDTP_KV_RE,
     _RESERVED_NEAR_BLOCK,
+    _SAGA_TAKE_RE,
     _THIS_PROPS_CALL_LEAF_RE,
     _extract_destructured_props,
     _locate_handler_body,
@@ -93,6 +94,7 @@ def build_trigger_bundle(
     mdtp_map: Optional[Dict[str, set]] = None,
     action_to_type: Optional[Dict[str, set]] = None,
     saga_urls_by_type: Optional[Dict[str, set]] = None,
+    saga_fns_by_type: Optional[Dict[str, set]] = None,
     max_chain_depth: int = 3,
     max_body_chars: int = 4000,
 ) -> dict:
@@ -170,6 +172,7 @@ def build_trigger_bundle(
             mdtp_map=mdtp_map,
             action_to_type=action_to_type,
             saga_urls_by_type=saga_urls_by_type,
+            saga_fns_by_type=saga_fns_by_type,
             max_body_chars=max_body_chars,
         ):
             bundle["handler_chain"].append(entry)
@@ -187,10 +190,10 @@ def build_trigger_bundle(
 
 
 # Bundle schema 버전 — bundle 구조 / 직렬화 형식 변경 시 bump 하여 캐시
-# 자동 무효화. v3: LLM 응답에 required_fields 항목 추가 (parser detector
-# 의 한국 SI ``if X==='' || X===null errorList.push`` 패턴 외의 long-tail
-# 변종을 LLM 이 보완).
-_TRIGGER_BUNDLE_VERSION = "v3"
+# 자동 무효화. v4: chain 에 saga 함수 body 추가 (action → takeLatest →
+# saga_fn body 까지 LLM 컨텍스트). 이전엔 saga URL 만 facts 로 들어가고
+# body 자체는 빠져있었음.
+_TRIGGER_BUNDLE_VERSION = "v4"
 
 
 def serialize_bundle_for_llm(bundle: dict) -> str:
@@ -375,6 +378,7 @@ def _follow_action_saga_chain(
     mdtp_map: Optional[dict],
     action_to_type: Optional[dict],
     saga_urls_by_type: Optional[dict],
+    saga_fns_by_type: Optional[dict] = None,
     max_body_chars: int,
 ) -> list[dict]:
     """Redux/saga chain — handler body 의 dispatch / this.props.X →
@@ -436,14 +440,27 @@ def _follow_action_saga_chain(
             # 첫 매칭만 — 같은 이름 collision 은 드물고, 너무 늘리지 않기 위해.
             break
 
-        # 해당 action 의 type → saga URL 매핑된 saga 함수 body 도 같이.
-        if action_to_type and saga_urls_by_type:
-            for tk in action_to_type.get(act) or set():
-                if tk in saga_urls_by_type:
-                    # saga body 찾기 — saga_urls_by_type 은 URL 만 있어서
-                    # body 자체는 fn_index 에서 takeLatest 의 saga_fn 이름으로
-                    # 재탐색해야. 여기선 단순화 — type_key 정보만 제공.
-                    pass
+        # 해당 action 의 type → saga 함수 body 추가. saga_fns_by_type 은
+        # `_collect_saga_fns_by_action_type` 이 모든 파일 content 직접 스캔
+        # 한 결과 (default export anonymous saga 안 takeLatest 까지 잡음).
+        # fn_index 만 보면 anonymous wrapper 안 패턴은 누락됨.
+        if action_to_type and fn_index and saga_fns_by_type:
+            type_keys = action_to_type.get(act) or set()
+            seen_sagas: set[str] = set()
+            for type_key in type_keys:
+                for saga_fn in saga_fns_by_type.get(type_key, set()):
+                    if saga_fn in seen_sagas:
+                        continue
+                    seen_sagas.add(saga_fn)
+                    for s_fp, s_body in fn_index.get(saga_fn) or []:
+                        out.append({
+                            "name": saga_fn,
+                            "kind": "saga",
+                            "file": s_fp,
+                            "body": _truncate(s_body, max_body_chars),
+                            "type_key": type_key,
+                        })
+                        break
 
     return out
 
