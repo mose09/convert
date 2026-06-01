@@ -563,7 +563,7 @@ python main.py analyze-legacy `
 |------|------|
 | `--backend-dir` / `--backends-root` | 단일 백엔드 / 여러 백엔드 레포 상위 |
 | `--library-dir` | 추가 라이브러리 레포 경로 (**반복 가능**). 해당 경로의 `.java` / MyBatis XML 은 **service / mapper 인덱스에만** 포함되고 Controller / endpoint 행은 생성 안 함. 별도 레포의 공용 서비스 (예: `gipms-common`) 를 메인 레포의 chain 해석에 붙일 때 사용. 단일 + 배치 모드 양쪽에서 작동 |
-| `--frontend-dir` / `--frontends-root` | 단일 프론트엔드 / 여러 프론트엔드 레포 상위 |
+| `--frontend-dir` / `--frontends-root` | 단일 프론트엔드 / 여러 프론트엔드 레포 상위. **`--frontend-dir` 은 여러 번 지정 가능** (`--frontend-dir A --frontend-dir B --frontend-dir C`) — 2개 이상이면 explicit multi-bucket 모드 (auto-discovery 없이 명시 list 만 분석). 큰 monorepo 의 일부 sub-app 만 분석할 때 유용. |
 | `--patterns` | `discover-patterns` 로 생성한 패턴 파일 (없으면 기본값) |
 | `--menu-md` / `--menu-xlsx` / `--menu-table` | 메뉴 소스 (우선순위: skip > md > xlsx > DB) |
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |

@@ -386,6 +386,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   patterns: dict | None = None,
                                   allowed_apps: set[str] | None = None,
                                   repos_by_frontend_out: dict[str, dict[str, set[str]]] | None = None,
+                                  explicit_buckets: list[tuple[str, str]] | None = None,
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
@@ -397,15 +398,22 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     (lowercase matched). Used by the menu-driven analyze path so apps
     that aren't referenced from any menu entry are skipped entirely.
 
+    ``explicit_buckets`` (optional) — 사용자가 ``--frontend-dir`` 를 여러
+    번 지정해서 명시한 bucket list. 주어지면 ``_enumerate_buckets``
+    자동 스캔을 skip 하고 명시 list 만 처리. 큰 monorepo 의 일부 sub-app
+    만 분석하고 싶을 때 사용.
+
     Returns a 5-tuple
     ``(merged_map, overall_framework, by_frontend, api_by_frontend, triggers_by_frontend)``.
     Bucket keys are stored lowercase to match case-insensitive menu
     URL slugs.
     """
-    if not frontends_root or not os.path.isdir(frontends_root):
-        return {}, "unknown", {}, {}, {}
-
-    buckets = _enumerate_buckets(frontends_root)
+    if explicit_buckets:
+        buckets = list(explicit_buckets)
+    else:
+        if not frontends_root or not os.path.isdir(frontends_root):
+            return {}, "unknown", {}, {}, {}
+        buckets = _enumerate_buckets(frontends_root)
     if not buckets:
         return {}, "unknown", {}, {}, {}
 
