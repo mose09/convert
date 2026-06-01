@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v18"  # v18: input panel <th>SDPT</th> 같은 direct text label 추출 (className=label 없는 케이스) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v19"  # v19: trigger LLM bundle 에 saga.js 함수 body 포함 (이전엔 saga URL 만 facts, body 누락) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -718,7 +718,8 @@ def _llm_analyze_triggers_for_screen(
         from .legacy_react_api_scanner import (
             _build_call_regex, _DEFAULT_API_METHODS, _collect_url_constants,
             _collect_function_bodies, _collect_action_to_type,
-            _collect_saga_urls_by_action_type, _collect_mdtp_action_map,
+            _collect_saga_urls_by_action_type,
+            _collect_saga_fns_by_action_type, _collect_mdtp_action_map,
             _scan_dir, collect_event_handlers,
         )
         from .legacy_trigger_bundler import (
@@ -775,6 +776,8 @@ def _llm_analyze_triggers_for_screen(
     const_map = _collect_url_constants(all_files, []) if all_files else {}
     saga_urls = (_collect_saga_urls_by_action_type(
         all_files, fn_index, call_re, const_map, None) if all_files else {})
+    saga_fns = (_collect_saga_fns_by_action_type(all_files)
+                if all_files else {})
     mdtp_map = _collect_mdtp_action_map(all_files) if all_files else {}
 
     out: Dict[str, dict] = {}
@@ -793,6 +796,7 @@ def _llm_analyze_triggers_for_screen(
                 ev, content, rel_path,
                 fn_index=fn_index, mdtp_map=mdtp_map,
                 action_to_type=action_to_type, saga_urls_by_type=saga_urls,
+                saga_fns_by_type=saga_fns,
             )
         except Exception as e:
             logger.warning("trigger bundle 실패 (%s): %s", handler_name, e)

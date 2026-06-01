@@ -2315,6 +2315,35 @@ _URL_LITERAL_IN_BODY_RE = re.compile(
 )
 
 
+def _collect_saga_fns_by_action_type(all_files) -> dict[str, set[str]]:
+    """모든 파일에서 ``takeLatest(type, sagaFn)`` 등 effect 패턴 →
+    ``{type_key: {saga_fn_name, ...}}``.
+
+    `_collect_saga_urls_by_action_type` 와 같은 스캔을 거치지만 saga 함수
+    이름만 추출 (URL 추출 X). bundler 가 saga body 를 fn_index 에서
+    lookup 할 때 사용.
+
+    `_collect_function_bodies` 는 named function 만 인덱스에 넣어서
+    default export anonymous saga 안 `takeLatest` 는 fn_index 만 보면
+    매칭 X. 그래서 별도 함수로 모든 파일 content 직접 스캔.
+    """
+    out: dict[str, set[str]] = {}
+    for fp in all_files:
+        try:
+            content = _strip_comments(_read_file_safe(fp))
+        except Exception:
+            continue
+        for m in _SAGA_TAKE_RE.finditer(content):
+            type_lit = m.group(1)
+            type_const = m.group(2)
+            saga_fn = m.group(3)
+            type_key = type_lit or type_const
+            if not type_key or not saga_fn:
+                continue
+            out.setdefault(type_key, set()).add(saga_fn)
+    return out
+
+
 def _collect_saga_urls_by_action_type(all_files, fn_index, call_re,
                                       const_map, strip_patterns) -> dict[str, set[str]]:
     """모든 파일에서 saga effect 의 (type_key, saga_fn) 페어를 찾고,
