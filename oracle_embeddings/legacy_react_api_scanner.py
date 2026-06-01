@@ -30,6 +30,7 @@ URL 해석은 세 단계:
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import re
@@ -596,6 +597,54 @@ def _is_apps_react_file(rel_path: str) -> bool:
     return False
 
 
+def _is_relevant_react_file(rel_path: str, has_apps_layout: bool) -> bool:
+    """단일 레포 / 모노레포 양쪽 모두 동작하는 entry 파일 필터.
+
+    monorepo (``apps/`` 레이아웃) 면 기존 ``_is_apps_react_file`` — index
+    파일과 popup 폴더 안 파일만. 단일 레포 (``apps/`` 없음) 면 permissive
+    — 모든 ``.{js,jsx,ts,tsx,mjs}`` 파일 허용 (helper / framework 컴포넌트
+    포함 — 단일 레포는 분리 기준이 없으므로).
+
+    사용자 보고: 단일 프론트 레포에서 ``Button triggers indexed: 0`` —
+    원인은 ``_is_apps_react_file`` 의 ``apps/`` 강제 필터가 모든 파일
+    reject 한 것. 단일 레포는 자동으로 permissive 로 fallback.
+    """
+    if has_apps_layout:
+        return _is_apps_react_file(rel_path)
+    # 단일 레포 — React entry/component/popup 모두 허용
+    norm = rel_path.replace("\\", "/").lower()
+    if not norm.endswith((".js", ".jsx", ".ts", ".tsx", ".mjs")):
+        return False
+    # 익숙한 비-소스 폴더는 여전히 제외
+    excluded = ("node_modules/", "build/", "dist/", "coverage/", "__tests__/",
+                ".storybook/", "storybook/", "public/")
+    for ex in excluded:
+        if ex in norm:
+            return False
+    return True
+
+
+@functools.lru_cache(maxsize=32)
+def _repo_has_apps_layout(frontend_dir: str) -> bool:
+    """frontend_dir 안 ``apps/`` 폴더가 실제로 존재하는지 검사 (1회 — lru_cache).
+
+    있으면 monorepo 컨벤션 (SK Hynix 패턴 등), 없으면 단일 레포.
+    """
+    if not frontend_dir:
+        return False
+    try:
+        for root, dirs, _files in os.walk(frontend_dir):
+            if "apps" in dirs:
+                return True
+            # 너무 깊이 안 들어감 — 보통 src/apps 또는 frontend_dir/apps
+            depth = root.replace(frontend_dir, "").count(os.sep)
+            if depth >= 3:
+                dirs[:] = []
+    except Exception:
+        pass
+    return False
+
+
 # popup 처럼 별개 화면으로 분석할 sub-component 폴더 이름 키워드 (사용자
 # 환경: ``InstallManagePopup``). 그 외 sub-component (agGrid / SearchPanel
 # 등) 는 메인 화면 (apps/<X>/index.js) 에 통합.
@@ -685,7 +734,7 @@ def _collect_popup_imports_per_main(files: list[str], frontend_dir: str,
     popup_files: set[str] = set()
     for fp in files:
         rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
-        if not _is_apps_react_file(rel):
+        if not _is_relevant_react_file(rel, _repo_has_apps_layout(frontend_dir)):
             continue
         try:
             content = _strip_comments(_read_file_safe(fp))
@@ -817,7 +866,7 @@ def _collect_self_modal_popup_files(files: list[str], frontend_dir: str) -> set[
     out: set[str] = set()
     for fp in files:
         rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
-        if not _is_apps_react_file(rel):
+        if not _is_relevant_react_file(rel, _repo_has_apps_layout(frontend_dir)):
             continue
         try:
             content = _strip_comments(_read_file_safe(fp))
@@ -842,7 +891,7 @@ def _collect_main_entries(files: list[str], frontend_dir: str) -> set[str]:
     index_rels: list[str] = []
     for fp in files:
         rel = os.path.relpath(fp, frontend_dir).replace("\\", "/")
-        if not _is_apps_react_file(rel):
+        if not _is_relevant_react_file(rel, _repo_has_apps_layout(frontend_dir)):
             continue
         basename = rel.rsplit("/", 1)[-1]
         name = basename.rsplit(".", 1)[0].lower()
@@ -1631,7 +1680,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     pass1: list[tuple[dict, list[str], set[str]]] = []
     for fp in all_files:
         rel = os.path.relpath(fp, frontend_dir)
-        if not _is_apps_react_file(rel):
+        if not _is_relevant_react_file(rel, _repo_has_apps_layout(frontend_dir)):
             continue
         try:
             content = _strip_comments(_read_file_safe(fp))
@@ -2008,7 +2057,7 @@ def collect_handler_contexts(
     pass1: list[tuple[str, str, str, dict, list[str], set[str]]] = []
     for fp in all_files:
         rel = os.path.relpath(fp, frontend_dir)
-        if not _is_apps_react_file(rel):
+        if not _is_relevant_react_file(rel, _repo_has_apps_layout(frontend_dir)):
             continue
         try:
             content = _strip_comments(_read_file_safe(fp))
