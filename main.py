@@ -1994,14 +1994,48 @@ def cmd_analyze_legacy(args):
             print("Note: --frontend-only 사용 — backend 인자 무시됨.")
             backends_root = None
             backend_dir = None
-    # Resolve frontend dir: --frontends-root takes priority over --frontend-dir
+    # Resolve frontend dir(s):
+    # - --frontends-root          (priority 1) → auto-discovery multi
+    # - --frontend-dir x 2+ paths (priority 2) → explicit multi (bucket list)
+    # - --frontend-dir x 1 path   (priority 3) → single mode
     _fr_root = (getattr(args, "frontends_root", None) or "").strip() or None
-    _fr_dir = (getattr(args, "frontend_dir", None) or "").strip() or None
-    frontend_dir = _fr_root or _fr_dir
-    is_frontends_root = bool(getattr(args, "frontends_root", None))
+    _fr_dirs_raw = getattr(args, "frontend_dir", None) or []
+    if isinstance(_fr_dirs_raw, str):
+        _fr_dirs_raw = [_fr_dirs_raw]
+    _fr_dirs = [d.strip() for d in _fr_dirs_raw if d and d.strip()]
+    explicit_buckets: list[tuple[str, str]] | None = None
+    if _fr_root:
+        frontend_dir = _fr_root
+        is_frontends_root = True
+    elif len(_fr_dirs) >= 2:
+        # explicit multi mode — 명시된 dir 각각을 bucket 으로
+        # 공통 부모 경로 (commonpath) 를 가상 root 로 (display 용)
+        try:
+            frontend_dir = os.path.commonpath(_fr_dirs)
+        except ValueError:
+            # 드라이브 다르면 commonpath 가 ValueError — 첫 dir 의 부모로
+            frontend_dir = os.path.dirname(_fr_dirs[0]) or _fr_dirs[0]
+        is_frontends_root = True
+        explicit_buckets = [
+            (os.path.basename(os.path.normpath(d)) or os.path.normpath(d), d)
+            for d in _fr_dirs
+        ]
+        print(f"  Frontend explicit buckets: "
+              f"{[name for name, _ in explicit_buckets]}")
+    elif len(_fr_dirs) == 1:
+        frontend_dir = _fr_dirs[0]
+        is_frontends_root = False
+    else:
+        frontend_dir = None
+        is_frontends_root = False
     if frontend_dir and not os.path.isdir(frontend_dir):
         print(f"Error: Frontend dir not found: {frontend_dir}")
         return
+    if explicit_buckets:
+        for name, path in explicit_buckets:
+            if not os.path.isdir(path):
+                print(f"Error: Frontend bucket not found: {name} ({path})")
+                return
 
     # Resolve menu source priority:
     #   1. --skip-menu            → no menu lookup
@@ -2111,6 +2145,7 @@ def cmd_analyze_legacy(args):
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
+            explicit_buckets=explicit_buckets,
             menu_only=menu_only,
             extract_biz=extract_biz,
             biz_scope=biz_scope,
@@ -2144,6 +2179,7 @@ def cmd_analyze_legacy(args):
             frontend_framework=frontend_framework,
             patterns=loaded_patterns,
             frontends_root=is_frontends_root,
+            explicit_buckets=explicit_buckets,
             menu_only=menu_only,
             extract_biz=extract_biz,
             biz_scope=biz_scope,
@@ -2365,12 +2401,15 @@ def main():
                                 "서비스 (예: gipms-common) 를 메인 레포의 chain 해석에 붙일 때 "
                                 "사용. --backends-root 와 함께 쓰면 모든 하위 프로젝트가 "
                                 "동일 라이브러리를 공유.")
-    al_parser.add_argument("--frontend-dir",
-                           help="단일 프론트엔드 프로젝트 루트 (React/Polymer, optional)")
+    al_parser.add_argument("--frontend-dir", action="append",
+                           help="프론트엔드 프로젝트 루트 (React/Polymer, optional). "
+                                "여러 번 지정 가능 — 예: --frontend-dir A --frontend-dir B. "
+                                "1개 = 단일 모드, 2개 이상 = explicit multi-bucket "
+                                "(--frontends-root 의 auto-discovery 대신 명시 list).")
     al_parser.add_argument("--frontends-root",
                            help="여러 프론트엔드 레포가 있는 상위 디렉토리. 각 하위 폴더를 "
                                 "개별 프론트엔드 프로젝트로 인식해 URL 맵을 통합. "
-                                "--frontend-dir 대신 사용.")
+                                "특정 sub-set 만 분석하려면 --frontend-dir 을 여러 번 사용.")
     al_parser.add_argument("--frontend-framework", choices=["auto", "react", "polymer"],
                            default="auto",
                            help="Frontend framework override. 기본 'auto' = package.json 의존성 + "
