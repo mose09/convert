@@ -674,6 +674,95 @@ def _find_flowchart_sample(base_dir: str = "input") -> Optional[str]:
     return None
 
 
+# LLM prompt 크기 가드 — 너무 큰 prompt 는 LLM 게이트웨이가 silent fail
+# 하거나 truncate 함. threshold 초과 시 source section 을 chunk 로 분할
+# → N 회 호출 → JSON 응답 머지.
+_LLM_PROMPT_CHUNK_THRESHOLD = 40000   # chars — 이걸 넘으면 chunk 모드
+_LLM_PROMPT_CHUNK_SIZE = 30000        # 각 chunk 가 들어갈 안전한 크기
+
+
+def _split_source_for_chunks(source: str, chunk_size: int) -> List[str]:
+    """source 를 chunk_size 안에 맞게 분할.
+
+    closure markdown 의 ``## File:`` 헤더 경계에서 자르려 시도 (파일
+    통째로 한 chunk). 한 파일이 chunk_size 보다 크면 char 단위 분할
+    (fallback). 분할이 필요 없으면 1-element list.
+    """
+    if len(source) <= chunk_size:
+        return [source]
+    # File boundary split — closure markdown 의 ``## File: ...`` 헤더 기준.
+    # raw smart-slice 면 ``## File:`` 가 없을 텐데 그 경우 한 덩어리로
+    # 재분할 (char-단위로 떨어짐).
+    parts = re.split(r"(?=^## File:)", source, flags=re.MULTILINE)
+    chunks: List[str] = []
+    current = ""
+    for p in parts:
+        if not p:
+            continue
+        if len(current) + len(p) <= chunk_size:
+            current += p
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(p) <= chunk_size:
+            current = p
+        else:
+            # 한 파일이 너무 큼 — char 단위 분할
+            for i in range(0, len(p), chunk_size):
+                chunks.append(p[i:i + chunk_size])
+            current = ""
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _merge_layout_dicts(dicts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """여러 LLM 응답 dict 머지. chunk 응답 합치는 용도.
+
+    - singles (page_title / summary / flowchart_mermaid): 첫 non-empty
+    - lists (search_panel / input_panel / data_table_columns /
+      edit_mode_fields / tabs): concat + dedupe (item 의 label/field/title
+      키 기준)
+    """
+    merged: Dict[str, Any] = {
+        "page_title": "",
+        "search_panel": [],
+        "input_panel": [],
+        "data_table_columns": [],
+        "edit_mode_fields": [],
+        "tabs": [],
+        "flowchart_mermaid": "",
+        "summary": "",
+    }
+
+    def _item_key(item: Any, list_name: str) -> str:
+        if not isinstance(item, dict):
+            return str(item)
+        # 필드별 dedup 키 — 같은 라벨/필드명이면 같은 항목
+        if list_name == "data_table_columns":
+            return str(item.get("field") or item.get("title") or item)
+        return str(item.get("label") or item.get("name")
+                   or item.get("id") or item)
+
+    for d in dicts:
+        if not isinstance(d, dict):
+            continue
+        for key in ("page_title", "flowchart_mermaid", "summary"):
+            if not merged[key] and d.get(key):
+                merged[key] = d[key]
+        for key in ("search_panel", "input_panel", "data_table_columns",
+                    "edit_mode_fields", "tabs"):
+            existing_keys = {_item_key(it, key) for it in merged[key]}
+            for item in (d.get(key) or []):
+                k = _item_key(item, key)
+                if k in existing_keys:
+                    continue
+                merged[key].append(item)
+                existing_keys.add(k)
+    return merged
+
+
 def _call_llm_safe(prompt: str, config: Dict[str, Any],
                    label: str = "screen",
                    image_paths: Optional[list] = None) -> Optional[Dict[str, Any]]:
@@ -1143,10 +1232,39 @@ def extract_screen_layouts(
             rel, content, url_map, max_chars,
             closure_markdown=closure_md,
         )
-        data = _call_llm_safe(
-            prompt, config or {}, label=f"screen:{rel[:40]}",
-            image_paths=[sample_image] if sample_image else None,
-        )
+        # prompt 크기 가드 — threshold 초과면 source section 을 chunk 로
+        # 분할 후 N 회 호출 + 응답 머지. 첫 chunk 의 응답을 base 로 하고
+        # 나머지 chunk 의 lists 를 dedupe concat. LLM 게이트웨이의 hard
+        # limit (보통 32K-128K context) 안전하게 통과.
+        if len(prompt) > _LLM_PROMPT_CHUNK_THRESHOLD:
+            source_section = closure_md if closure_md is not None else _smart_slice(content, max_chars)
+            chunks = _split_source_for_chunks(
+                source_section, _LLM_PROMPT_CHUNK_SIZE)
+            print(f"  screen layout: prompt {len(prompt)} chars > "
+                  f"{_LLM_PROMPT_CHUNK_THRESHOLD} — split {rel[:50]} "
+                  f"into {len(chunks)} chunks")
+            chunk_dicts: List[Dict[str, Any]] = []
+            for i, chunk in enumerate(chunks, 1):
+                chunk_prompt = _build_user_prompt(
+                    rel,
+                    chunk if closure_md is None else content,
+                    url_map, max_chars,
+                    closure_markdown=chunk if closure_md is not None else None,
+                )
+                chunk_data = _call_llm_safe(
+                    chunk_prompt, config or {},
+                    label=f"screen:{rel[:30]}:chunk{i}/{len(chunks)}",
+                    # 이미지는 첫 chunk 만 (LLM 한테 같은 이미지 N번 보내지 않음)
+                    image_paths=([sample_image] if (i == 1 and sample_image) else None),
+                )
+                if chunk_data:
+                    chunk_dicts.append(chunk_data)
+            data = _merge_layout_dicts(chunk_dicts) if chunk_dicts else None
+        else:
+            data = _call_llm_safe(
+                prompt, config or {}, label=f"screen:{rel[:40]}",
+                image_paths=[sample_image] if sample_image else None,
+            )
         if data:
             layout = _parse_layout_dict(rel, data)
             llm_calls += 1
