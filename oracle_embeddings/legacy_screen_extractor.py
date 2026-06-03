@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v19"  # v19: trigger LLM bundle 에 saga.js 함수 body 포함 (이전엔 saga URL 만 facts, body 누락) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v20"  # v20: search-named 파일 (MaterialMasterSearch 등) container 없어도 search panel 로 인정 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)

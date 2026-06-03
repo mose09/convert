@@ -1025,11 +1025,22 @@ def extract_form_fields(closure: ScreenClosure,
             any_item = True
         file_data.append((f, tree, source, containers, items))
 
+    # closure 의 어느 파일 이름이라도 search/filter/criteria 키워드 포함
+    # 하면 명시 container 없어도 search 영역으로 인정. user 보고: search
+    # 영역을 별도 import (예: ``import MaterialMasterSearch from './MaterialMasterSearch'``)
+    # 한 경우 그 imported 파일에 className="search-area" 같은 컨테이너가
+    # 없으면 Phase 2a 가 통째로 skip 됐었음. 파일명/경로 신호로 보완.
+    has_search_file = any(
+        any(kw in f.rel_path.lower() for kw in
+            ("search", "filter", "criteria", "condition"))
+        for f, _t, _s, _c, _i in file_data
+    )
+
     # Phase 2a: search-item 우선 — 1 item = 1 field (Popover 등 자동 흡수).
-    # **단 search-area container 없으면 skip** — search-item 이 search 영역
-    # 밖에 있는 경우 (edit modal 등 다른 영역) 까지 search panel 로 잡히던
-    # 문제 방지. container 없는 화면은 search panel 0건.
-    if any_item and any_container:
+    # **단 search-area container 또는 search-named 파일 둘 다 없으면 skip** —
+    # search-item 이 search 영역 밖에 있는 경우 (edit modal 등 다른 영역)
+    # 까지 search panel 로 잡히던 문제 방지. 둘 다 없는 화면은 search panel 0건.
+    if any_item and (any_container or has_search_file):
         fields: list[FormField] = []
         order = 0
         for f, tree, source, containers, items in file_data:
@@ -1050,21 +1061,28 @@ def extract_form_fields(closure: ScreenClosure,
         return fields
 
     # Phase 2b: search-item 없으면 search-area boundary 안 default input.
-    # search-area 자체도 없으면 search_panel 빈 채로 반환 — 팝업 / 조회조건
-    # 없는 화면이 closure transitive import 로 다른 input 까지 끌어오는 false
-    # positive 방지. (이전 Phase C: closure 전체 default input — 제거됨)
-    if not any_container:
+    # search-area 자체도 없으면 (그리고 파일명이 search-named 도 아니면)
+    # search_panel 빈 채로 반환 — 팝업 / 조회조건 없는 화면이 closure
+    # transitive import 로 다른 input 까지 끌어오는 false positive 방지.
+    if not any_container and not has_search_file:
         return []
     fields = []
     order = 0
     for f, tree, source, containers, _ in file_data:
-        if not containers:
+        # search-named 파일은 container 없어도 전체 input 인정
+        is_search_named = any(
+            kw in f.rel_path.lower()
+            for kw in ("search", "filter", "criteria", "condition")
+        )
+        if not containers and not is_search_named:
             continue
         for el, tag in _jsx_open_elements(tree, source):
             if tag not in input_comps:
                 continue
-            if not any(_node_contains(c, el) for c in containers):
-                continue
+            # search-named 파일은 container 검사 skip — 파일 전체가 search 영역
+            if containers and not is_search_named:
+                if not any(_node_contains(c, el) for c in containers):
+                    continue
             attrs = _jsx_attributes(el, source)
             # 우선순위: label prop > 한국 SI 형제 라벨 (className "label")
             # > placeholder / title / aria-label.
