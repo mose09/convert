@@ -1114,6 +1114,24 @@ def _find_popup_content_files(closure, file_data) -> set:
     return excluded
 
 
+def find_popup_files_in_closure(closure) -> set:
+    """closure 안 어딘가의 ``<Modal>...<X/></Modal>`` wrapper 안에 등장한
+    capitalized 컴포넌트 X 의 abs_path str set.
+
+    ``_find_popup_content_files`` 와 동일 로직이지만 파싱된 file_data
+    튜플 대신 closure 만 받아서 내부에서 파싱 — 별도 popup 화면 enumerate
+    용도. extract_form_fields 의 file_data 와 공유 안 함.
+    """
+    from ..legacy_react_ast import parse_file
+    file_data = []
+    for f in closure.files:
+        tree, source, _ = parse_file(f.abs_path)
+        if tree is None:
+            continue
+        file_data.append((f, tree, source, [], []))
+    return _find_popup_content_files(closure, file_data)
+
+
 def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
     """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트.
