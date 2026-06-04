@@ -1132,45 +1132,6 @@ def find_popup_files_in_closure(closure) -> set:
     return _find_popup_content_files(closure, file_data)
 
 
-# 파일명/폴더명 신호로 search-area 분리 import 컴포넌트 식별 (PR #284 의
-# has_search_file 신호와 동일 키워드).
-_SEARCH_FILE_KEYWORDS = ("search", "filter", "criteria", "condition")
-
-
-def find_search_area_files_in_closure(closure) -> set:
-    """closure 의 entry 파일이 아닌 컴포넌트 중 파일명/폴더명에 search/
-    filter/criteria/condition 키워드가 있는 abs_path str set.
-
-    한국 SI 흔한 패턴: main 화면 index.js 가 ``<MaterialMasterSearch/>``
-    같은 search 영역 컴포넌트를 분리 import. 그 search 컴포넌트 안의
-    SEARCH/RESET 버튼은 보통 ``onClick={this.props.onSearch}`` 처럼 parent
-    callback 만 호출 → backend URL 호출이 없어서 collect_handler_contexts
-    의 api_idx enumeration 에서 빠짐 → 별도 화면으로도 분석 안 됨.
-
-    popup 큐와 같은 방식으로 별도 screen 으로 큐에 추가하기 위한 식별자.
-    """
-    out: set = set()
-    try:
-        entry_path = str(closure.entry_file)
-    except Exception:
-        entry_path = ""
-    for f in closure.files:
-        p = str(f.abs_path)
-        if entry_path and p == entry_path:
-            continue  # entry 자기 자신은 main 화면 — 별도 큐 추가 안 함
-        try:
-            stem = f.abs_path.stem
-            parent_name = f.abs_path.parent.name
-        except Exception:
-            continue
-        name = stem.lower()
-        if name == "index":
-            name = parent_name.lower()
-        if any(kw in name for kw in _SEARCH_FILE_KEYWORDS):
-            out.add(p)
-    return out
-
-
 def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
     """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트.
