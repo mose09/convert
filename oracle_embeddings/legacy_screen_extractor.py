@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v30"  # v30: prop name 'handle*' 도 callback 으로 인정 + main_handler 가 url_map 에 없으면 main content 의 정의 body 에서 직접 URL 추출
+SCREEN_SCHEMA_VERSION = "v31"  # v31: _locate_handler_start 에 useCallback/useMemo + this.X 패턴 추가, JSX prop 값 .bind(...) 패턴 인정
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1041,7 +1041,10 @@ def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
 # main file 의 JSX prop assignment 추출 — ``<SearchComp onSearch={this.
 # handleSearch}/>`` 같은 패턴. {prop_name: handler_name}. sub 컴포넌트의
 # ``this.props.X`` callback 을 main 의 실제 핸들러로 resolve 하는 데 사용.
-_JSX_PROP_HANDLER_RE = re.compile(r"\b(\w+)\s*=\s*\{(?:this\.)?(\w+)\}")
+# .bind(...) suffix 도 인정 — ``{this.handleSearch.bind(this)}`` 패턴.
+_JSX_PROP_HANDLER_RE = re.compile(
+    r"\b(\w+)\s*=\s*\{(?:this\.)?(\w+)(?:\.bind\s*\([^)]*\))?\}"
+)
 # sub 컴포넌트 핸들러가 props callback 인지 — ``this.props.X`` / ``props.X``
 # / 단순 ``X`` (destructured) 매칭.
 _PROPS_CALLBACK_RE = re.compile(r"^(?:this\.props\.|props\.)?(\w+)$")
@@ -1352,6 +1355,8 @@ def extract_screen_layouts(
     parser_screens = 0
     empty_screens = 0
     popup_added = 0
+    sub_events_absorbed = 0
+    sub_urls_resolved = 0
     files_seen: set = set(files)
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
@@ -1453,7 +1458,9 @@ def extract_screen_layouts(
                             main_content=content or "")
                         if resolved:
                             v = {**v, "urls": resolved}
+                            sub_urls_resolved += 1
                     url_map[k] = v
+                    sub_events_absorbed += 1
 
         closure_md: Optional[str] = None
         if closure_llm:
@@ -1568,9 +1575,13 @@ def extract_screen_layouts(
     )
     empty_stats = f", empty={empty_screens}" if empty_screens else ""
     popup_stats = f", popup_added={popup_added}" if popup_added else ""
+    absorb_stats = (
+        f", sub_absorbed={sub_events_absorbed}(url_resolved={sub_urls_resolved})"
+        if sub_events_absorbed else ""
+    )
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
           f"fallback={fallback_calls}, total={len(out)}"
-          f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}")
+          f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}{absorb_stats}")
     return out
 
 

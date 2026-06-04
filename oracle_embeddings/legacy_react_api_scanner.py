@@ -2834,9 +2834,15 @@ def _locate_handler_start(content: str, handler: str) -> int | None:
     patterns = [
         rf"\bfunction\s+{re.escape(handler)}\s*\([^)]*\)\s*\{{",
         rf"\b(?:const|let|var)\s+{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
+        # useCallback / useMemo wrapper — functional component + hook 패턴.
+        # 사용자 사례: ``const handleSearch = useCallback((p) => { postAxios
+        # (getBackendURL('BASE','/api/...'), p); }, [])``.
+        rf"\b(?:const|let|var)\s+{re.escape(handler)}\s*=\s*(?:React\.)?(?:useCallback|useMemo)\s*\(",
         # Class field arrow (no const/let/var) — class component 패턴.
         # 사용자 사례: ``fncModelingAllUpdate = () => { axios.post(...) }``.
         rf"\b{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
+        # this.X = ... assignment (constructor 안 bind 패턴).
+        rf"\bthis\.{re.escape(handler)}\s*=\s*(?:async\s*)?\([^)]*\)\s*=>\s*\{{?",
         rf"\b{re.escape(handler)}\s*\([^)]*\)\s*\{{",  # class method / object shorthand
     ]
     for pat in patterns:
