@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v20"  # v20: search-named 파일 (MaterialMasterSearch 등) container 없어도 search panel 로 인정 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v21"  # v21: custom search-item component (SearchItemArea 등) + wrapper label/required prop 인식 — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
