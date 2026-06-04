@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v27"  # v27: search 영역 등 비-popup 비-main 파일의 events 는 별도 분리 대신 main 의 events 에 흡수 — 사용자 의도 (popup 만 별도)
+SCREEN_SCHEMA_VERSION = "v28"  # v28: sub 컴포넌트 props callback (this.props.onSearch) → main 의 prop→handler 매핑으로 resolve 후 URL 흡수
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -993,13 +993,17 @@ def _merge_trigger_llm_into_layout(layout: "ScreenLayout",
 
 def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
     """popup 파일의 JSX 이벤트 (onClick / onChange / onSubmit / ...) 를
-    `{handler_label: {urls, source_offset, narrative}}` 형식으로 추출.
+    `{handler_label: {urls, source_offset, narrative, _handler}}` 형식으로 추출.
 
     backend URL 호출이 없거나 props callback (예: ``onClick={this.props.
     onSearch}``) 만 호출하는 popup 파일은 collect_handler_contexts 의
     api_idx 기반 enumeration 에 안 잡혀서 events 가 비어 있는 케이스 fix.
     url 무관 sentinel (빈 list) 로 등록 → `_fallback_layout` 이 URL 없는
     1 row 로 emit.
+
+    ``_handler`` 필드는 internal — main 흡수 시 props callback (예:
+    ``this.props.onSearch``) 를 main 의 prop→handler 매핑으로 resolve 후
+    main 의 URL 을 부여하기 위한 단서. _fallback_layout 에서는 무시.
     """
     try:
         from .legacy_react_api_scanner import (
@@ -1025,8 +1029,61 @@ def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
             "urls": [],
             "source_offset": ev.get("source_offset", -1),
             "narrative": "",
+            "_handler": handler,
         }
     return out
+
+
+# main file 의 JSX prop assignment 추출 — ``<SearchComp onSearch={this.
+# handleSearch}/>`` 같은 패턴. {prop_name: handler_name}. sub 컴포넌트의
+# ``this.props.X`` callback 을 main 의 실제 핸들러로 resolve 하는 데 사용.
+_JSX_PROP_HANDLER_RE = re.compile(r"\b(\w+)\s*=\s*\{(?:this\.)?(\w+)\}")
+# sub 컴포넌트 핸들러가 props callback 인지 — ``this.props.X`` / ``props.X``
+# / 단순 ``X`` (destructured) 매칭.
+_PROPS_CALLBACK_RE = re.compile(r"^(?:this\.props\.|props\.)?(\w+)$")
+
+
+def _extract_main_prop_handler_map(content: str) -> Dict[str, str]:
+    """main file content 에서 JSX prop={handler} 매핑 추출 — sub 컴포넌트
+    의 props callback resolve 용."""
+    out: Dict[str, str] = {}
+    for m in _JSX_PROP_HANDLER_RE.finditer(content or ""):
+        prop_name = m.group(1)
+        handler_name = m.group(2)
+        # 이벤트 prop (onX) + 일반 callback prop 만. value/style 등 데이터
+        # prop 제외 (handler_name 이 boolean/state 일 수 있음).
+        if not (prop_name.startswith("on") or prop_name in ("handler",
+                                                             "callback")):
+            continue
+        out.setdefault(prop_name, handler_name)
+    return out
+
+
+def _resolve_props_callback_url(sub_handler: str,
+                                main_prop_map: Dict[str, str],
+                                main_url_map: Dict[str, Dict[str, Any]]
+                                ) -> List[str]:
+    """sub 컴포넌트의 handler 이름 (예: ``this.props.onSearch``) →
+    main 의 prop 전달 매핑으로 실제 main handler 찾고, main url_map 에서
+    그 handler 의 URL 가져옴. 매칭 못 하면 빈 list."""
+    if not sub_handler:
+        return []
+    m = _PROPS_CALLBACK_RE.match(sub_handler)
+    if not m:
+        return []
+    prop_name = m.group(1)
+    # destructured 단순 식별자도 prop 이름과 동일하다고 가정 (한국 SI 흔)
+    main_handler = main_prop_map.get(prop_name)
+    if not main_handler:
+        return []
+    # main url_map key 가 "[ev] label-or-handler" 형식. label 이 있으면
+    # handler 가 가려질 수 있어 endswith 매칭 — 정확도 우선.
+    for k, v in (main_url_map or {}).items():
+        if isinstance(v, dict) and k.endswith(f"] {main_handler}"):
+            return list(v.get("urls") or [])
+        if isinstance(v, dict) and k == main_handler:
+            return list(v.get("urls") or [])
+    return []
 
 
 def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> ScreenLayout:
@@ -1305,7 +1362,11 @@ def extract_screen_layouts(
                 if popup_rel in files_seen:
                     continue
                 files_seen.add(popup_rel)
-                by_file[popup_rel] = _collect_popup_url_map(popup_abs)
+                popup_um = _collect_popup_url_map(popup_abs)
+                # internal _handler 필드 제거 (fallback layout 에서 미사용)
+                for _v in popup_um.values():
+                    _v.pop("_handler", None)
+                by_file[popup_rel] = popup_um
                 file_queue.append(popup_rel)
                 popup_added += 1
 
@@ -1317,6 +1378,10 @@ def extract_screen_layouts(
                 main_abs = str(closure_obj.entry_file)
             except Exception:
                 main_abs = ""
+            # main file 의 prop→handler 매핑 — sub 컴포넌트의 props callback
+            # (예: this.props.onSearch) 을 main 의 실제 handler 로 resolve
+            # 후 그 handler 의 URL 을 sub trigger 에 부여.
+            main_prop_map = _extract_main_prop_handler_map(content or "")
             for cf in closure_obj.files:
                 try:
                     p = str(cf.abs_path)
@@ -1326,8 +1391,15 @@ def extract_screen_layouts(
                     continue
                 sub_events = _collect_popup_url_map(p)
                 for k, v in sub_events.items():
-                    if k not in url_map:
-                        url_map[k] = v
+                    if k in url_map:
+                        continue
+                    sub_handler = v.pop("_handler", "")  # internal 필드 제거
+                    if not v.get("urls") and sub_handler and main_prop_map:
+                        resolved = _resolve_props_callback_url(
+                            sub_handler, main_prop_map, url_map)
+                        if resolved:
+                            v = {**v, "urls": resolved}
+                    url_map[k] = v
 
         closure_md: Optional[str] = None
         if closure_llm:
