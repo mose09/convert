@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v34"  # v34: main entry sibling fallback — handlers_by_url 등록 sub file 의 parent/grandparent index.* 도 main 후보로 강제 추가
+SCREEN_SCHEMA_VERSION = "v35"  # v35: sibling fallback 가드 — sub_rel 이 index 면 그 자체가 main 이므로 wrapper 폴더 추가 안 함 (화면 두 개로 갈려 SEARCH URL 흡수 실패 케이스)
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1376,9 +1376,20 @@ def extract_screen_layouts(
     # index.* 도 main 후보로 추가. apps/ 레이아웃 외 단일 repo 의 임의
     # 폴더 구조 (예: src/MaterialMaster/index.js + src/MaterialMaster/
     # Search/index.js) 에서 _collect_main_entries 가 못 잡는 경우 cover.
+    #
+    # 가드 — sub_rel 자체가 ``X/index.*`` 형태면 그 자체가 main 후보이고
+    # by_file 에 이미 있음. 그 위 wrapper 폴더 (hypm_materialMaster/index.js
+    # 같은 lazy-loader / 래퍼) 까지 main 으로 추가하면 같은 화면이 두 개로
+    # 갈리고 wrapper 쪽 closure 에서는 handleSearch 정의 못 찾아 URL 흡수
+    # 실패. 사용자 보고: "루트에 있는건 SEARCH url 제외, 하위 폴더에 있는
+    # index.js 에 SEARCH url 만 표기" 케이스 fix.
     if main_added_force == 0:
         sibling_mains = set()
         for sub_rel in list(by_file.keys()):
+            basename = os.path.basename(sub_rel).rsplit(".", 1)[0].lower()
+            if basename == "index":
+                # sub_rel 자체가 main 후보 — wrapper 폴더 추가 회피
+                continue
             parent = os.path.dirname(sub_rel).replace(os.sep, "/")
             if not parent:
                 continue
@@ -1388,17 +1399,6 @@ def extract_screen_layouts(
                 if os.path.isfile(abs_cand) and cand not in by_file:
                     sibling_mains.add(cand)
                     break
-            # 한 단계 위 parent 도 시도 (e.g. sub_rel 이 MaterialMaster/
-            # Search/index.js 면 그 자체가 main 후보지만 그 부모 MaterialMaster
-            # /index.js 가 진짜 main).
-            grand = os.path.dirname(parent).replace(os.sep, "/")
-            if grand:
-                for ext in (".js", ".jsx", ".ts", ".tsx"):
-                    cand = f"{grand}/index{ext}"
-                    abs_cand = os.path.join(frontend_dir, cand)
-                    if os.path.isfile(abs_cand) and cand not in by_file:
-                        sibling_mains.add(cand)
-                        break
         for main_rel in sibling_mains:
             by_file[main_rel] = {}
             main_added_force += 1
