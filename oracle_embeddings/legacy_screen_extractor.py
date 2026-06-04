@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v29"  # v29: sub 컴포넌트의 handler body 안 직접 URL 호출 (postAxios(getBackendURL('BASE','/api/...'))) 도 흡수
+SCREEN_SCHEMA_VERSION = "v30"  # v30: prop name 'handle*' 도 callback 으로 인정 + main_handler 가 url_map 에 없으면 main content 의 정의 body 에서 직접 URL 추출
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1049,45 +1049,94 @@ _PROPS_CALLBACK_RE = re.compile(r"^(?:this\.props\.|props\.)?(\w+)$")
 
 def _extract_main_prop_handler_map(content: str) -> Dict[str, str]:
     """main file content 에서 JSX prop={handler} 매핑 추출 — sub 컴포넌트
-    의 props callback resolve 용."""
+    의 props callback resolve 용.
+
+    callback-like prop name: ``on*`` (onSearch / onClick), ``handle*``
+    (handleSearch — 한국 SI 흔한 패턴), 또는 정확히 ``handler`` /
+    ``callback``. 데이터 prop (value/style/columns/...) 은 제외하지만
+    ``handle*`` 도 인정해서 ``<MaterialMasterSearch handleSearch={this.
+    handleSearch}/>`` 같은 prop 명 통과.
+    """
     out: Dict[str, str] = {}
     for m in _JSX_PROP_HANDLER_RE.finditer(content or ""):
         prop_name = m.group(1)
         handler_name = m.group(2)
-        # 이벤트 prop (onX) + 일반 callback prop 만. value/style 등 데이터
-        # prop 제외 (handler_name 이 boolean/state 일 수 있음).
-        if not (prop_name.startswith("on") or prop_name in ("handler",
-                                                             "callback")):
+        if not (prop_name.startswith("on")
+                or prop_name.startswith("handle")
+                or prop_name in ("handler", "callback")):
             continue
         out.setdefault(prop_name, handler_name)
     return out
 
 
+def _resolve_main_handler_urls(main_content: str, main_handler: str
+                               ) -> List[str]:
+    """main file content 에서 main_handler 의 정의 body 안 URL 호출 추출.
+
+    main_handler 가 main 화면 자체의 trigger 가 아닌 (단순 prop 전달용
+    메소드) 경우 — url_map 에 entry 가 없어 매칭 실패. 이때 직접 main
+    content 에서 메소드 정의 위치 찾고 body 스캔 → URL.
+    """
+    if not main_content or not main_handler:
+        return []
+    try:
+        from .legacy_react_api_scanner import (
+            _locate_handler_start, _slice_function_body,
+            _build_call_regex, _DEFAULT_API_METHODS,
+        )
+    except Exception:
+        return []
+    start = _locate_handler_start(main_content, main_handler)
+    if start is None:
+        return []
+    body = _slice_function_body(main_content, start, max_len=8000)
+    call_re = _build_call_regex(list(_DEFAULT_API_METHODS))
+    if call_re is None:
+        return []
+    urls: List[str] = []
+    for m in call_re.finditer(body):
+        u = m.group("url") or m.group("burl")
+        if u:
+            urls.append(u)
+    seen: set = set()
+    return [u for u in urls if not (u in seen or seen.add(u))]
+
+
 def _resolve_props_callback_url(sub_handler: str,
                                 main_prop_map: Dict[str, str],
-                                main_url_map: Dict[str, Dict[str, Any]]
+                                main_url_map: Dict[str, Dict[str, Any]],
+                                main_content: str = ""
                                 ) -> List[str]:
-    """sub 컴포넌트의 handler 이름 (예: ``this.props.onSearch``) →
-    main 의 prop 전달 매핑으로 실제 main handler 찾고, main url_map 에서
-    그 handler 의 URL 가져옴. 매칭 못 하면 빈 list."""
+    """sub 컴포넌트의 handler 이름 (예: ``this.props.onSearch`` /
+    ``handleSearch`` destructured) → main prop 전달 매핑으로 실제 main
+    handler 찾고 URL 가져옴.
+
+    조회 순서:
+      1. main url_map (main 자체가 그 handler 를 trigger 로 사용 + URL 있음)
+      2. main_content 직접 스캔 (handler 정의 body 안 URL 호출) — main 이
+         prop 전달용으로만 정의한 메소드 케이스.
+    """
     if not sub_handler:
         return []
     m = _PROPS_CALLBACK_RE.match(sub_handler)
     if not m:
         return []
     prop_name = m.group(1)
-    # destructured 단순 식별자도 prop 이름과 동일하다고 가정 (한국 SI 흔)
     main_handler = main_prop_map.get(prop_name)
     if not main_handler:
         return []
-    # main url_map key 가 "[ev] label-or-handler" 형식. label 이 있으면
-    # handler 가 가려질 수 있어 endswith 매칭 — 정확도 우선.
+    # 1) url_map 에서 main_handler entry 찾기 (정확도 우선)
     for k, v in (main_url_map or {}).items():
         if isinstance(v, dict) and k.endswith(f"] {main_handler}"):
-            return list(v.get("urls") or [])
+            urls = list(v.get("urls") or [])
+            if urls:
+                return urls
         if isinstance(v, dict) and k == main_handler:
-            return list(v.get("urls") or [])
-    return []
+            urls = list(v.get("urls") or [])
+            if urls:
+                return urls
+    # 2) main content 에서 main_handler 정의 직접 스캔
+    return _resolve_main_handler_urls(main_content, main_handler)
 
 
 def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> ScreenLayout:
@@ -1400,7 +1449,8 @@ def extract_screen_layouts(
                     sub_handler = v.pop("_handler", "")  # internal 필드 제거
                     if not v.get("urls") and sub_handler and main_prop_map:
                         resolved = _resolve_props_callback_url(
-                            sub_handler, main_prop_map, url_map)
+                            sub_handler, main_prop_map, url_map,
+                            main_content=content or "")
                         if resolved:
                             v = {**v, "urls": resolved}
                     url_map[k] = v
