@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v31"  # v31: _locate_handler_start 에 useCallback/useMemo + this.X 패턴 추가, JSX prop 값 .bind(...) 패턴 인정
+SCREEN_SCHEMA_VERSION = "v32"  # v32: prop_map 매칭 실패해도 sub_handler 이름과 같은 main 정의 직접 스캔 (name-equality fallback). spread/inline arrow prop 전달 케이스 cover
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1118,6 +1118,11 @@ def _resolve_props_callback_url(sub_handler: str,
       1. main url_map (main 자체가 그 handler 를 trigger 로 사용 + URL 있음)
       2. main_content 직접 스캔 (handler 정의 body 안 URL 호출) — main 이
          prop 전달용으로만 정의한 메소드 케이스.
+      3. fallback — prop_map 매칭 실패 시 prop_name 자체와 같은 이름의
+         정의가 main 에 있으면 그 body 의 URL 사용. ``<Sub handleSearch=
+         {this.handleSearch}/>`` 처럼 prop name = main handler name 인 한국
+         SI 흔한 명명 규칙 + main 이 spread prop / inline arrow / 객체
+         묶음 같은 regex 미지원 형태로 prop 전달하는 케이스 모두 cover.
     """
     if not sub_handler:
         return []
@@ -1126,20 +1131,24 @@ def _resolve_props_callback_url(sub_handler: str,
         return []
     prop_name = m.group(1)
     main_handler = main_prop_map.get(prop_name)
-    if not main_handler:
-        return []
-    # 1) url_map 에서 main_handler entry 찾기 (정확도 우선)
-    for k, v in (main_url_map or {}).items():
-        if isinstance(v, dict) and k.endswith(f"] {main_handler}"):
-            urls = list(v.get("urls") or [])
-            if urls:
-                return urls
-        if isinstance(v, dict) and k == main_handler:
-            urls = list(v.get("urls") or [])
-            if urls:
-                return urls
-    # 2) main content 에서 main_handler 정의 직접 스캔
-    return _resolve_main_handler_urls(main_content, main_handler)
+    if main_handler:
+        # 1) url_map 에서 main_handler entry 찾기 (정확도 우선)
+        for k, v in (main_url_map or {}).items():
+            if isinstance(v, dict) and k.endswith(f"] {main_handler}"):
+                urls = list(v.get("urls") or [])
+                if urls:
+                    return urls
+            if isinstance(v, dict) and k == main_handler:
+                urls = list(v.get("urls") or [])
+                if urls:
+                    return urls
+        # 2) main content 에서 main_handler 정의 직접 스캔
+        urls = _resolve_main_handler_urls(main_content, main_handler)
+        if urls:
+            return urls
+    # 3) Name-equality fallback — prop_name 자체와 같은 이름의 정의가
+    # main 에 있으면 그 body 의 URL 사용. prop_map 못 만든 케이스 cover.
+    return _resolve_main_handler_urls(main_content, prop_name)
 
 
 def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> ScreenLayout:
@@ -1452,7 +1461,10 @@ def extract_screen_layouts(
                     if k in url_map:
                         continue
                     sub_handler = v.pop("_handler", "")  # internal 필드 제거
-                    if not v.get("urls") and sub_handler and main_prop_map:
+                    if not v.get("urls") and sub_handler:
+                        # main_prop_map 비어 있어도 name-equality fallback
+                        # 시도 — handleSearch 같은 prop 명이 main 의 같은
+                        # 이름 정의로 매칭되는 케이스.
                         resolved = _resolve_props_callback_url(
                             sub_handler, main_prop_map, url_map,
                             main_content=content or "")
