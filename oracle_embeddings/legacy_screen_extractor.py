@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v25"  # v25: popup 파일의 JSX 이벤트 (parent prop callback 포함) 를 url_map 으로 미리 채워 events 시트 emit
+SCREEN_SCHEMA_VERSION = "v26"  # v26: search/filter/criteria/condition 파일명 신호 컴포넌트도 popup 큐와 같이 별도 screen 으로 분석 — SEARCH 버튼 trigger 누락 fix
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1280,27 +1280,35 @@ def extract_screen_layouts(
             closure_max_depth, closure_token_budget,
         )
 
-        # closure 내 <Modal>/<Popup>/<Dialog>/<Drawer> 안의 컴포넌트 파일은
-        # 별도 popup 화면으로 큐에 추가. main 의 search panel 에서는 제외
-        # 되지만 (PR #286) 자체 분석은 누락되던 케이스 fix.
+        # closure 내 <Modal>/<Popup>/<Dialog>/<Drawer> 안의 컴포넌트 파일
+        # (popup) + 파일명/폴더명에 search/filter/criteria/condition 단어
+        # 가 있는 분리 import 컴포넌트 (search 영역) 는 별도 화면으로 큐
+        # 에 추가. main 화면의 events 에는 잡히지 않고 자체 backend URL
+        # 호출도 없는 (parent prop callback 만) SEARCH 버튼 trigger 등을
+        # emit. PR #290 (popup) + 후속 (search 영역) 통합.
         if closure_obj is not None:
             try:
-                from .screen_spec.extractors import find_popup_files_in_closure
-                for popup_abs in find_popup_files_in_closure(closure_obj):
+                from .screen_spec.extractors import (
+                    find_popup_files_in_closure,
+                    find_search_area_files_in_closure,
+                )
+                extra_abs = (find_popup_files_in_closure(closure_obj)
+                             | find_search_area_files_in_closure(closure_obj))
+                for sub_abs in extra_abs:
                     try:
-                        popup_rel = os.path.relpath(
-                            popup_abs, frontend_dir).replace(os.sep, "/")
+                        sub_rel = os.path.relpath(
+                            sub_abs, frontend_dir).replace(os.sep, "/")
                     except ValueError:
                         continue
-                    if popup_rel in files_seen:
+                    if sub_rel in files_seen:
                         continue
-                    files_seen.add(popup_rel)
-                    # popup 파일 안의 JSX 이벤트 (parent prop callback /
-                    # 로컬 핸들러) 를 url_map 으로 미리 채움. backend URL
-                    # 호출이 없어서 collect_handler_contexts 에 안 잡히는
-                    # 트리거도 events 시트에 emit.
-                    by_file[popup_rel] = _collect_popup_url_map(popup_abs)
-                    file_queue.append(popup_rel)
+                    files_seen.add(sub_rel)
+                    # 파일 안의 JSX 이벤트 (parent prop callback / 로컬
+                    # 핸들러) 를 url_map 으로 미리 채움 → backend URL 호출
+                    # 이 없어서 collect_handler_contexts 에 안 잡히는
+                    # 트리거 (popup 닫기, search SEARCH/RESET 등) emit.
+                    by_file[sub_rel] = _collect_popup_url_map(sub_abs)
+                    file_queue.append(sub_rel)
                     popup_added += 1
             except Exception as _e:
                 pass
