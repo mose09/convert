@@ -1457,6 +1457,22 @@ _FORM_ITEM_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 부모 wrapper 컴포넌트 — ``<SearchItemArea label="Area"><SearchBox
+# onChange={X}/></SearchItemArea>`` 처럼 wrapper 의 label 이 진짜 라벨이고
+# 안쪽 input 의 onChange 가 trigger 인 한국 SI 패턴. screen_spec/extractors
+# 의 DEFAULT_SEARCH_ITEM_COMPONENTS 와 동일 (모듈 의존 회피 위해 inline).
+_LABEL_WRAPPER_COMPONENTS = (
+    "Form.Item", "FormItem",
+    "SearchItem", "SearchItemArea", "SearchItemBox", "SearchField",
+    "SearchRow", "SearchCondition",
+    "FilterItem", "FilterItemArea", "FilterField",
+    "FormField", "FormRow",
+    "CriteriaItem", "ConditionItem",
+)
+_WRAPPER_OPEN_TAG_RE = re.compile(
+    r"<(" + "|".join(re.escape(c) for c in _LABEL_WRAPPER_COMPONENTS) + r")\b"
+)
+
 # 라벨 candidate 가 유의미한지 검사 — 한글/영문/숫자/언더스코어 중 하나라도
 # 포함하면 word char 있다고 판단. JSX expression 의 ``}`` / ``;`` 같은
 # 구두점만 있는 잔재 reject.
@@ -1560,17 +1576,27 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
     if m:
         return m.group(1).strip()
 
-    # 4) 부모 Form.Item label
+    # 4) 부모 wrapper label — ``<SearchItemArea label="Area"><SearchBox
+    # onChange={X}/></SearchItemArea>`` / ``<Form.Item label="...">`` 등.
+    # 가장 가까운 (=마지막) wrapper opening tag 가 아직 안 닫혔으면 그
+    # label="..." 추출.
     parent_window = content[max(0, tag_open - 800):tag_open]
-    last_form_item = parent_window.rfind("<Form.Item")
-    if last_form_item < 0:
-        last_form_item = parent_window.rfind("<FormItem")
-    if last_form_item >= 0:
-        between = parent_window[last_form_item:]
-        if "</Form.Item>" not in between and "</FormItem>" not in between:
-            m = _FORM_ITEM_LABEL_RE.search(between + content[tag_open:tag_open + 1])
-            if m:
-                return m.group(1).strip()
+    wrapper_matches = list(_WRAPPER_OPEN_TAG_RE.finditer(parent_window))
+    for wm in reversed(wrapper_matches):
+        comp_name = wm.group(1)
+        between = parent_window[wm.start():]
+        if f"</{comp_name}>" in between:
+            continue  # 이미 닫힌 wrapper — 부모 아님
+        # wrapper opening tag 의 ``>`` 위치
+        tag_end = parent_window.find(">", wm.end())
+        if tag_end < 0:
+            continue
+        wrapper_tag_text = parent_window[wm.start():tag_end + 1]
+        lm = _LABEL_PROP_RE.search(wrapper_tag_text)
+        if lm:
+            return lm.group(1).strip()
+        # label 없으면 더 바깥쪽 wrapper 시도 (중첩 wrapper 패턴 안전)
+        break
 
     # 5) 형제 ``<span className="...label...">텍스트</span>``
     nearby = content[max(0, tag_open - 600):tag_open]
