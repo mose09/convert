@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v32"  # v32: prop_map 매칭 실패해도 sub_handler 이름과 같은 main 정의 직접 스캔 (name-equality fallback). spread/inline arrow prop 전달 케이스 cover
+SCREEN_SCHEMA_VERSION = "v33"  # v33: main_entries 강제 enumerate — handlers_by_url 미등록 main (prop 전달용) 도 화면으로 분석해서 sub events 흡수 시점 확보
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1342,6 +1342,29 @@ def extract_screen_layouts(
     max_screens = max(1, min(max_screens, int(cfg.get("max_screens", 200))))
 
     by_file = _group_handlers_by_file(handlers_by_url)
+
+    # 강제 enumerate — main entries 중 handlers_by_url 에 안 잡힌 것도
+    # 화면 큐에 추가. main 자체가 backend URL 호출 없이 prop 전달용으로만
+    # 동작하면 handlers_by_url 에 entry 가 없어서 main 화면 자체가
+    # enumerate 누락. 한국 SI 흔: main 은 search/grid 분리 import + prop
+    # 전달만, 실제 API 호출은 sub 컴포넌트의 handler 안에 있음. main 을
+    # 큐에 추가하면 PR #293+ 의 sub events 흡수 로직이 SEARCH 등을 main
+    # 화면 events 시트에 emit.
+    main_added_force = 0
+    try:
+        from .legacy_react_api_scanner import _scan_dir, _collect_main_entries
+        all_files = _scan_dir(frontend_dir)
+        main_entries = _collect_main_entries(all_files, frontend_dir)
+        for main_rel in main_entries:
+            if main_rel not in by_file:
+                by_file[main_rel] = {}
+                main_added_force += 1
+    except Exception:
+        pass
+    if main_added_force:
+        print(f"  screen layout: +{main_added_force} main entry 강제 추가 "
+              f"(handlers_by_url 미등록)")
+
     if not by_file:
         print("  screen layout: handler 컨텍스트 0건 — skip")
         return {}
