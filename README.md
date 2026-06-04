@@ -18,6 +18,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
 | `grid-labels` | AG Grid `columnDefs` 의 `(field, headerName)` 페어 추출 (regex, deterministic) | X | X |
 | `morpheme` | 형태소분석 — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일 시트 xlsx + md 요약) | X | O |
+| `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (표준 단어사전/용어사전 Excel → SQLite 캐시, Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM) | X | 선택 |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
@@ -50,6 +51,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `output/erd/<날짜>/` | erd / erd-md / erd-group / erd-rag |
 | `output/terms/<날짜>/` | terms |
 | `output/morpheme/<날짜>/` | morpheme |
+| `output/recommend_names/<날짜>/` | recommend-names |
 | `output/standardize/<날짜>/` | standardize |
 | `output/sql_review/<날짜>/` | review-sql |
 | `output/naming_validation/<날짜>/` | validate-naming |
@@ -1629,6 +1631,72 @@ react:
 - 다른 파일에 정의된 `columns` const 는 closure 안에 있어야 해석 가능
 - 메시지가 `t('orderNo.required')` 같은 i18n key 면 key 만 추출
   (resolve 안 함)
+
+---
+
+### 16. TO-BE 속성명 추천 (recommend-names)
+
+AS-IS 스키마(`schema` 산출물 .md)의 컬럼을 **표준 단어사전 / 용어사전**
+기준으로 분석해 TO-BE 표준 물리명·도메인·데이터유형을 추천한다. 두 사전은
+Excel 로 받아 **SQLite 캐시**(`<vectordb>/standard_dict.sqlite`)로 1회
+데이터화하고, 원본 Excel 의 mtime 이 바뀌면 자동 재빌드한다.
+
+**사전 Excel 양식** (헤더 자동 인식 — 괄호 부가설명/공백 무시):
+
+- 단어사전: `논리명 / 물리명 / 물리의미(영문풀네임) / 표준여부 /
+  속성분류어 / 동의어 / 설명 / 만료일자 / 출처구분`
+- 용어사전: `논리명 / 물리명 / 구성정보 / 물리의미 / 도메인명 /
+  데이터유형 / 길이 / 소수점 / 표준여부 / 개인정보구분 / 암호화여부 /
+  설명 / 만료일자 / 출처구분`
+
+`표준여부=N` 및 `만료일자` 지난 항목은 정확매칭 인덱스에서 제외된다.
+
+**추천 4계층** (위에서 실패하면 다음 단계):
+
+1. **정확매칭(용어)** — 컬럼 코멘트(한글 논리명)를 용어사전 `논리명` 과
+   1:1 해시 조회 → 표준 `물리명` + 도메인 + 데이터유형. 코멘트가 없으면
+   AS-IS `물리명` 을 용어사전 물리명과 대조(이미표준).
+2. **단어조합** — 단어사전(+동의어)으로 코멘트/물리명을 최장일치 분해 →
+   각 단어의 영문약어를 `_` 로 조합. 마지막 **속성분류어**로 도메인·
+   데이터유형 추론.
+3. **RAG** — 위에서 미해결인 free-text 코멘트만 용어사전 임베딩에서
+   유사 표준용어 top-k 후보 검색.
+4. **LLM** — 미매칭 단편을 RAG 후보를 참고해 표준 물리명으로 추천.
+
+```powershell
+# 최초 — 두 사전 Excel 지정 (SQLite 캐시 + 임베딩 자동 생성)
+python main.py recommend-names ^
+  --schema-md ./output/schema/20260604/ASIS_schema.md ^
+  --word-dict ./input/단어사전.xlsx ^
+  --term-dict ./input/용어사전.xlsx
+
+# 이후 — 캐시 재사용 (사전 인자 생략 가능)
+python main.py recommend-names --schema-md ./output/schema/.../ASIS_schema.md
+
+# 결정적 사전매칭만 (LLM/RAG 미사용, 폐쇄망 빠른 검토)
+python main.py recommend-names --schema-md ... --no-rag --no-llm
+
+# 사전 강제 재빌드
+python main.py recommend-names --schema-md ... --word-dict ... --term-dict ... --rebuild-dict
+```
+
+**산출물** (`output/recommend_names/<날짜>/`):
+
+- `tobe_recommend_*.md` — 요약 + 추천 결과 표 + 미매칭 단어 목록
+- `tobe_recommend_*.xlsx` — `추천결과`(저신뢰·미매칭 색상 강조) /
+  `미매칭단어` / `요약` 3시트
+
+추천결과 컬럼: `테이블 / AS-IS 컬럼 / 코멘트 / 기준 / 분해 단어 /
+TO-BE 물리명 / 도메인 / 데이터유형 / 신뢰도 / 단계 / 비고`.
+
+| 옵션 | 설명 |
+| --- | --- |
+| `--word-dict` / `--term-dict` | 단어사전 / 용어사전 Excel (최초 1회 필수) |
+| `--dict-db` | SQLite 캐시 경로 (기본 `<vectordb>/standard_dict.sqlite`) |
+| `--rebuild-dict` | mtime 무관 캐시 강제 재빌드 |
+| `--no-rag` | Tier3 RAG 비활성 |
+| `--no-llm` | Tier4 LLM 비활성 (결정적 사전매칭만) |
+| `--top-k` | RAG 후보 개수 (기본 5) |
 
 ---
 
