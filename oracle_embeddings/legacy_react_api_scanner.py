@@ -1457,6 +1457,11 @@ _FORM_ITEM_LABEL_RE = re.compile(
     re.IGNORECASE,
 )
 
+# 라벨 candidate 가 유의미한지 검사 — 한글/영문/숫자/언더스코어 중 하나라도
+# 포함하면 word char 있다고 판단. JSX expression 의 ``}`` / ``;`` 같은
+# 구두점만 있는 잔재 reject.
+_HAS_WORD_CHAR_RE = re.compile(r"[\w가-힣]", re.UNICODE)
+
 
 def _extract_nested_label(content: str, after_open_tag: int, max_depth: int = 3) -> str:
     """Wrapper opening tag 직후부터 nested 자식 element 들의 leaf text 추출.
@@ -1481,7 +1486,11 @@ def _extract_nested_label(content: str, after_open_tag: int, max_depth: int = 3)
         if next_lt < 0 or next_lt - pos > 200:
             return ""
         between = content[pos:next_lt].strip()
-        if between and len(between) <= 40 and "{" not in between:
+        # 가드: ``{`` / ``}`` 둘 다 없고 워드 캐릭터 1개 이상
+        # (JSX expression 닫는 ``}`` 가 라벨로 잡히던 사용자 보고 fix).
+        if (between and len(between) <= 40
+                and "{" not in between and "}" not in between
+                and _HAS_WORD_CHAR_RE.search(between)):
             return between
         # closing tag (``</...>``) 만나면 inner 컨텐츠 끝 — 라벨 없음.
         if content[next_lt + 1:next_lt + 2] == "/":
@@ -1525,7 +1534,13 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
     next_lt = content.find("<", tag_close + 1)
     if 0 <= next_lt - tag_close <= 200:
         inner = content[tag_close + 1:next_lt].strip()
-        if inner and len(inner) <= 40 and "<" not in inner and "{" not in inner:
+        # 가드: ``{`` / ``}`` 둘 다 없어야 (suffix={<Icon onClick=.../>}
+        # 같이 JSX expression 닫는 ``}`` 가 라벨로 잡히던 사용자 보고 fix).
+        # + 최소 1 워드 캐릭터 (영문/한글/숫자) 필요 — 구두점만 있는 잔재
+        # (``;`` ``,`` ``,`` 등) reject.
+        if (inner and len(inner) <= 40
+                and "<" not in inner and "{" not in inner and "}" not in inner
+                and _HAS_WORD_CHAR_RE.search(inner)):
             return inner
         # 직속 children 이 nested tag (예: ``<Upload onFileUploaded=...>
         # <Button>Upload 생성</Button></Upload>``) — wrapper 컴포넌트에
