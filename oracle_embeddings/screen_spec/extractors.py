@@ -1042,6 +1042,78 @@ def _sibling_label_info(input_node, source: bytes) -> tuple[str, str]:
     return "", ""
 
 
+# Modal / Popup / Dialog / Drawer wrapper 키워드 — 이 wrapper 안에 직접
+# 또는 nested 로 들어간 컴포넌트는 popup 컨텐츠로 간주, search panel
+# 추출에서 제외.
+_POPUP_WRAPPER_KEYWORDS = ("modal", "popup", "dialog", "drawer", "popover")
+
+
+def _find_popup_content_files(closure, file_data) -> set:
+    """closure 내 Modal/Popup/Dialog/Drawer 안에 import 된 컴포넌트의
+    파일 경로 set. ``extract_form_fields`` 가 main 화면의 search panel
+    추출에서 그 파일들을 제외해서 popup 의 조회조건이 main 에 섞이는
+    걸 방지.
+
+    매칭 방식:
+    - JSX 에서 ``<Modal>...<X/></Modal>`` 또는 ``<Modal>...<wrap><X/></wrap>...</Modal>``
+      처럼 wrapper 안 어디든 capitalized 컴포넌트 X 가 있으면 X 를 popup
+      child 로 인정 (descendant walk).
+    - X 의 import 출처 파일을 closure.files 의 basename 매칭으로 찾음
+      (``X.jsx`` 또는 ``X/index.jsx`` 두 가지 패턴 인정).
+    """
+    excluded: set = set()
+    # closure files 의 basename → abs_path str 매핑 (X / X/index 모두)
+    from collections import defaultdict
+    basename_to_paths = defaultdict(list)
+    for f in closure.files:
+        try:
+            p = f.abs_path
+            stem = p.stem
+            if stem.lower() == "index":
+                # X/index.jsx → parent dir name 'X'
+                stem = p.parent.name
+            basename_to_paths[stem].append(str(p))
+        except Exception:
+            continue
+
+    for _f, tree, source, _c, _i in file_data:
+        if tree is None:
+            continue
+        for n in find_by_type(tree.root_node, "jsx_element"):
+            opening = next(
+                (c for c in n.children if c.type == "jsx_opening_element"),
+                None,
+            )
+            if opening is None:
+                continue
+            name_node = child_by_field(opening, "name")
+            if name_node is None:
+                continue
+            wrapper_name = text_of(name_node, source).strip().lower()
+            if not any(kw in wrapper_name for kw in _POPUP_WRAPPER_KEYWORDS):
+                continue
+            # wrapper 내 모든 descendant 의 capitalized 컴포넌트 식별
+            for desc in walk(n):
+                if desc is n:
+                    continue
+                if desc.type not in ("jsx_opening_element",
+                                     "jsx_self_closing_element"):
+                    continue
+                dnm = child_by_field(desc, "name")
+                if dnm is None:
+                    continue
+                inner_name = text_of(dnm, source).split(".")[-1].strip()
+                if not inner_name or not inner_name[0].isupper():
+                    continue
+                # popup wrapper 자기 자신은 skip
+                if any(kw in inner_name.lower()
+                       for kw in _POPUP_WRAPPER_KEYWORDS):
+                    continue
+                for path in basename_to_paths.get(inner_name, []):
+                    excluded.add(path)
+    return excluded
+
+
 def extract_form_fields(closure: ScreenClosure,
                         patterns: dict | None = None) -> list[FormField]:
     """모든 closure 파일을 훑어 입력 컴포넌트 → FormField 리스트.
@@ -1087,6 +1159,22 @@ def extract_form_fields(closure: ScreenClosure,
         if items:
             any_item = True
         file_data.append((f, tree, source, containers, items))
+
+    # Modal/Popup/Dialog/Drawer wrapper 안에 import 된 컴포넌트의 파일은
+    # popup 컨텐츠라 main 화면의 search panel 에서 제외. 사용자 보고:
+    # main index.js 가 ``<Modal><SearchSparePart/></Modal>`` 로 popup 검색
+    # 영역을 가지면 SearchSparePart 의 조회조건이 main search panel 에
+    # 섞이던 문제.
+    popup_content_files = _find_popup_content_files(closure, file_data)
+    if popup_content_files:
+        file_data = [
+            (f, t, s, c, i) for (f, t, s, c, i) in file_data
+            if str(f.abs_path) not in popup_content_files
+        ]
+        # any_container / any_item 도 재계산 (popup 만 container 가지고 있던
+        # edge case 방지)
+        any_container = any(c for _f, _t, _s, c, _i in file_data)
+        any_item = any(i for _f, _t, _s, _c, i in file_data)
 
     # closure 의 어느 파일 이름이라도 search/filter/criteria 키워드 포함
     # 하면 명시 container 없어도 search 영역으로 인정. user 보고: search
