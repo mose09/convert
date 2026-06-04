@@ -68,6 +68,18 @@ DEFAULT_SEARCH_ITEMS = (
     "search-row", "form-item", "form-row",
 )
 
+# 컴포넌트 이름 기반 search-item wrapper (한국 SI custom 패턴):
+# ``<SearchItemArea label="Area" required><SelectBox/></SearchItemArea>``
+# className 없이 컴포넌트 이름으로만 식별. label/required 가 prop 이고
+# input 은 children.
+DEFAULT_SEARCH_ITEM_COMPONENTS = (
+    "SearchItem", "SearchItemArea", "SearchItemBox", "SearchField",
+    "SearchRow", "SearchCondition",
+    "FilterItem", "FilterItemArea", "FilterField",
+    "FormItem", "FormField", "FormRow",
+    "CriteriaItem", "ConditionItem",
+)
+
 # 드롭다운 자식 Option 컴포넌트 이름
 DEFAULT_OPTION_COMPONENTS = ("Option", "MenuItem", "SelectOption", "OptGroup",
                               "option")
@@ -725,19 +737,38 @@ def _has_class_token(cls: str, tokens) -> bool:
     return any(t.lower() in parts for t in tokens)
 
 
-def _find_search_items(tree, source: bytes, item_class_tokens) -> list:
-    """``className`` 에 search-item / filter-item 토큰 포함된 jsx_element."""
+def _find_search_items(tree, source: bytes, item_class_tokens,
+                       item_components=None) -> list:
+    """``className`` 에 search-item 토큰 포함 OR tag name 이 custom item
+    component (예: ``<SearchItemArea>``) 인 jsx_element.
+
+    Custom component pattern (한국 SI 흔함): className 없이 ``<SearchItemArea
+    label="Area" required>`` 처럼 wrapper 컴포넌트로 search-item 을 구성.
+    label/required 가 prop, input 은 children.
+    """
+    item_components = set(item_components or ())
     out = []
+    seen_ids = set()
     for n in find_by_type(tree.root_node, "jsx_element"):
         opening = next((c for c in n.children if c.type == "jsx_opening_element"), None)
         if opening is None:
             continue
+        # className 토큰 매칭
         attrs = _jsx_attributes(opening, source)
         cls = attrs.get("className") or ""
-        if not cls:
+        if cls and _has_class_token(cls, item_class_tokens):
+            if id(n) not in seen_ids:
+                seen_ids.add(id(n))
+                out.append(n)
             continue
-        if _has_class_token(cls, item_class_tokens):
-            out.append(n)
+        # custom component name 매칭
+        if item_components:
+            name_node = child_by_field(opening, "name")
+            tag = text_of(name_node, source).strip() if name_node else ""
+            if tag in item_components:
+                if id(n) not in seen_ids:
+                    seen_ids.add(id(n))
+                    out.append(n)
     return out
 
 
@@ -773,9 +804,22 @@ def _find_label_in_item(item_node, source: bytes) -> tuple[str, str]:
 def _find_input_in_item(item_node, source: bytes):
     """search-item descendant 중 첫 대문자-시작 컴포넌트 (Button / 라벨 wrap
     제외). default input pattern 의존 없음 — Popover / Custom* 등 자동
-    흡수. Returns (element_node, tag) 또는 (None, "")."""
+    흡수. Returns (element_node, tag) 또는 (None, "").
+
+    custom item component (예: ``<SearchItemArea>``) 의 경우 item_node
+    자신의 opening_element 가 첫 descendant 가 되어 wrapper 가 input
+    으로 잘못 잡히는 버그 방지 — item_node 의 opening/closing 은 skip.
+    """
+    item_opening = None
+    item_closing = None
+    if item_node.type == "jsx_element":
+        for c in item_node.children:
+            if c.type == "jsx_opening_element" and item_opening is None:
+                item_opening = c
+            elif c.type == "jsx_closing_element":
+                item_closing = c
     for n in walk(item_node):
-        if n is item_node:
+        if n is item_node or n is item_opening or n is item_closing:
             continue
         if n.type not in ("jsx_opening_element", "jsx_self_closing_element"):
             continue
@@ -803,10 +847,23 @@ def _extract_field_from_item(item_node, source: bytes,
     """
     label_text, label_cls = _find_label_in_item(item_node, source)
     input_el, input_tag = _find_input_in_item(item_node, source)
-    if input_el is None and not label_text:
+    # wrapper (item_node 자체) 의 attrs — custom item component 패턴
+    # (예: ``<SearchItemArea label="Area" required>``) 에서 label/required
+    # 가 wrapper 의 prop 으로 들어옴. opening_element 에서 추출.
+    wrapper_attrs = {}
+    if item_node.type == "jsx_element":
+        wrapper_opening = next(
+            (c for c in item_node.children if c.type == "jsx_opening_element"),
+            None,
+        )
+        if wrapper_opening is not None:
+            wrapper_attrs = _jsx_attributes(wrapper_opening, source)
+    if input_el is None and not label_text and not wrapper_attrs.get("label"):
         return None
     attrs = _jsx_attributes(input_el, source) if input_el is not None else {}
     sibling_required = "required" in label_cls.split()
+    wrapper_required = (wrapper_attrs.get("required") == "true"
+                       or "required" in (wrapper_attrs.get("className") or "").lower().split())
     field_type = _classify_field_type(input_tag, attrs) if input_tag else ""
     options = (_extract_dropdown_options(input_el, source, option_comps)
                if input_el is not None else "")
@@ -814,15 +871,18 @@ def _extract_field_from_item(item_node, source: bytes,
                if input_tag else "")
     return FormField(
         order=order,
-        label=(label_text
+        label=(wrapper_attrs.get("label")   # custom wrapper prop 우선
+               or label_text
                or attrs.get("label")
                or attrs.get("placeholder")
                or attrs.get("title")
                or attrs.get("aria-label")
                or ""),
-        name=(attrs.get("id") or attrs.get("name") or attrs.get("field") or ""),
+        name=(attrs.get("id") or attrs.get("name") or attrs.get("field")
+              or wrapper_attrs.get("id") or wrapper_attrs.get("name") or ""),
         field_type=field_type,
-        required=(attrs.get("required") == "true"
+        required=(wrapper_required
+                  or attrs.get("required") == "true"
                   or "required" in (attrs.get("className") or "").lower().split()
                   or sibling_required),
         default=(attrs.get("defaultValue") or attrs.get("value") or ""),
@@ -999,6 +1059,8 @@ def extract_form_fields(closure: ScreenClosure,
     container_tokens = _comp_list(pat, "search_containers",
                                   DEFAULT_SEARCH_CONTAINERS)
     item_tokens = _comp_list(pat, "search_items", DEFAULT_SEARCH_ITEMS)
+    item_components = set(_comp_list(pat, "search_item_components",
+                                     DEFAULT_SEARCH_ITEM_COMPONENTS))
     option_comps = _comp_list(pat, "option_components",
                               DEFAULT_OPTION_COMPONENTS)
 
@@ -1014,7 +1076,8 @@ def extract_form_fields(closure: ScreenClosure,
         containers = _find_search_containers(tree, source, container_tokens)
         if containers:
             any_container = True
-        items_all = _find_search_items(tree, source, item_tokens)
+        items_all = _find_search_items(tree, source, item_tokens,
+                                       item_components=item_components)
         # container 가 있으면 그 안의 item 만 (다른 영역 form-item 제외)
         if containers:
             items = [i for i in items_all
