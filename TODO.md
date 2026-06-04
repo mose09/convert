@@ -102,6 +102,24 @@ _진행 중 없음_
 
 ## 5. terms — 용어사전 자동 생성
 
+### 진행 중: `recommend-names` — AS-IS 스키마 → TO-BE 속성명 추천
+
+표준 단어사전/용어사전(Excel)을 SQLite 로 데이터화하고, AS-IS 컬럼을
+Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM 으로 TO-BE
+표준 물리명·도메인·데이터유형 추천.
+
+- [x] `oracle_embeddings/std_dict.py` — Excel(단어/용어) → SQLite 캐시
+      (헤더 자동인식, 만료/표준여부 처리, mtime 재빌드) + 인메모리 인덱스
+- [x] `oracle_embeddings/tobe_recommender.py` — 4계층 추천 엔진
+      (결정적 코어는 임베딩/LLM 없이 독립 동작) + 용어사전 임베딩
+- [x] `oracle_embeddings/tobe_report.py` — Markdown + 3시트 Excel
+- [x] `main.py` — `recommend-names` subparser + `cmd_recommend_names()`
+- [x] 출력: `output/recommend_names/<YYYYMMDD>/tobe_recommend_*.{md,xlsx}`
+- [x] README §16 + 기능표/경로표 + docs_builder 매핑 + user_manual 재빌드
+- [ ] 사용자 실제 단어/용어사전 Excel 로 헤더 인식·매칭률 1차 검증
+
+---
+
 ### 진행 중: `grid-labels` — AG Grid 의 (field, headerName) 페어 추출 커맨드
 
 `analyze-legacy` / `screen-spec` 의 closure 기반 그리드 추출은 화면 단위.

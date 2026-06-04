@@ -1830,6 +1830,84 @@ def cmd_morpheme(args):
     )
 
 
+def cmd_recommend_names(args):
+    """recommend-names — AS-IS 스키마 → TO-BE 속성명 추천 (표준사전 + RAG/LLM)."""
+    import time as _t
+
+    from oracle_embeddings import tobe_recommender as tr
+    from oracle_embeddings.md_parser import parse_schema_md
+    from oracle_embeddings.std_dict import ensure_std_dict, needs_rebuild
+    from oracle_embeddings.tobe_report import (
+        save_recommend_excel,
+        save_recommend_markdown,
+    )
+
+    load_dotenv()
+    config = load_config(args.config)
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    output_dir = args.output or _build_dated_output_dir(base_output, "recommend_names")
+    db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
+    dict_db = args.dict_db or os.path.join(db_path, "standard_dict.sqlite")
+
+    print("=== Step 1: 표준사전 로드 ===")
+    print(f"  단어사전: {args.word_dict or '(미지정)'}")
+    print(f"  용어사전: {args.term_dict or '(미지정)'}")
+    will_build = args.rebuild_dict or needs_rebuild(dict_db, args.word_dict, args.term_dict)
+    try:
+        sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
+                             force=args.rebuild_dict)
+    except FileNotFoundError as e:
+        print(f"  Error: {e}")
+        return
+    print(f"  용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
+          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
+    if not sd.has_terms() and not sd.has_words():
+        print("  Error: 표준사전이 비어있습니다.")
+        return
+
+    use_rag = not args.no_rag
+    if use_rag and will_build:
+        print("\n=== Step 1b: 용어사전 임베딩 (RAG) ===")
+        try:
+            tr.embed_std_terms(sd, config, db_path)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [!] 임베딩 건너뜀 ({e}). RAG 없이 진행.")
+            use_rag = False
+
+    print("\n=== Step 2: AS-IS 스키마 파싱 ===")
+    schema = parse_schema_md(args.schema_md)
+    ncols = sum(len(t["columns"]) for t in schema["tables"])
+    print(f"  테이블 {len(schema['tables'])} / 컬럼 {ncols}")
+    if ncols == 0:
+        print("  Error: 컬럼이 없습니다. --schema-md 확인.")
+        return
+
+    print("\n=== Step 3: 결정적 추천 (Tier 1·2) ===")
+    start = _t.time()
+    recs, stats = tr.recommend_schema(schema, sd)
+    unresolved = sum(1 for r in recs if tr.needs_assist(r))
+    print(f"  정확매칭 {stats.tier1} / 이미표준 {stats.already_std} / "
+          f"단어조합 {stats.tier2} / 미해결 {unresolved}")
+
+    if not args.no_llm and unresolved:
+        print("\n=== Step 4: RAG + LLM 보조 ===")
+        try:
+            tr.assist_with_llm(recs, sd, config, use_rag, db_path,
+                               top_k=args.top_k, timeout=args.timeout)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [!] LLM 보조 건너뜀 ({e})")
+        stats = tr._collect_stats(recs)
+    stats.elapsed_sec = _t.time() - start
+
+    print("\n=== Step 5: 리포트 저장 ===")
+    md_path = save_recommend_markdown(recs, stats, output_dir)
+    xlsx_path = save_recommend_excel(recs, stats, output_dir)
+    print(f"\n  Markdown: {os.path.abspath(md_path)}")
+    print(f"  Excel:    {os.path.abspath(xlsx_path)}")
+    print(f"\n  Total {stats.total} / 정확 {stats.tier1} / 표준 {stats.already_std} / "
+          f"조합 {stats.tier2} / LLM {stats.tier_llm} / 미매칭 {stats.unmatched}")
+
+
 def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
                        patterns: dict | None, output_dir: str,
                        screens_root: str) -> int:
@@ -2769,6 +2847,52 @@ def main():
         help="출력 디렉토리 (기본: output/morpheme/<YYYYMMDD>/)",
     )
 
+    # recommend-names command
+    rec_parser = subparsers.add_parser(
+        "recommend-names",
+        help="AS-IS 스키마 → TO-BE 속성명 추천 (표준 단어사전/용어사전 기반 + RAG/LLM 보조)",
+    )
+    rec_parser.add_argument(
+        "--schema-md", required=True,
+        help="AS-IS 스키마 .md (schema 커맨드 산출물)",
+    )
+    rec_parser.add_argument(
+        "--word-dict",
+        help="단어사전 Excel (논리명/물리명/물리의미/표준여부/속성분류어/동의어 ...)",
+    )
+    rec_parser.add_argument(
+        "--term-dict",
+        help="용어사전 Excel (논리명/물리명/도메인명/데이터유형/길이/소수점 ...)",
+    )
+    rec_parser.add_argument(
+        "--dict-db",
+        help="표준사전 SQLite 캐시 경로 (기본: <vectordb>/standard_dict.sqlite)",
+    )
+    rec_parser.add_argument(
+        "--rebuild-dict", action="store_true",
+        help="Excel mtime 무관하게 SQLite 캐시 강제 재빌드",
+    )
+    rec_parser.add_argument(
+        "--no-rag", action="store_true",
+        help="Tier3 RAG(임베딩 후보검색) 비활성",
+    )
+    rec_parser.add_argument(
+        "--no-llm", action="store_true",
+        help="Tier4 LLM 보조 비활성 (결정적 사전매칭만)",
+    )
+    rec_parser.add_argument(
+        "--top-k", type=int, default=5,
+        help="RAG 후보 개수 (기본 5)",
+    )
+    rec_parser.add_argument(
+        "--timeout", type=int, default=120,
+        help="LLM 배치당 timeout 초 (기본 120)",
+    )
+    rec_parser.add_argument(
+        "--output",
+        help="출력 디렉토리 (기본: output/recommend_names/<YYYYMMDD>/)",
+    )
+
     # all command
     all_parser = subparsers.add_parser("all", help="Run schema + query + erd")
     all_parser.add_argument("mybatis_dir", help="Path to MyBatis mapper XML directory")
@@ -2832,6 +2956,8 @@ def main():
         cmd_validate_migration(args)
     elif args.command == "morpheme":
         cmd_morpheme(args)
+    elif args.command == "recommend-names":
+        cmd_recommend_names(args)
     elif args.command == "all":
         cmd_all(args)
     else:
