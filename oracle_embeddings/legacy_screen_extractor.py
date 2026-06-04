@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v26"  # v26: search/filter/criteria/condition 파일명 신호 컴포넌트도 popup 큐와 같이 별도 screen 으로 분석 — SEARCH 버튼 trigger 누락 fix
+SCREEN_SCHEMA_VERSION = "v27"  # v27: search 영역 등 비-popup 비-main 파일의 events 는 별도 분리 대신 main 의 events 에 흡수 — 사용자 의도 (popup 만 별도)
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1261,7 +1261,7 @@ def extract_screen_layouts(
     while qi < len(file_queue) and len(out) < max_screens:
         rel = file_queue[qi]
         qi += 1
-        url_map = by_file.get(rel, {})
+        url_map = dict(by_file.get(rel, {}))  # 흡수 머지 시 원본 미오염
         abs_fp = os.path.join(frontend_dir, rel)
         try:
             with open(abs_fp, "r", encoding="utf-8", errors="ignore") as f:
@@ -1280,38 +1280,54 @@ def extract_screen_layouts(
             closure_max_depth, closure_token_budget,
         )
 
-        # closure 내 <Modal>/<Popup>/<Dialog>/<Drawer> 안의 컴포넌트 파일
-        # (popup) + 파일명/폴더명에 search/filter/criteria/condition 단어
-        # 가 있는 분리 import 컴포넌트 (search 영역) 는 별도 화면으로 큐
-        # 에 추가. main 화면의 events 에는 잡히지 않고 자체 backend URL
-        # 호출도 없는 (parent prop callback 만) SEARCH 버튼 trigger 등을
-        # emit. PR #290 (popup) + 후속 (search 영역) 통합.
+        # closure 내 popup 컴포넌트 파일을 식별 → (1) main 의 search panel
+        # 에서 제외 (PR #286) (2) 별도 popup 화면으로 큐에 추가 (PR #290)
+        # (3) 비-popup 비-main 파일의 events 는 main 의 events 에 흡수
+        # (search 영역 등 — 사용자 의도: search/grid 같은 main 포함 영역은
+        # 별도 파일로 분리하지 말고 main 에 통합).
+        popup_abs_set: set = set()
         if closure_obj is not None:
             try:
                 from .screen_spec.extractors import (
                     find_popup_files_in_closure,
-                    find_search_area_files_in_closure,
                 )
-                extra_abs = (find_popup_files_in_closure(closure_obj)
-                             | find_search_area_files_in_closure(closure_obj))
-                for sub_abs in extra_abs:
-                    try:
-                        sub_rel = os.path.relpath(
-                            sub_abs, frontend_dir).replace(os.sep, "/")
-                    except ValueError:
-                        continue
-                    if sub_rel in files_seen:
-                        continue
-                    files_seen.add(sub_rel)
-                    # 파일 안의 JSX 이벤트 (parent prop callback / 로컬
-                    # 핸들러) 를 url_map 으로 미리 채움 → backend URL 호출
-                    # 이 없어서 collect_handler_contexts 에 안 잡히는
-                    # 트리거 (popup 닫기, search SEARCH/RESET 등) emit.
-                    by_file[sub_rel] = _collect_popup_url_map(sub_abs)
-                    file_queue.append(sub_rel)
-                    popup_added += 1
-            except Exception as _e:
-                pass
+                popup_abs_set = find_popup_files_in_closure(closure_obj)
+            except Exception:
+                popup_abs_set = set()
+
+            # popup 파일들은 별도 화면으로 큐에 추가 (자체 events 시트).
+            for popup_abs in popup_abs_set:
+                try:
+                    popup_rel = os.path.relpath(
+                        popup_abs, frontend_dir).replace(os.sep, "/")
+                except ValueError:
+                    continue
+                if popup_rel in files_seen:
+                    continue
+                files_seen.add(popup_rel)
+                by_file[popup_rel] = _collect_popup_url_map(popup_abs)
+                file_queue.append(popup_rel)
+                popup_added += 1
+
+            # closure 내 비-popup 비-main 파일 (= search/grid 영역 등 main
+            # 화면에 포함된 분리 import 컴포넌트) 의 JSX 이벤트를 main 의
+            # url_map 에 흡수. main events 시트에 SEARCH/RESET 등 parent
+            # callback trigger 도 emit 되도록.
+            try:
+                main_abs = str(closure_obj.entry_file)
+            except Exception:
+                main_abs = ""
+            for cf in closure_obj.files:
+                try:
+                    p = str(cf.abs_path)
+                except Exception:
+                    continue
+                if not p or p == main_abs or p in popup_abs_set:
+                    continue
+                sub_events = _collect_popup_url_map(p)
+                for k, v in sub_events.items():
+                    if k not in url_map:
+                        url_map[k] = v
 
         closure_md: Optional[str] = None
         if closure_llm:
