@@ -2932,6 +2932,59 @@ def _build_narrative_enrich_prompt(batch: list[tuple]) -> str:
     return "\n".join(lines)
 
 
+def collect_file_local_event_urls(content: str) -> list[dict]:
+    """파일 한 개의 JSX 이벤트 + 각 이벤트의 handler body 안 URL 호출 추출.
+
+    `collect_event_handlers` 결과에 ``urls`` 필드 추가. chain follow / URL
+    const map / saga 인덱스 등 무거운 cross-file 인프라 없이 단일 파일
+    스코프만 — best-effort. inline literal URL + ``getBackendUrl('BASE',
+    '/api/...')`` 같은 builder 호출 패턴 모두 지원 (call_re 의 builder
+    분기).
+
+    한국 SI 흔한 패턴 (사용자 보고)::
+
+        handleSearch = () => {
+            postAxios(getBackendURL('BASE', '/api/.../materialMasterSearch'),
+                      param);
+        }
+
+    `collect_handler_contexts` 의 api_idx 기반 enumeration 과 다른 경로:
+    이 헬퍼는 main 화면 흡수 시점에 closure 의 sub 컴포넌트 파일에 대해
+    호출 — popup 큐 / sub-events 흡수 양쪽에서 URL 보강.
+    """
+    methods = list(_DEFAULT_API_METHODS)
+    call_re = _build_call_regex(methods)
+    events = collect_event_handlers(content) or []
+    if call_re is None:
+        for ev in events:
+            ev["urls"] = []
+        return events
+    for ev in events:
+        # 이벤트의 body — useEffect / componentDidMount 는 이미 채워짐.
+        # JSX 이벤트는 body 빈 → handler 정의 / inline arrow 찾아 슬라이스.
+        body = ev.get("body") or ""
+        handler = ev.get("handler") or ""
+        source_offset = ev.get("source_offset", -1)
+        if not body and handler:
+            inline = _extract_inline_arrow_body(content, source_offset, handler)
+            if inline:
+                body = inline
+            else:
+                start = _locate_handler_start(content, handler)
+                if start is not None:
+                    body = _slice_function_body(content, start, max_len=8000)
+        urls: list[str] = []
+        if body:
+            for m in call_re.finditer(body):
+                u = m.group("url") or m.group("burl")
+                if u:
+                    urls.append(u)
+        # dedup 순서 유지
+        seen: set[str] = set()
+        ev["urls"] = [u for u in urls if not (u in seen or seen.add(u))]
+    return events
+
+
 def enrich_narratives_with_llm(handlers_by_url: dict,
                                config: dict | None = None,
                                batch_size: int = 8) -> int:

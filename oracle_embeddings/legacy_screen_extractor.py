@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v28"  # v28: sub 컴포넌트 props callback (this.props.onSearch) → main 의 prop→handler 매핑으로 resolve 후 URL 흡수
+SCREEN_SCHEMA_VERSION = "v29"  # v29: sub 컴포넌트의 handler body 안 직접 URL 호출 (postAxios(getBackendURL('BASE','/api/...'))) 도 흡수
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1007,7 +1007,7 @@ def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
     """
     try:
         from .legacy_react_api_scanner import (
-            collect_event_handlers, _strip_comments
+            collect_file_local_event_urls, _strip_comments
         )
     except Exception:
         return {}
@@ -1017,7 +1017,11 @@ def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
     except Exception:
         return {}
     out: Dict[str, Dict[str, Any]] = {}
-    for ev in collect_event_handlers(content):
+    # collect_file_local_event_urls 가 각 이벤트의 handler body 안 URL 호출
+    # (postAxios(getBackendURL('BASE', '/api/...'), ...) 같은 builder 패턴
+    # 포함) 까지 추출 → 한국 SI 흔한 self-contained search 컴포넌트의 URL
+    # 도 흡수.
+    for ev in collect_file_local_event_urls(content):
         event_name = ev.get("event") or ""
         handler = ev.get("handler") or ""
         label = ev.get("label") or ""
@@ -1026,7 +1030,7 @@ def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
         if full_handler in out:
             continue
         out[full_handler] = {
-            "urls": [],
+            "urls": list(ev.get("urls") or []),
             "source_offset": ev.get("source_offset", -1),
             "narrative": "",
             "_handler": handler,
