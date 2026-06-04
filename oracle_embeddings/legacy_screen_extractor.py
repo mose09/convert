@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v23"  # v23: tabs 에서 Modal/Popup/Dialog/Drawer 컨텐츠 제외 (prompt + 후처리 필터) — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v24"  # v24: <Modal> 안 popup-content 파일을 별도 screen 으로 큐에 추가 — main 에서 빠진 popup 분석 누락 fix
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1203,6 +1203,8 @@ def extract_screen_layouts(
     parser_grids_total = 0
     parser_screens = 0
     empty_screens = 0
+    popup_added = 0
+    files_seen: set = set(files)
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
     sample_image = _find_flowchart_sample()
@@ -1213,8 +1215,15 @@ def extract_screen_layouts(
         print(f"  closure_llm=ON (max_depth={closure_max_depth}, "
               f"token_budget={closure_token_budget})")
 
-    for rel in files:
-        url_map = by_file[rel]
+    # 큐 기반 — main file 처리 중 발견되는 popup-content 파일을 큐 끝에
+    # 추가해서 별도 화면으로 분석 (메인의 search panel 에서는 제외되지만
+    # 별도 분석은 누락되던 사용자 보고 fix).
+    file_queue = list(files)
+    qi = 0
+    while qi < len(file_queue) and len(out) < max_screens:
+        rel = file_queue[qi]
+        qi += 1
+        url_map = by_file.get(rel, {})
         abs_fp = os.path.join(frontend_dir, rel)
         try:
             with open(abs_fp, "r", encoding="utf-8", errors="ignore") as f:
@@ -1232,6 +1241,28 @@ def extract_screen_layouts(
             rel, abs_fp, frontend_dir, patterns or {},
             closure_max_depth, closure_token_budget,
         )
+
+        # closure 내 <Modal>/<Popup>/<Dialog>/<Drawer> 안의 컴포넌트 파일은
+        # 별도 popup 화면으로 큐에 추가. main 의 search panel 에서는 제외
+        # 되지만 (PR #286) 자체 분석은 누락되던 케이스 fix.
+        if closure_obj is not None:
+            try:
+                from .screen_spec.extractors import find_popup_files_in_closure
+                for popup_abs in find_popup_files_in_closure(closure_obj):
+                    try:
+                        popup_rel = os.path.relpath(
+                            popup_abs, frontend_dir).replace(os.sep, "/")
+                    except ValueError:
+                        continue
+                    if popup_rel in files_seen:
+                        continue
+                    files_seen.add(popup_rel)
+                    by_file[popup_rel] = {}  # URL handler 없음
+                    file_queue.append(popup_rel)
+                    popup_added += 1
+            except Exception as _e:
+                pass
+
         closure_md: Optional[str] = None
         if closure_llm:
             closure_md = _serialize_closure_md(closure_obj)
@@ -1344,9 +1375,10 @@ def extract_screen_layouts(
         if parser_screens else ""
     )
     empty_stats = f", empty={empty_screens}" if empty_screens else ""
+    popup_stats = f", popup_added={popup_added}" if popup_added else ""
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
           f"fallback={fallback_calls}, total={len(out)}"
-          f"{closure_stats}{parser_stats}{empty_stats}")
+          f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}")
     return out
 
 
