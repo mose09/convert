@@ -1545,26 +1545,32 @@ def _extract_event_label(content: str, ev_start: int, ev_end: int) -> str:
     if tag_close < 0 or tag_close - ev_end > 600:
         return ""
     tag_text = content[tag_open:tag_close + 1]
+    # self-closing (``<Input ... />``) 면 children / nested 탐색 skip —
+    # 다음 형제 ``<Button>검색</Button>`` 의 텍스트가 라벨로 잘못 잡히던
+    # 사용자 보고 (popup 파일의 Input onChange 가 형제 Button 의 '검색'
+    # 으로 잡힘) fix.
+    is_self_closing = tag_text.rstrip().endswith("/>")
 
-    # 1) children 텍스트 (가시 라벨 — 가장 신뢰)
-    next_lt = content.find("<", tag_close + 1)
-    if 0 <= next_lt - tag_close <= 200:
-        inner = content[tag_close + 1:next_lt].strip()
-        # 가드: ``{`` / ``}`` 둘 다 없어야 (suffix={<Icon onClick=.../>}
-        # 같이 JSX expression 닫는 ``}`` 가 라벨로 잡히던 사용자 보고 fix).
-        # + 최소 1 워드 캐릭터 (영문/한글/숫자) 필요 — 구두점만 있는 잔재
-        # (``;`` ``,`` ``,`` 등) reject.
-        if (inner and len(inner) <= 40
-                and "<" not in inner and "{" not in inner and "}" not in inner
-                and _HAS_WORD_CHAR_RE.search(inner)):
-            return inner
-        # 직속 children 이 nested tag (예: ``<Upload onFileUploaded=...>
-        # <Button>Upload 생성</Button></Upload>``) — wrapper 컴포넌트에
-        # event 가 달리고 안에 실제 Button 이 들어가는 한국 SI 흔한 패턴.
-        # 안으로 3 depth 까지 들어가서 leaf children 텍스트 찾기.
-        nested = _extract_nested_label(content, tag_close + 1, max_depth=3)
-        if nested:
-            return nested
+    # 1) children 텍스트 (가시 라벨 — 가장 신뢰). self-closing 은 스킵.
+    if not is_self_closing:
+        next_lt = content.find("<", tag_close + 1)
+        if 0 <= next_lt - tag_close <= 200:
+            inner = content[tag_close + 1:next_lt].strip()
+            # 가드: ``{`` / ``}`` 둘 다 없어야 (suffix={<Icon onClick=.../>}
+            # 같이 JSX expression 닫는 ``}`` 가 라벨로 잡히던 사용자 보고
+            # fix). + 최소 1 워드 캐릭터 (영문/한글/숫자) 필요 — 구두점만
+            # 있는 잔재 (``;`` ``,`` ``,`` 등) reject.
+            if (inner and len(inner) <= 40
+                    and "<" not in inner and "{" not in inner and "}" not in inner
+                    and _HAS_WORD_CHAR_RE.search(inner)):
+                return inner
+            # 직속 children 이 nested tag (예: ``<Upload onFileUploaded=...>
+            # <Button>Upload 생성</Button></Upload>``) — wrapper 컴포넌트에
+            # event 가 달리고 안에 실제 Button 이 들어가는 한국 SI 흔한 패턴.
+            # 안으로 3 depth 까지 들어가서 leaf children 텍스트 찾기.
+            nested = _extract_nested_label(content, tag_close + 1, max_depth=3)
+            if nested:
+                return nested
 
     # 2) aria-label / name (의미 있는 prop)
     m = _VALUE_PROP_RE.search(tag_text)

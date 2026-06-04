@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v24"  # v24: <Modal> 안 popup-content 파일을 별도 screen 으로 큐에 추가 — main 에서 빠진 popup 분석 누락 fix
+SCREEN_SCHEMA_VERSION = "v25"  # v25: popup 파일의 JSX 이벤트 (parent prop callback 포함) 를 url_map 으로 미리 채워 events 시트 emit
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -991,6 +991,44 @@ def _merge_trigger_llm_into_layout(layout: "ScreenLayout",
 # ── Fallback (LLM 없을 때) — 정적 분석 결과만 가지고 events 만 채움 ──
 
 
+def _collect_popup_url_map(popup_abs_path: str) -> Dict[str, Dict[str, Any]]:
+    """popup 파일의 JSX 이벤트 (onClick / onChange / onSubmit / ...) 를
+    `{handler_label: {urls, source_offset, narrative}}` 형식으로 추출.
+
+    backend URL 호출이 없거나 props callback (예: ``onClick={this.props.
+    onSearch}``) 만 호출하는 popup 파일은 collect_handler_contexts 의
+    api_idx 기반 enumeration 에 안 잡혀서 events 가 비어 있는 케이스 fix.
+    url 무관 sentinel (빈 list) 로 등록 → `_fallback_layout` 이 URL 없는
+    1 row 로 emit.
+    """
+    try:
+        from .legacy_react_api_scanner import (
+            collect_event_handlers, _strip_comments
+        )
+    except Exception:
+        return {}
+    try:
+        with open(popup_abs_path, "r", encoding="utf-8", errors="ignore") as fh:
+            content = _strip_comments(fh.read())
+    except Exception:
+        return {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for ev in collect_event_handlers(content):
+        event_name = ev.get("event") or ""
+        handler = ev.get("handler") or ""
+        label = ev.get("label") or ""
+        tag = label or handler or "<inline>"
+        full_handler = f"[{event_name}] {tag}" if event_name else tag
+        if full_handler in out:
+            continue
+        out[full_handler] = {
+            "urls": [],
+            "source_offset": ev.get("source_offset", -1),
+            "narrative": "",
+        }
+    return out
+
+
 def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> ScreenLayout:
     events: List[ScreenEvent] = []
     for handler, entry in url_map.items():
@@ -1257,7 +1295,11 @@ def extract_screen_layouts(
                     if popup_rel in files_seen:
                         continue
                     files_seen.add(popup_rel)
-                    by_file[popup_rel] = {}  # URL handler 없음
+                    # popup 파일 안의 JSX 이벤트 (parent prop callback /
+                    # 로컬 핸들러) 를 url_map 으로 미리 채움. backend URL
+                    # 호출이 없어서 collect_handler_contexts 에 안 잡히는
+                    # 트리거도 events 시트에 emit.
+                    by_file[popup_rel] = _collect_popup_url_map(popup_abs)
                     file_queue.append(popup_rel)
                     popup_added += 1
             except Exception as _e:
