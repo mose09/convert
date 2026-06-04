@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v33"  # v33: main_entries 강제 enumerate — handlers_by_url 미등록 main (prop 전달용) 도 화면으로 분석해서 sub events 흡수 시점 확보
+SCREEN_SCHEMA_VERSION = "v34"  # v34: main entry sibling fallback — handlers_by_url 등록 sub file 의 parent/grandparent index.* 도 main 후보로 강제 추가
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1351,19 +1351,66 @@ def extract_screen_layouts(
     # 큐에 추가하면 PR #293+ 의 sub events 흡수 로직이 SEARCH 등을 main
     # 화면 events 시트에 emit.
     main_added_force = 0
+    _diag_n_all = 0
+    _diag_n_index = 0
+    _diag_n_main_entries = 0
     try:
         from .legacy_react_api_scanner import _scan_dir, _collect_main_entries
         all_files = _scan_dir(frontend_dir)
+        _diag_n_all = len(all_files)
+        _diag_n_index = sum(
+            1 for f in all_files
+            if os.path.basename(f).rsplit(".", 1)[0].lower() == "index"
+        )
         main_entries = _collect_main_entries(all_files, frontend_dir)
+        _diag_n_main_entries = len(main_entries)
         for main_rel in main_entries:
             if main_rel not in by_file:
                 by_file[main_rel] = {}
                 main_added_force += 1
-    except Exception:
-        pass
+    except Exception as _e:
+        print(f"  screen layout: main entry 강제추가 실패 — {_e}")
+
+    # Fallback — _collect_main_entries 가 0 이거나 모두 by_file 에 있는
+    # 경우: handlers_by_url 에 등록된 sub file 의 직속 parent 폴더 안
+    # index.* 도 main 후보로 추가. apps/ 레이아웃 외 단일 repo 의 임의
+    # 폴더 구조 (예: src/MaterialMaster/index.js + src/MaterialMaster/
+    # Search/index.js) 에서 _collect_main_entries 가 못 잡는 경우 cover.
+    if main_added_force == 0:
+        sibling_mains = set()
+        for sub_rel in list(by_file.keys()):
+            parent = os.path.dirname(sub_rel).replace(os.sep, "/")
+            if not parent:
+                continue
+            for ext in (".js", ".jsx", ".ts", ".tsx"):
+                cand = f"{parent}/index{ext}"
+                abs_cand = os.path.join(frontend_dir, cand)
+                if os.path.isfile(abs_cand) and cand not in by_file:
+                    sibling_mains.add(cand)
+                    break
+            # 한 단계 위 parent 도 시도 (e.g. sub_rel 이 MaterialMaster/
+            # Search/index.js 면 그 자체가 main 후보지만 그 부모 MaterialMaster
+            # /index.js 가 진짜 main).
+            grand = os.path.dirname(parent).replace(os.sep, "/")
+            if grand:
+                for ext in (".js", ".jsx", ".ts", ".tsx"):
+                    cand = f"{grand}/index{ext}"
+                    abs_cand = os.path.join(frontend_dir, cand)
+                    if os.path.isfile(abs_cand) and cand not in by_file:
+                        sibling_mains.add(cand)
+                        break
+        for main_rel in sibling_mains:
+            by_file[main_rel] = {}
+            main_added_force += 1
+
     if main_added_force:
         print(f"  screen layout: +{main_added_force} main entry 강제 추가 "
               f"(handlers_by_url 미등록)")
+    else:
+        # 0 일 때 진단 한 줄 — 어디서 막혔는지 사용자가 알려줄 수 있게
+        print(f"  screen layout: main entry 강제추가 0건 진단 — "
+              f"all_files={_diag_n_all}, index.*={_diag_n_index}, "
+              f"main_entries={_diag_n_main_entries}, by_file={len(by_file)}")
 
     if not by_file:
         print("  screen layout: handler 컨텍스트 0건 — skip")
