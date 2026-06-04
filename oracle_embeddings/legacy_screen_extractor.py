@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v22"  # v22: <Modal><X/></Modal> 안 컴포넌트 (X) 의 파일은 popup 컨텐츠로 간주, main search panel 에서 제외 — 캐시 무효화
+SCREEN_SCHEMA_VERSION = "v23"  # v23: tabs 에서 Modal/Popup/Dialog/Drawer 컨텐츠 제외 (prompt + 후처리 필터) — 캐시 무효화
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -281,6 +281,10 @@ React 코드 텍스트만 보고 추출.
     {"label": "...", "component": "...", "default": "...", "options": "..."}
   ],
   "tabs": ["탭1", "탭2", ...],
+  // tabs 규칙: <Tabs><Tab/></Tabs> / <TabList><Tab/></TabList> /
+  // <TabPanel> 처럼 **명시적 탭 컴포넌트** 의 각 panel label 만. Modal /
+  // Popup / Dialog / Drawer 안의 화면은 별도 popup 이라 탭 아님 — 제외.
+  // 탭이 없으면 빈 리스트.
   "flowchart_mermaid": "사용자 액션 흐름 Mermaid flowchart TB 코드. 예시:\nflowchart TB\n    Start((화면 진입)) --> Init[초기 데이터 로드]\n    Init --> Display[그리드 표시]\n    Display --> Search{조회 클릭}\n    Search --> Update[그리드 갱신]\n    Display --> Detail{행 더블클릭}\n    Detail --> Popup[상세 popup 열림]\nMermaid v11 호환 규칙: (a) 라벨에 ``()`` / ``[]`` / ``/`` / ``:`` / ``=`` 등 특수문자 들어가면 반드시 double quote 로 감싸기. 예: Save[\"저장(POST)\"] / Cond{\"조회 N건\"} / Clear[\"초기화(targetKeys = [])\"]. (b) 노드 ID 는 영문/숫자/언더스코어만 (한글 ID 금지), 예약어 ``end`` / ``class`` / ``subgraph`` / ``style`` 사용 금지. (c) 라벨 안 nested ``[ ]`` / ``( )`` 두 단계 이상 nesting 은 피하고 평탄화 — nested 가 꼭 필요하면 라벨 전체 double quote. (d) 백엔드 URL 표시 X (events 표에 별도). 사용자 인터랙션 흐름만. (e) ``%%{init}%%`` 테마 directive 넣지 마. (f) 코드만 (```mermaid 펜스 X).",
   "summary": "1-2 줄 화면 설명"
 }
@@ -1026,6 +1030,24 @@ def _fallback_layout(file_rel: str, url_map: Dict[str, Dict[str, Any]]) -> Scree
     )
 
 
+# Modal/Popup/Dialog/Drawer 단어가 들어간 항목은 tab 이 아니라 별도 popup
+# 화면 — LLM 이 종종 "상세팝업" 같은 modal title 을 탭으로 잘못 포함시키는
+# 케이스 필터. screen_spec.extractors._POPUP_WRAPPER_KEYWORDS 와 동일.
+_TAB_POPUP_KEYWORDS = ("modal", "popup", "dialog", "drawer", "popover", "팝업")
+
+
+def _filter_popup_tabs(raw_tabs) -> List[str]:
+    out: List[str] = []
+    for t in raw_tabs:
+        s = str(t).strip()
+        if not s:
+            continue
+        if any(kw in s.lower() for kw in _TAB_POPUP_KEYWORDS):
+            continue
+        out.append(s)
+    return out
+
+
 def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
     def _fields(key: str) -> List[ScreenField]:
         out = []
@@ -1082,7 +1104,7 @@ def _parse_layout_dict(file_rel: str, data: Dict[str, Any]) -> ScreenLayout:
         search_panel=_fields("search_panel"),
         data_table_columns=cols,
         edit_mode_fields=_fields("edit_mode_fields"),
-        tabs=[str(t) for t in (data.get("tabs") or [])],
+        tabs=_filter_popup_tabs(data.get("tabs") or []),
         events=events,
         flowchart_mermaid=str(data.get("flowchart_mermaid", "")),
         summary=str(data.get("summary", "")),
