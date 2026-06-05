@@ -40,7 +40,7 @@
 | `erd` / `erd-md` / `erd-group` / `erd-rag` | Mermaid + 인터랙티브 HTML ERD | 선택 | X |
 | `terms` | 스키마 + React 소스에서 용어사전 | O | X |
 | `morpheme` | 속성명 형태소분석 | O | X |
-| `build-dict` | 단어/용어사전 Excel → SQLite 적재 (기존 삭제 후 재적재). 적재 1회 후 recommend-names 는 무인자 수행 | 선택 | X |
+| `build-dict` | 단어/용어/도메인사전 Excel → SQLite 적재 (기존 삭제 후 재적재). 적재 1회 후 recommend-names 는 무인자 수행 | 선택 | X |
 | `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (적재된 SQLite 표준사전, 정확매칭→단어조합→RAG→LLM 4계층) | 선택 | X |
 | `standardize` | 표준화 리포트 (8섹션) | 선택 | 선택 |
 | `review-sql` | SQL 안티패턴 + LLM 개선안 | 선택 | X |

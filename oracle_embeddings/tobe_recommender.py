@@ -115,8 +115,8 @@ def tokenize_korean(comment: str, sd: StdDict) -> list[TokenMatch]:
             if pending:
                 flush()
             L, logical = hit
-            wr = sd.word_by_logical.get(logical)
-            abbr = wr.physical if wr else ""
+            # 표준여부 N 단어도 물리명이 있으면 사용 (logical_to_abbr 는 전 단어 포함)
+            abbr = sd.logical_to_abbr.get(logical, "")
             via = "word" if text[i:i + L] == norm_kor(logical) else "synonym"
             tokens.append(TokenMatch(frag=text[i:i + L], logical=logical,
                                      abbr=abbr, matched=True, via=via))
@@ -135,15 +135,33 @@ def tokenize_korean(comment: str, sd: StdDict) -> list[TokenMatch]:
 # ─────────────────────────────────────────────────────────────────
 
 def _infer_domain_type(tokens: list[TokenMatch], sd: StdDict) -> tuple[str, str]:
-    """마지막 분류어 토큰으로 (도메인, 데이터유형) 추론."""
+    """마지막 분류어 토큰으로 (도메인, 데이터유형) 추론.
+
+    도메인명이 도메인사전에 있으면 그 권위 데이터유형으로 보정.
+    """
     for t in reversed(tokens):
         if t.logical and t.logical in sd.classifier_type:
-            return sd.classifier_type[t.logical]
+            domain, dtype = sd.classifier_type[t.logical]
+            if domain:
+                dt2, _single = sd.resolve_domain_type(domain)
+                if dt2:
+                    dtype = dt2
+            return domain, dtype
     return ("", "")
 
 
 def _compose_name(tokens: list[TokenMatch]) -> str:
-    parts = [t.abbr or t.frag.upper() for t in tokens if (t.abbr or t.frag)]
+    """매칭 토큰은 표준 약어로, 미매칭 단편은 «...» 로 감싸 표준 아님을 명시.
+
+    미매칭 한글 단편을 물리명에 그대로 흘려 넣으면 'TO-BE 물리명에 한글'
+    처럼 보이므로, 표준화 안 된 부분임이 한눈에 보이게 마커로 감싼다.
+    """
+    parts = []
+    for t in tokens:
+        if t.abbr:
+            parts.append(t.abbr)
+        elif t.frag:
+            parts.append(f"«{t.frag.upper()}»")
     return "_".join(p for p in parts if p)
 
 
@@ -173,13 +191,13 @@ def _apply_term(rec: ColumnRec, tr: TermRow, tier: str, note: str) -> ColumnRec:
     return rec
 
 
-def _from_comment(rec: ColumnRec, sd: StdDict) -> ColumnRec:
-    norm = norm_kor(rec.comment)
+def _from_comment(rec: ColumnRec, sd: StdDict, cleaned: str) -> ColumnRec:
+    norm = norm_kor(cleaned)
     tr = sd.term_by_logical.get(norm)
     if tr:
         return _apply_term(rec, tr, "정확매칭(용어)", "용어사전 논리명 1:1 매칭")
     # 단어조합
-    rec.tokens = tokenize_korean(rec.comment, sd)
+    rec.tokens = tokenize_korean(cleaned, sd)
     rec.tobe_name = _compose_name(rec.tokens)
     rec.domain, rec.data_type = _infer_domain_type(rec.tokens, sd)
     if rec.tokens and all(t.matched for t in rec.tokens):
@@ -223,13 +241,30 @@ def _from_physical(rec: ColumnRec, sd: StdDict) -> ColumnRec:
     return _finalize(rec)
 
 
+# 코멘트 노이즈: 괄호 주석 + enrich-schema 등이 붙이는 마커
+_COMMENT_PAREN_RE = re.compile(r"\([^)]*\)|\[[^\]]*\]|（[^）]*）|【[^】]*】")
+_COMMENT_MARK_RE = re.compile(r"(LLM\s*추천|자동\s*생성|추천\s*값|미정|TODO|N/?A)", re.I)
+
+
+def _clean_comment(comment: str | None) -> str:
+    """코멘트에서 괄호 주석·(LLM추천) 류 마커 제거 → 순수 논리명만 남김."""
+    if not comment:
+        return ""
+    c = _COMMENT_PAREN_RE.sub(" ", comment)   # (LLM추천), (PK), (YYYYMMDD) 등 제거
+    c = _COMMENT_MARK_RE.sub(" ", c)
+    return re.sub(r"\s+", " ", c).strip()
+
+
 def recommend_column(table: str, column: str, comment: str | None,
                      sd: StdDict) -> ColumnRec:
-    comment = (comment or "").strip()
-    rec = ColumnRec(table=table, column=column, comment=comment,
-                    basis="comment" if comment else "column")
-    if comment:
-        return _from_comment(rec, sd)
+    raw = (comment or "").strip()
+    cleaned = _clean_comment(raw)
+    # 마커만 있던 코멘트는 비게 됨 → 물리명 기준으로 폴백
+    rec = ColumnRec(table=table, column=column, comment=raw,
+                    basis="comment" if cleaned else "column")
+    if cleaned:
+        rec.comment = raw  # 리포트엔 원본 코멘트 노출
+        return _from_comment(rec, sd, cleaned)
     return _from_physical(rec, sd)
 
 

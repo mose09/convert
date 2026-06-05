@@ -115,6 +115,10 @@ Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM 으로 TO-
 - [x] `oracle_embeddings/tobe_report.py` — Markdown + 3시트 Excel
 - [x] `main.py` — `recommend-names` subparser + `cmd_recommend_names()`
 - [x] `build-dict` subparser — 적재 단계 분리 (기존 삭제 후 재적재, `--embed`)
+- [x] 도메인사전 적재 (`--domain-dict`, 동일 도메인명 다중 보존) +
+      데이터유형 추론 보정
+- [x] 매칭 정확도: 표준여부 N 단어도 약어 사용(logical_to_abbr),
+      표준여부 표기 견고화, (LLM추천) 코멘트 노이즈 제거, 미매칭 «» 마커
 - [x] 출력: `output/recommend_names/<YYYYMMDD>/tobe_recommend_*.{md,xlsx}`
 - [x] README §16 + 기능표/경로표 + docs_builder 매핑 + user_manual 재빌드
 - [x] 로더 견고화: 전체 시트 자동스캔 / NFC·숨은문자 / read_only 해제

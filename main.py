@@ -1850,12 +1850,15 @@ def cmd_recommend_names(args):
     dict_db = args.dict_db or os.path.join(db_path, "standard_dict.sqlite")
 
     from oracle_embeddings.std_dict import diagnose_xlsx
-    will_build = args.rebuild_dict or needs_rebuild(dict_db, args.word_dict, args.term_dict)
+    any_excel = args.word_dict or args.term_dict or args.domain_dict
+    will_build = args.rebuild_dict or needs_rebuild(
+        dict_db, args.word_dict, args.term_dict, args.domain_dict)
 
     print("=== Step 1: 표준사전 로드 ===")
     print(f"  SQLite 캐시: {dict_db}")
-    if args.word_dict or args.term_dict:
-        print(f"  단어사전: {args.word_dict or '(없음)'} / 용어사전: {args.term_dict or '(없음)'}")
+    if any_excel:
+        print(f"  단어사전: {args.word_dict or '(없음)'} / 용어사전: "
+              f"{args.term_dict or '(없음)'} / 도메인사전: {args.domain_dict or '(없음)'}")
         print("  → Excel 을 SQLite 로 적재합니다." if will_build
               else "  → Excel 변경 없음 — 기존 SQLite 캐시 사용 (Excel 재참조 안 함).")
     elif os.path.exists(dict_db):
@@ -1863,18 +1866,19 @@ def cmd_recommend_names(args):
     else:
         print("  Error: SQLite 캐시가 없습니다. 먼저 적재하세요:")
         print("    python main.py build-dict --word-dict <단어사전.xlsx> "
-              "--term-dict <용어사전.xlsx>")
+              "--term-dict <용어사전.xlsx> --domain-dict <도메인사전.xlsx>")
         return
     try:
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
                              force=args.rebuild_dict,
-                             word_sheet=args.word_sheet, term_sheet=args.term_sheet)
+                             word_sheet=args.word_sheet, term_sheet=args.term_sheet,
+                             domain_xlsx=args.domain_dict, domain_sheet=args.domain_sheet)
     except FileNotFoundError as e:
         print(f"  Error: {e}")
         return
     except Exception as e:  # noqa: BLE001 — Excel 읽기 실패 시 진단 출력
         print(f"  Error: 사전 파일 읽기 실패 — {type(e).__name__}: {e}")
-        for p in (args.word_dict, args.term_dict):
+        for p in (args.word_dict, args.term_dict, args.domain_dict):
             if p:
                 try:
                     print(diagnose_xlsx(p))
@@ -1883,21 +1887,22 @@ def cmd_recommend_names(args):
         return
     # 기존 캐시가 비어있는데 Excel 이 주어졌으면 1회 강제 재빌드 (mtime 동일해도)
     if (not sd.has_terms() and not sd.has_words()
-            and (args.word_dict or args.term_dict) and not args.rebuild_dict):
+            and any_excel and not args.rebuild_dict):
         print("  기존 캐시가 비어있어 강제 재빌드합니다...")
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict, force=True,
-                             word_sheet=args.word_sheet, term_sheet=args.term_sheet)
+                             word_sheet=args.word_sheet, term_sheet=args.term_sheet,
+                             domain_xlsx=args.domain_dict, domain_sheet=args.domain_sheet)
 
     print(f"  용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
-          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
+          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']} / "
+          f"도메인 {sd.counts.get('domains', 0)}")
     if not sd.has_terms() and not sd.has_words():
         print("  Error: 표준사전이 비어있습니다. (헤더 인식 실패 또는 데이터 시트 미선택)")
-        if args.word_dict:
-            print(diagnose_xlsx(args.word_dict))
-        if args.term_dict:
-            print(diagnose_xlsx(args.term_dict))
-        print("  → 위 진단에서 데이터 시트명을 확인해 --word-sheet/--term-sheet 로 "
-              "지정하거나, 헤더 표기를 알려주세요. --rebuild-dict 와 함께 재실행.")
+        for p in (args.word_dict, args.term_dict, args.domain_dict):
+            if p:
+                print(diagnose_xlsx(p))
+        print("  → 위 진단에서 데이터 시트명을 확인해 --word-sheet/--term-sheet/"
+              "--domain-sheet 로 지정하거나, 헤더 표기를 알려주세요.")
         return
 
     use_rag = not args.no_rag
@@ -1956,21 +1961,23 @@ def cmd_build_dict(args):
     db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
     dict_db = args.dict_db or os.path.join(db_path, "standard_dict.sqlite")
 
-    if not (args.word_dict or args.term_dict):
-        print("  Error: --word-dict 또는 --term-dict 중 최소 하나는 필요합니다.")
+    if not (args.word_dict or args.term_dict or args.domain_dict):
+        print("  Error: --word-dict / --term-dict / --domain-dict 중 최소 하나는 필요합니다.")
         return
 
     print("=== 표준사전 적재 (기존 내용 전체 삭제 후 재적재) ===")
-    print(f"  단어사전: {args.word_dict or '(없음)'}")
-    print(f"  용어사전: {args.term_dict or '(없음)'}")
-    print(f"  SQLite:   {dict_db}")
+    print(f"  단어사전:   {args.word_dict or '(없음)'}")
+    print(f"  용어사전:   {args.term_dict or '(없음)'}")
+    print(f"  도메인사전: {args.domain_dict or '(없음)'}")
+    print(f"  SQLite:     {dict_db}")
 
     try:
         stats = build_std_dict(dict_db, args.word_dict, args.term_dict,
-                               args.word_sheet, args.term_sheet)
+                               args.word_sheet, args.term_sheet,
+                               args.domain_dict, args.domain_sheet)
     except Exception as e:  # noqa: BLE001 — Excel 읽기 실패 시 진단 출력
         print(f"  Error: 적재 실패 — {type(e).__name__}: {e}")
-        for p in (args.word_dict, args.term_dict):
+        for p in (args.word_dict, args.term_dict, args.domain_dict):
             if p:
                 try:
                     print(diagnose_xlsx(p))
@@ -1980,13 +1987,15 @@ def cmd_build_dict(args):
 
     sd = load_std_dict(dict_db)
     print(f"\n  적재 완료: 단어 {stats['words']}건(만료 {stats['word_expired']}) / "
-          f"용어 {stats['terms']}건(만료 {stats['term_expired']})")
+          f"용어 {stats['terms']}건(만료 {stats['term_expired']}) / "
+          f"도메인 {stats['domains']}건(만료 {stats['domain_expired']})")
     print(f"  매칭 인덱스: 용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
-          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
+          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']} / "
+          f"도메인명 {sd.counts['domains']}(행 {sd.counts['domain_rows']})")
 
-    if not sd.has_terms() and not sd.has_words():
+    if not sd.has_terms() and not sd.has_words() and not sd.has_domains():
         print("  ⚠ 적재됐지만 매칭 인덱스가 비었습니다 — 헤더/시트 확인:")
-        for p in (args.word_dict, args.term_dict):
+        for p in (args.word_dict, args.term_dict, args.domain_dict):
             if p:
                 print(diagnose_xlsx(p))
         return
@@ -2958,11 +2967,17 @@ def main():
         help="용어사전 Excel (논리명/물리명/도메인명/데이터유형/길이/소수점 ...)",
     )
     bd_parser.add_argument(
+        "--domain-dict",
+        help="도메인사전 Excel (도메인그룹명/도메인명/데이터유형/길이/소수점/...). "
+             "동일 도메인명 다중 엔트리 보존",
+    )
+    bd_parser.add_argument(
         "--dict-db",
         help="표준사전 SQLite 경로 (기본: <vectordb>/standard_dict.sqlite)",
     )
     bd_parser.add_argument("--word-sheet", help="단어사전 시트명 (기본 자동선택)")
     bd_parser.add_argument("--term-sheet", help="용어사전 시트명 (기본 자동선택)")
+    bd_parser.add_argument("--domain-sheet", help="도메인사전 시트명 (기본 자동선택)")
     bd_parser.add_argument(
         "--embed", action="store_true",
         help="적재와 함께 용어사전을 임베딩 (recommend-names 의 RAG 후보검색용)",
@@ -2986,6 +3001,10 @@ def main():
         help="용어사전 Excel (논리명/물리명/도메인명/데이터유형/길이/소수점 ...)",
     )
     rec_parser.add_argument(
+        "--domain-dict",
+        help="도메인사전 Excel (도메인그룹명/도메인명/데이터유형/길이/소수점/...)",
+    )
+    rec_parser.add_argument(
         "--dict-db",
         help="표준사전 SQLite 캐시 경로 (기본: <vectordb>/standard_dict.sqlite)",
     )
@@ -2996,6 +3015,10 @@ def main():
     rec_parser.add_argument(
         "--term-sheet",
         help="용어사전 시트명 (미지정 시 자동 선택)",
+    )
+    rec_parser.add_argument(
+        "--domain-sheet",
+        help="도메인사전 시트명 (미지정 시 자동 선택)",
     )
     rec_parser.add_argument(
         "--rebuild-dict", action="store_true",

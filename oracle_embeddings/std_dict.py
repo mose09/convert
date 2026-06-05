@@ -73,6 +73,8 @@ def _classify_header(h: str) -> str | None:
         return "physical"
     if "구성정보" in t or t == "구성":
         return "compose"
+    if "도메인그룹" in t:
+        return "domain_group"
     if "도메인" in t:
         return "domain"
     if "데이터유형" in t or "데이터타입" in t or "자료형" in t or "데이터타" in t:
@@ -110,11 +112,11 @@ def _header_index(header_row) -> dict[str, int]:
     return idx
 
 
-def _find_header_row(rows: list[tuple]) -> int:
-    """헤더 행 위치 탐색. 상위 20행 중 `논리명`+`물리명` 둘 다 잡히는 첫 행."""
+def _find_header_row(rows: list[tuple], required=("logical", "physical")) -> int:
+    """헤더 행 위치 탐색. 상위 20행 중 `required` 키가 모두 잡히는 첫 행."""
     for r in range(min(20, len(rows))):
         idx = _header_index(rows[r])
-        if "logical" in idx and "physical" in idx:
+        if all(k in idx for k in required):
             return r
     return 0
 
@@ -148,7 +150,20 @@ def _cell(row, idx: dict[str, int], key: str) -> str:
 
 
 def _is_yes(s: str) -> bool:
-    return str(s).strip().upper() in ("Y", "YES", "TRUE", "1", "O")
+    return str(s).strip().upper() in ("Y", "YES", "TRUE", "1", "O", "○", "●", "예", "사용")
+
+
+# 표준여부 부정 표기 (이외 값/빈값은 표준으로 간주 — 표기 다양성에 견고)
+_STD_NO = {"N", "NO", "FALSE", "0", "X", "×", "비표준", "미표준", "아니오", "폐기", "삭제"}
+
+
+def _is_std_value(s: str) -> bool:
+    """표준여부 — 명시적 부정(N/X/비표준/×/...) 이 아니면 표준으로 간주.
+
+    실제 사전마다 Y/N, O/X, ○/×, '표준'/'비표준' 등 표기가 제각각이라
+    'Y 정확히 일치' 대신 '부정 표기 아니면 표준' 으로 견고하게 처리.
+    """
+    return str(s).strip().upper() not in _STD_NO
 
 
 def _is_expired(expire: str) -> bool:
@@ -216,44 +231,37 @@ def _all_sheets(path: str) -> list[tuple[str, list[tuple]]]:
     return out
 
 
-def _sheet_score(rows: list[tuple]):
-    """시트의 헤더 인식 결과 → (양쪽인식?, 논리만?, 헤더행, idx, 데이터행수)."""
-    hr = _find_header_row(rows)
-    idx = _header_index(rows[hr])
-    both = "logical" in idx and "physical" in idx
-    only_logical = "logical" in idx
-    return both, only_logical, hr, idx, len(rows)
-
-
-def _pick_sheet(path: str, sheet: str | None):
+def _pick_sheet(path: str, sheet: str | None, required=("logical", "physical")):
     """데이터 시트 자동 선택.
 
-    Returns ``(sheet_name, rows, header_idx, header_row)``. 논리명+물리명 이
+    Returns ``(sheet_name, rows, header_idx, header_row)``. `required` 키가
     모두 잡히고 **행 수가 가장 많은** 시트를 고른다 (표지/거의-빈 시트가 앞에
     있어도 실제 데이터 시트 선택). `sheet` 지정 시 해당 시트만.
     """
     sheets = _all_sheets(path)
     if sheet:
         sheets = [(n, r) for (n, r) in sheets if n == sheet] or sheets
-    best_both = None      # (rows수, name, rows, idx, hr)
-    best_logical = None
+    primary = required[0]
+    best_full = None      # 모든 required 충족 (rows수, name, rows, idx, hr)
+    best_partial = None   # 첫 required 만 충족
     for name, rows in sheets:
         if not rows:
             continue
-        both, only_logical, hr, idx, nrows = _sheet_score(rows)
-        if both:
-            if best_both is None or nrows > best_both[0]:
-                best_both = (nrows, name, rows, idx, hr)
-        elif only_logical and best_logical is None:
-            best_logical = (nrows, name, rows, idx, hr)
-    chosen = best_both or best_logical
+        hr = _find_header_row(rows, required)
+        idx = _header_index(rows[hr])
+        if all(k in idx for k in required):
+            if best_full is None or len(rows) > best_full[0]:
+                best_full = (len(rows), name, rows, idx, hr)
+        elif primary in idx and best_partial is None:
+            best_partial = (len(rows), name, rows, idx, hr)
+    chosen = best_full or best_partial
     if chosen:
         _, name, rows, idx, hr = chosen
         return name, rows, idx, hr
     # 헤더 인식 실패 — 첫 비어있지 않은 시트 (진단용)
     for name, rows in sheets:
         if rows:
-            hr = _find_header_row(rows)
+            hr = _find_header_row(rows, required)
             return name, rows, _header_index(rows[hr]), hr
     return "", [], {}, 0
 
@@ -303,7 +311,7 @@ def _load_word_rows(path: str, sheet: str | None) -> list[dict]:
             "logical": logical,
             "physical": physical.upper(),
             "eng": _cell(row, idx, "eng"),
-            "is_std": _is_yes(_cell(row, idx, "is_std")) if "is_std" in idx else True,
+            "is_std": _is_std_value(_cell(row, idx, "is_std")) if "is_std" in idx else True,
             "is_classifier": _is_yes(_cell(row, idx, "is_classifier")),
             "synonyms": _cell(row, idx, "synonyms"),
             "desc": _cell(row, idx, "desc"),
@@ -332,7 +340,35 @@ def _load_term_rows(path: str, sheet: str | None) -> list[dict]:
             "data_type": _cell(row, idx, "data_type"),
             "length": _cell(row, idx, "length"),
             "scale": _cell(row, idx, "scale"),
-            "is_std": _is_yes(_cell(row, idx, "is_std")) if "is_std" in idx else True,
+            "is_std": _is_std_value(_cell(row, idx, "is_std")) if "is_std" in idx else True,
+            "privacy": _cell(row, idx, "privacy"),
+            "encrypt": _cell(row, idx, "encrypt"),
+            "desc": _cell(row, idx, "desc"),
+            "expire": _cell(row, idx, "expire"),
+            "source": _cell(row, idx, "source"),
+        })
+    return out
+
+
+def _load_domain_rows(path: str, sheet: str | None) -> list[dict]:
+    """도메인사전 — 도메인그룹명/도메인명/데이터유형/길이/소수점/개인정보/암호화/...
+
+    동일 도메인명이 그룹별로 여러 개 존재할 수 있어 중복을 그대로 보존한다.
+    """
+    _, rows, idx, hr = _pick_sheet(path, sheet, required=("domain", "data_type"))
+    if not rows or "domain" not in idx:
+        return []
+    out = []
+    for row in rows[hr + 1:]:
+        name = _cell(row, idx, "domain")
+        if not name:
+            continue
+        out.append({
+            "group": _cell(row, idx, "domain_group"),
+            "name": name,
+            "data_type": _cell(row, idx, "data_type"),
+            "length": _cell(row, idx, "length"),
+            "scale": _cell(row, idx, "scale"),
             "privacy": _cell(row, idx, "privacy"),
             "encrypt": _cell(row, idx, "encrypt"),
             "desc": _cell(row, idx, "desc"),
@@ -359,7 +395,8 @@ def _mtime(path: str | None) -> str:
     return ""
 
 
-def needs_rebuild(db_path: str, word_xlsx: str | None, term_xlsx: str | None) -> bool:
+def needs_rebuild(db_path: str, word_xlsx: str | None, term_xlsx: str | None,
+                  domain_xlsx: str | None = None) -> bool:
     """SQLite 가 없거나 원본 Excel mtime 이 바뀌었으면 재빌드 필요."""
     if not os.path.exists(db_path):
         return True
@@ -368,6 +405,9 @@ def needs_rebuild(db_path: str, word_xlsx: str | None, term_xlsx: str | None) ->
         cur = conn.cursor()
         cur.execute("SELECT key, value FROM meta")
         meta = dict(cur.fetchall())
+        # domain 테이블이 없는 구버전 캐시면 재빌드
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='domain'")
+        has_domain_tbl = cur.fetchone() is not None
         conn.close()
     except sqlite3.Error:
         return True
@@ -375,26 +415,33 @@ def needs_rebuild(db_path: str, word_xlsx: str | None, term_xlsx: str | None) ->
         return True
     if term_xlsx and meta.get("term_mtime", "") != _mtime(term_xlsx):
         return True
+    if domain_xlsx and (not has_domain_tbl
+                        or meta.get("domain_mtime", "") != _mtime(domain_xlsx)):
+        return True
     return False
 
 
 def build_std_dict(db_path: str, word_xlsx: str | None = None,
                    term_xlsx: str | None = None, word_sheet: str | None = None,
-                   term_sheet: str | None = None) -> dict:
-    """단어사전/용어사전 Excel → SQLite 캐시 생성. 통계 dict 반환."""
+                   term_sheet: str | None = None, domain_xlsx: str | None = None,
+                   domain_sheet: str | None = None) -> dict:
+    """단어/용어/도메인 사전 Excel → SQLite 캐시 생성. 통계 dict 반환."""
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
     words = _load_word_rows(word_xlsx, word_sheet) if word_xlsx else []
     terms = _load_term_rows(term_xlsx, term_sheet) if term_xlsx else []
+    domains = _load_domain_rows(domain_xlsx, domain_sheet) if domain_xlsx else []
 
     # 만료 항목 집계 (적재는 하되 표준 인덱스에서 제외하도록 플래그만)
     word_expired = sum(1 for w in words if _is_expired(w["expire"]))
     term_expired = sum(1 for t in terms if _is_expired(t["expire"]))
+    domain_expired = sum(1 for x in domains if _is_expired(x["expire"]))
 
     conn = sqlite3.connect(db_path)
     cur = conn.cursor()
     cur.execute("DROP TABLE IF EXISTS word")
     cur.execute("DROP TABLE IF EXISTS term")
+    cur.execute("DROP TABLE IF EXISTS domain")
     cur.execute("DROP TABLE IF EXISTS meta")
     cur.execute(
         "CREATE TABLE word (logical TEXT, logical_norm TEXT, physical TEXT, "
@@ -406,6 +453,11 @@ def build_std_dict(db_path: str, word_xlsx: str | None = None,
         "compose TEXT, eng TEXT, domain TEXT, data_type TEXT, length TEXT, "
         "scale TEXT, is_std INT, privacy TEXT, encrypt TEXT, desc TEXT, "
         "expired INT, source TEXT)"
+    )
+    cur.execute(
+        "CREATE TABLE domain (grp TEXT, name TEXT, name_norm TEXT, "
+        "data_type TEXT, length TEXT, scale TEXT, full_type TEXT, "
+        "privacy TEXT, encrypt TEXT, desc TEXT, expired INT, source TEXT)"
     )
     cur.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
 
@@ -422,16 +474,27 @@ def build_std_dict(db_path: str, word_xlsx: str | None = None,
           int(t["is_std"]), t["privacy"], t["encrypt"], t["desc"],
           int(_is_expired(t["expire"])), t["source"]) for t in terms],
     )
+    cur.executemany(
+        "INSERT INTO domain VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        [(x["group"], x["name"], norm_kor(x["name"]), x["data_type"],
+          x["length"], x["scale"],
+          compose_data_type(x["data_type"], x["length"], x["scale"]),
+          x["privacy"], x["encrypt"], x["desc"],
+          int(_is_expired(x["expire"])), x["source"]) for x in domains],
+    )
     cur.execute("CREATE INDEX ix_word_norm ON word(logical_norm)")
     cur.execute("CREATE INDEX ix_word_phys ON word(physical)")
     cur.execute("CREATE INDEX ix_term_norm ON term(logical_norm)")
     cur.execute("CREATE INDEX ix_term_phys ON term(physical)")
+    cur.execute("CREATE INDEX ix_domain_norm ON domain(name_norm)")
 
     meta = {
         "word_mtime": _mtime(word_xlsx),
         "term_mtime": _mtime(term_xlsx),
+        "domain_mtime": _mtime(domain_xlsx),
         "word_xlsx": word_xlsx or "",
         "term_xlsx": term_xlsx or "",
+        "domain_xlsx": domain_xlsx or "",
         "built_at": datetime.now().isoformat(timespec="seconds"),
     }
     cur.executemany("INSERT INTO meta VALUES (?,?)", list(meta.items()))
@@ -441,9 +504,12 @@ def build_std_dict(db_path: str, word_xlsx: str | None = None,
     stats = {
         "words": len(words), "word_expired": word_expired,
         "terms": len(terms), "term_expired": term_expired,
+        "domains": len(domains), "domain_expired": domain_expired,
     }
-    logger.info("표준사전 빌드: 단어 %d (만료 %d) / 용어 %d (만료 %d) → %s",
-                stats["words"], word_expired, stats["terms"], term_expired, db_path)
+    logger.info("표준사전 빌드: 단어 %d (만료 %d) / 용어 %d (만료 %d) / "
+                "도메인 %d (만료 %d) → %s",
+                stats["words"], word_expired, stats["terms"], term_expired,
+                stats["domains"], domain_expired, db_path)
     return stats
 
 
@@ -474,6 +540,16 @@ class TermRow:
 
 
 @dataclass
+class DomainEntry:
+    group: str
+    name: str
+    data_type: str   # 길이·소수점 합성된 최종 타입 (full_type)
+    privacy: str
+    encrypt: str
+    desc: str
+
+
+@dataclass
 class StdDict:
     # Tier1: 용어사전 정확매칭
     term_by_logical: dict[str, TermRow] = field(default_factory=dict)  # norm논리명 → term
@@ -483,7 +559,11 @@ class StdDict:
     syn_to_logical: dict[str, str] = field(default_factory=dict)  # norm(동의어/논리명) → 논리명
     word_keys_sorted: list[str] = field(default_factory=list)  # norm 논리명/동의어 (길이 desc)
     abbr_to_logical: dict[str, str] = field(default_factory=dict)  # 물리명 → 논리명
+    logical_to_abbr: dict[str, str] = field(default_factory=dict)  # 논리명 → 물리명 (표준여부 무관, 전 단어)
     classifier_type: dict[str, tuple[str, str]] = field(default_factory=dict)  # 분류어논리명 → (domain, data_type)
+    # 도메인사전: 동일 도메인명 다중 엔트리 보존
+    domain_by_name: dict[str, list[DomainEntry]] = field(default_factory=dict)  # norm도메인명 → [entry...]
+    domain_type: dict[str, str] = field(default_factory=dict)  # norm도메인명 → 대표 데이터유형 (최빈/유일)
     counts: dict = field(default_factory=dict)
 
     def has_terms(self) -> bool:
@@ -491,6 +571,22 @@ class StdDict:
 
     def has_words(self) -> bool:
         return bool(self.word_by_logical)
+
+    def has_domains(self) -> bool:
+        return bool(self.domain_by_name)
+
+    def resolve_domain_type(self, domain_name: str) -> tuple[str, bool]:
+        """도메인명 → (대표 데이터유형, 단일여부). 다중이면 최빈값+단일=False."""
+        entries = self.domain_by_name.get(norm_kor(domain_name), [])
+        if not entries:
+            return "", True
+        types = [e.data_type for e in entries if e.data_type]
+        if not types:
+            return "", True
+        uniq = set(types)
+        if len(uniq) == 1:
+            return types[0], True
+        return Counter(types).most_common(1)[0][0], False
 
 
 def load_std_dict(db_path: str) -> StdDict:
@@ -532,6 +628,10 @@ def load_std_dict(db_path: str) -> StdDict:
             sd.word_by_logical[r["logical"]] = wr
         if r["physical"] and r["physical"] not in sd.abbr_to_logical:
             sd.abbr_to_logical[r["physical"]] = r["logical"]
+        # 논리명 → 물리명 (표준여부 무관, 물리명 있는 첫 항목). 매칭됐는데
+        # 약어가 비어 한글이 그대로 박히는 문제 방지.
+        if r["logical"] and r["physical"] and r["logical"] not in sd.logical_to_abbr:
+            sd.logical_to_abbr[r["logical"]] = r["physical"]
         # 동의어/논리명 → 논리명 매핑 (표준 단어로 귀결)
         for key in [r["logical"], *syns]:
             nk = norm_kor(key)
@@ -555,28 +655,50 @@ def load_std_dict(db_path: str) -> StdDict:
         (domain, dtype), _ = ctr.most_common(1)[0]
         sd.classifier_type[logical] = (domain, dtype)
 
+    # 도메인사전 (동일 도메인명 다중 엔트리 보존)
+    try:
+        for r in cur.execute("SELECT * FROM domain"):
+            if r["expired"]:
+                continue
+            sd.domain_by_name.setdefault(r["name_norm"], []).append(DomainEntry(
+                group=r["grp"], name=r["name"], data_type=r["full_type"],
+                privacy=r["privacy"], encrypt=r["encrypt"], desc=r["desc"]))
+    except sqlite3.OperationalError:
+        pass  # 구버전 캐시(도메인 테이블 없음)
+    for nk, entries in sd.domain_by_name.items():
+        types = [e.data_type for e in entries if e.data_type]
+        if types:
+            sd.domain_type[nk] = Counter(types).most_common(1)[0][0]
+
     sd.word_keys_sorted = sorted(word_keys, key=len, reverse=True)
     sd.counts = {
         "terms": len(sd.term_by_logical),
         "words": len(sd.word_by_logical),
         "synonyms": len(sd.syn_to_logical),
         "classifiers": len(sd.classifier_type),
+        "domains": len(sd.domain_by_name),
+        "domain_rows": sum(len(v) for v in sd.domain_by_name.values()),
     }
     conn.close()
-    logger.info("표준사전 로드: 용어 %d / 단어 %d / 동의어 %d / 분류어타입 %d",
-                sd.counts["terms"], sd.counts["words"],
-                sd.counts["synonyms"], sd.counts["classifiers"])
+    logger.info("표준사전 로드: 용어 %d / 단어 %d / 동의어 %d / 분류어타입 %d / "
+                "도메인 %d(행 %d)",
+                sd.counts["terms"], sd.counts["words"], sd.counts["synonyms"],
+                sd.counts["classifiers"], sd.counts["domains"],
+                sd.counts["domain_rows"])
     return sd
 
 
 def ensure_std_dict(db_path: str, word_xlsx: str | None, term_xlsx: str | None,
                     force: bool = False, word_sheet: str | None = None,
-                    term_sheet: str | None = None) -> StdDict:
+                    term_sheet: str | None = None, domain_xlsx: str | None = None,
+                    domain_sheet: str | None = None) -> StdDict:
     """필요 시 빌드 후 로드. (mtime 변경/강제 시 재빌드)"""
-    if force or needs_rebuild(db_path, word_xlsx, term_xlsx):
-        if not (word_xlsx or term_xlsx):
+    if force or needs_rebuild(db_path, word_xlsx, term_xlsx, domain_xlsx):
+        if not (word_xlsx or term_xlsx or domain_xlsx):
             raise FileNotFoundError(
-                f"표준사전 SQLite 가 없고 (--word-dict/--term-dict) 도 없습니다: {db_path}"
+                f"표준사전 SQLite 가 없고 사전 인자(--word-dict/--term-dict/"
+                f"--domain-dict) 도 없습니다: {db_path}"
             )
-        build_std_dict(db_path, word_xlsx, term_xlsx, word_sheet, term_sheet)
+        build_std_dict(db_path, word_xlsx, term_xlsx, word_sheet, term_sheet,
+                       domain_xlsx, domain_sheet)
     return load_std_dict(db_path)
