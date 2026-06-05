@@ -1849,11 +1849,21 @@ def cmd_recommend_names(args):
     db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
     dict_db = args.dict_db or os.path.join(db_path, "standard_dict.sqlite")
 
-    print("=== Step 1: 표준사전 로드 ===")
-    print(f"  단어사전: {args.word_dict or '(미지정)'}")
-    print(f"  용어사전: {args.term_dict or '(미지정)'}")
     from oracle_embeddings.std_dict import diagnose_xlsx
     will_build = args.rebuild_dict or needs_rebuild(dict_db, args.word_dict, args.term_dict)
+
+    print("=== Step 1: 표준사전 로드 ===")
+    print(f"  SQLite 캐시: {dict_db}")
+    if args.word_dict or args.term_dict:
+        print(f"  단어사전: {args.word_dict or '(없음)'} / 용어사전: {args.term_dict or '(없음)'}")
+        print("  → Excel 을 SQLite 로 적재합니다." if will_build
+              else "  → Excel 변경 없음 — 기존 SQLite 캐시 사용 (Excel 재참조 안 함).")
+    elif os.path.exists(dict_db):
+        print("  Excel 인자 없음 → 기존 SQLite 캐시로 바로 수행 (적재 불필요).")
+    else:
+        print("  Error: SQLite 캐시가 없습니다. 최초 1회만 "
+              "--word-dict/--term-dict 로 적재하세요.")
+        return
     try:
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
                              force=args.rebuild_dict,
