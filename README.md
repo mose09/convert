@@ -1706,6 +1706,19 @@ python main.py recommend-names --schema-md ... --no-rag --no-llm
 `recommend-names` 는 분석만 하고 임베딩하지 않는다(있으면 RAG 후보검색에
 활용, 없으면 RAG 자동 비활성).
 
+**임베딩 전략** (사전성 데이터 — 일반 문서 RAG 와 다름):
+
+- **1 용어 = 1 벡터** (원자적 레코드). 사전은 짧은 키-값 레코드라 청킹하지
+  않는다. 문서 텍스트는 **논리명 우선 + 설명**(영문명은 한글 쿼리를
+  희석하므로 메타데이터로만 보관).
+- **cosine** 거리로 컬렉션 생성, 재적재 시 컬렉션을 비우고 재생성(stale 방지).
+- 메타데이터에 논리명/물리명/도메인/데이터유형/영문명 보관 → LLM 후보로
+  바로 제시.
+- 쿼리(코멘트)도 노이즈를 정리해 문서와 대칭으로 임베딩.
+- 모델별 prefix: `config.yaml` 의 `embedding.doc_prefix` /
+  `embedding.query_prefix` (e5/bge 계열은 각각 `passage: ` / `query: `
+  필요, nomic 등은 빈값).
+
 **산출물** (`output/recommend_names/<날짜>/`):
 
 - `tobe_recommend_*.md` — 요약 + 추천 결과 표 + 미매칭 단어 목록

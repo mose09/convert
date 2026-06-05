@@ -310,45 +310,81 @@ def needs_assist(rec: ColumnRec) -> bool:
 STD_TERMS_COLLECTION = "std_terms"
 
 
+def _term_doc(tr) -> str:
+    """임베딩할 문서 텍스트 — 한글 논리명을 주신호로, 설명을 보조로.
+
+    사전성 데이터는 '논리명' 이 곧 검색 대상(원자적 레코드)이므로 논리명을
+    앞세우고, 설명은 free-text 코멘트 매칭 보조로만 덧붙인다. 영문명은
+    한글 쿼리 임베딩을 희석하므로 문서 텍스트엔 넣지 않고 메타데이터로만 보관.
+    """
+    logical = (tr.logical or "").strip()
+    desc = (tr.desc or "").strip()
+    if logical and desc and desc != logical:
+        return f"{logical}. {desc}"
+    return logical or desc or tr.physical
+
+
 def embed_std_terms(sd: StdDict, config: dict, db_path: str = "./vectordb") -> int:
-    """용어사전 논리명(+설명) 을 ChromaDB 에 임베딩 (Tier3 후보검색용)."""
+    """용어사전을 ChromaDB 에 임베딩 (Tier3 후보검색용).
+
+    전략 (사전성 데이터):
+    - **1 용어 = 1 벡터** (원자적 레코드, 청킹 불필요)
+    - 문서 텍스트는 **논리명 우선 + 설명** (`_term_doc`), 영문명은 메타데이터로
+    - **cosine** 거리 (텍스트 임베딩 표준)
+    - 재적재 시 **컬렉션 초기화** 후 재생성 (stale 벡터 방지)
+    - 모델별 prefix (`embedding.doc_prefix`, e5/bge 의 ``passage:``) 지원
+    - 메타데이터에 논리명/물리명/도메인/데이터유형/영문명 보관 (재조회 불필요)
+    """
     from .vector_store import (
         get_embedding_client,
         init_vectordb,
         _get_embeddings_batch,
     )
 
-    terms = list({tr.physical: tr for tr in sd.term_by_logical.values()}.values())
+    # 논리명 기준 원자적 레코드 (중복 논리명 제거)
+    seen: set[str] = set()
+    terms = []
+    for tr in sd.term_by_logical.values():
+        key = (tr.logical or tr.physical).strip()
+        if key and key not in seen:
+            seen.add(key)
+            terms.append(tr)
     if not terms:
         return 0
+
     client = init_vectordb(db_path)
     emb = get_embedding_client(config)
-    model = config.get("embedding", {}).get("model", "nomic-embed-text")
-    col = client.get_or_create_collection(name=STD_TERMS_COLLECTION)
+    ecfg = config.get("embedding", {})
+    model = ecfg.get("model", "nomic-embed-text")
+    doc_prefix = ecfg.get("doc_prefix", "")  # e5/bge: "passage: "
+
+    # 재적재 stale 제거 — 컬렉션 초기화 후 cosine 으로 재생성
+    try:
+        client.delete_collection(STD_TERMS_COLLECTION)
+    except Exception:  # noqa: BLE001 — 없으면 무시
+        pass
+    col = client.get_or_create_collection(
+        name=STD_TERMS_COLLECTION, metadata={"hnsw:space": "cosine"})
 
     stored = 0
-    for i in range(0, len(terms), 32):
+    for i in range(0, len(terms), 32):  # 32 = 임베딩 API 배치 (청크사이즈 아님)
         batch = terms[i:i + 32]
-        # 한글 코멘트 쿼리와 매칭되도록 한글 논리명 + 설명(+영문명) 결합
-        docs = [
-            " ".join(p for p in (tr.logical, tr.desc, tr.eng) if p).strip()
-            or tr.physical
-            for tr in batch
-        ]
+        docs = [doc_prefix + _term_doc(tr) for tr in batch]
         try:
             vecs = _get_embeddings_batch(emb, model, docs)
         except Exception as e:  # noqa: BLE001
             logger.error("std_terms 임베딩 배치 실패: %s", e)
             continue
         col.upsert(
-            ids=[f"term_{i + j}" for j in range(len(batch))],
+            ids=[f"t{i + j}" for j in range(len(batch))],
             documents=docs,
             embeddings=vecs,
-            metadatas=[{"physical": tr.physical, "domain": tr.domain,
-                        "data_type": tr.data_type, "eng": tr.eng} for tr in batch],
+            metadatas=[{"logical": tr.logical, "physical": tr.physical,
+                        "domain": tr.domain, "data_type": tr.data_type,
+                        "eng": tr.eng} for tr in batch],
         )
         stored += len(batch)
-    logger.info("std_terms 임베딩: %d 건 저장", stored)
+    logger.info("std_terms 임베딩: %d 건 저장 (cosine, 논리명 기준)", stored)
     return stored
 
 
@@ -365,17 +401,26 @@ def has_std_terms_collection(db_path: str) -> bool:
 
 def rag_candidates(comment: str, config: dict, db_path: str,
                    k: int = 5) -> list[dict]:
-    """코멘트와 유사한 표준용어 top-k 후보 (물리명/도메인/데이터유형)."""
+    """코멘트와 유사한 표준용어 top-k 후보 (논리명/물리명/도메인/데이터유형).
+
+    쿼리도 문서와 대칭이 되도록 코멘트 노이즈((LLM추천) 등)를 정리하고
+    모델별 query prefix (e5/bge 의 ``query:``) 를 적용한다.
+    """
     from .vector_store import get_embedding_client, init_vectordb, _get_embedding
+    q = _clean_comment(comment) or (comment or "").strip()
+    if not q:
+        return []
     try:
         client = init_vectordb(db_path)
         col = client.get_collection(STD_TERMS_COLLECTION)
     except Exception:
         return []
     emb = get_embedding_client(config)
-    model = config.get("embedding", {}).get("model", "nomic-embed-text")
+    ecfg = config.get("embedding", {})
+    model = ecfg.get("model", "nomic-embed-text")
+    query_prefix = ecfg.get("query_prefix", "")  # e5/bge: "query: "
     try:
-        qv = _get_embedding(emb, model, comment)
+        qv = _get_embedding(emb, model, query_prefix + q)
         res = col.query(query_embeddings=[qv], n_results=k)
     except Exception as e:  # noqa: BLE001
         logger.error("RAG 후보 검색 실패: %s", e)
@@ -403,8 +448,8 @@ def _build_llm_prompt(items: list[dict]) -> str:
     for it in items:
         cand = ""
         if it.get("candidates"):
-            cand = " / 후보: " + ", ".join(
-                f"{c.get('physical')}({c.get('eng','')})" for c in it["candidates"][:5])
+            cand = " / 표준후보: " + ", ".join(
+                f"{c.get('logical','')}→{c.get('physical')}" for c in it["candidates"][:5])
         lines.append(
             f"{it['idx']}. AS-IS={it['asis']} | 의미={it['meaning']}"
             f" | 미매칭단어={', '.join(it['frags']) or '-'}{cand}")
