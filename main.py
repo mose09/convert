@@ -1906,13 +1906,10 @@ def cmd_recommend_names(args):
         return
 
     use_rag = not args.no_rag
-    if use_rag and will_build:
-        print("\n=== Step 1b: 용어사전 임베딩 (RAG) ===")
-        try:
-            tr.embed_std_terms(sd, config, db_path)
-        except Exception as e:  # noqa: BLE001
-            print(f"  [!] 임베딩 건너뜀 ({e}). RAG 없이 진행.")
-            use_rag = False
+    if use_rag and not tr.has_std_terms_collection(db_path):
+        print("  [i] RAG 임베딩이 없어 RAG 비활성 — 쓰려면 `build-dict` 로 "
+              "(임베딩 엔드포인트 설정 후) 재적재하세요.")
+        use_rag = False
 
     print("\n=== Step 2: AS-IS 스키마 파싱 ===")
     schema = parse_schema_md(args.schema_md)
@@ -2000,14 +1997,15 @@ def cmd_build_dict(args):
                 print(diagnose_xlsx(p))
         return
 
-    if args.embed:
+    if not args.no_embed and sd.has_terms():
         print("\n=== 용어사전 임베딩 (RAG 후보검색용) ===")
         from oracle_embeddings import tobe_recommender as tr
         try:
             n = tr.embed_std_terms(sd, config, db_path)
             print(f"  임베딩 {n}건 저장")
         except Exception as e:  # noqa: BLE001
-            print(f"  [!] 임베딩 건너뜀 ({e}) — RAG 없이도 추천은 동작합니다.")
+            print(f"  [!] 임베딩 건너뜀 ({e}) — RAG 없이도 추천은 동작합니다. "
+                  "(임베딩 엔드포인트 미설정 시 --no-embed 로 생략)")
 
     print("\n  이후 분석은 사전 인자 없이 바로 실행하세요:")
     print("    python main.py recommend-names --schema-md <AS-IS 스키마.md>")
@@ -2979,8 +2977,9 @@ def main():
     bd_parser.add_argument("--term-sheet", help="용어사전 시트명 (기본 자동선택)")
     bd_parser.add_argument("--domain-sheet", help="도메인사전 시트명 (기본 자동선택)")
     bd_parser.add_argument(
-        "--embed", action="store_true",
-        help="적재와 함께 용어사전을 임베딩 (recommend-names 의 RAG 후보검색용)",
+        "--no-embed", action="store_true",
+        help="용어사전 임베딩 생략 (기본은 적재와 함께 임베딩 — RAG 후보검색용). "
+             "임베딩 엔드포인트 없거나 결정적 사전매칭만 쓸 때",
     )
 
     # recommend-names command

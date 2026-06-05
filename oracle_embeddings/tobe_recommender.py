@@ -352,6 +352,17 @@ def embed_std_terms(sd: StdDict, config: dict, db_path: str = "./vectordb") -> i
     return stored
 
 
+def has_std_terms_collection(db_path: str) -> bool:
+    """RAG용 std_terms 임베딩 컬렉션이 존재하고 비어있지 않은지."""
+    try:
+        from .vector_store import init_vectordb
+        client = init_vectordb(db_path)
+        col = client.get_collection(STD_TERMS_COLLECTION)
+        return col.count() > 0
+    except Exception:  # noqa: BLE001 — 컬렉션 없음/chroma 미설치
+        return False
+
+
 def rag_candidates(comment: str, config: dict, db_path: str,
                    k: int = 5) -> list[dict]:
     """코멘트와 유사한 표준용어 top-k 후보 (물리명/도메인/데이터유형)."""
