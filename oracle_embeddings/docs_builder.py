@@ -263,7 +263,7 @@ CATEGORY_MAP: dict[str, list[str]] = {
         "erd-md", "erd-group", "erd-rag", "erd", "embed",
     ],
     "용어 / 표준": [
-        "terms", "grid-labels", "morpheme", "recommend-names",
+        "terms", "grid-labels", "morpheme", "build-dict", "recommend-names",
         "gen-ddl", "validate-naming", "audit-standards",
         "review-sql", "standardize",
     ],
@@ -287,7 +287,7 @@ SECTION_MAP: dict[str, int] = {
     "convert-mapping": 12, "migration-impact": 12,
     "migrate-sql": 12, "validate-migration": 12,
     "morpheme": 13, "screen-converter": 14, "screen-spec": 15,
-    "recommend-names": 16,
+    "build-dict": 16, "recommend-names": 16,
 }
 
 
