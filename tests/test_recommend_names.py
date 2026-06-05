@@ -135,6 +135,18 @@ class SheetDetectionTest(unittest.TestCase):
         self.assertEqual(norm_kor(unicodedata.normalize("NFD", "고객번호")),
                          norm_kor("고객번호"))
 
+    def test_decorated_and_prefixed_headers(self):
+        from oracle_embeddings.std_dict import _classify_header
+        for h, expect in [
+            ("논리명*", "logical"),
+            ("표준단어 논리명", "logical"),
+            ("컬럼한글명", "logical"),
+            ("물리명 ※", "physical"),
+            ("표준단어 물리명", "physical"),
+            ("물리의미(영문풀네임)", "eng"),  # 물리명 으로 오분류되면 안 됨
+        ]:
+            self.assertEqual(_classify_header(h), expect, h)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
