@@ -19,6 +19,7 @@ import logging
 import os
 import re
 import sqlite3
+import unicodedata
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -30,16 +31,23 @@ logger = logging.getLogger(__name__)
 # 헤더 자동 인식
 # ─────────────────────────────────────────────────────────────────
 
-def _norm_header(h) -> str:
-    """헤더 셀 정규화 — 괄호 부가설명·모든 공백(개행/탭 포함)·앞 번호 제거.
+# zero-width space/joiner/non-joiner/marks, BOM, soft-hyphen, word-joiner
+_ZW_RE = re.compile("[\u200b\u200c\u200d\u200e\u200f\ufeff\u00ad\u2060]")
 
-    예: ``1. 논리\n명(한글)`` → ``논리명``.
+
+def _norm_header(h) -> str:
+    """헤더 셀 정규화 — 유니코드 NFC + 숨은문자·괄호 부가설명·모든 공백·앞 번호 제거.
+
+    한글이 NFD(조합형, macOS 등)로 저장돼 눈엔 같아도 바이트가 달라 매칭에
+    실패하는 케이스를 NFC 정규화로 흡수한다. 예: ``1. 논리\n명(한글)`` → ``논리명``.
     """
     if h is None:
         return ""
-    t = re.sub(r"\(.*?\)", "", str(h))      # 괄호 부가설명 제거
-    t = re.sub(r"\s+", "", t)                # 개행/탭 포함 모든 공백 제거
-    t = re.sub(r"^[0-9]+[.)\-_]?", "", t)    # 앞 번호 (1. / 2) / 3-) 제거
+    t = unicodedata.normalize("NFC", str(h))  # NFD 조합형 → NFC 완성형
+    t = _ZW_RE.sub("", t)                      # zero-width / BOM 제거
+    t = re.sub(r"\(.*?\)", "", t)              # 괄호 부가설명 제거
+    t = re.sub(r"\s+", "", t)                  # 개행/탭/NBSP 포함 모든 공백 제거
+    t = re.sub(r"^[0-9]+[.)\-_]?", "", t)      # 앞 번호 (1. / 2) / 3-) 제거
     return t.strip()
 
 
@@ -110,10 +118,14 @@ _PUNCT_RE = re.compile(r"[\s\-_./,()\[\]{}<>~!@#$%^&*+=|\\:;'\"?]+")
 
 
 def norm_kor(s: str | None) -> str:
-    """논리명/코멘트 매칭용 정규화 — 공백·기호 제거."""
+    """논리명/코멘트 매칭용 정규화 — 유니코드 NFC + 공백·기호 제거.
+
+    사전과 스키마 코멘트의 한글 정규화 형식(NFC/NFD)이 달라도 매칭되도록 통일.
+    """
     if not s:
         return ""
-    return _PUNCT_RE.sub("", str(s)).strip()
+    t = unicodedata.normalize("NFC", str(s))
+    return _PUNCT_RE.sub("", t).strip()
 
 
 def _cell(row, idx: dict[str, int], key: str) -> str:
