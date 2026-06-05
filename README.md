@@ -1672,7 +1672,7 @@ Excel 로 받아 **SQLite 캐시**(`<vectordb>/standard_dict.sqlite`)로 1회
    각 단어의 영문약어를 `_` 로 조합. 마지막 **속성분류어**로 도메인·
    데이터유형 추론.
 3. **RAG** — 위에서 미해결인 free-text 코멘트만 용어사전 임베딩에서
-   유사 표준용어 top-k 후보 검색.
+   유사 표준용어 top-k 후보 검색 (임베딩은 `build-dict` 시 생성됨).
 4. **LLM** — 미매칭 단편을 RAG 후보를 참고해 표준 물리명으로 추천.
 
 **절차는 2단계로 분리** — ① `build-dict` 로 사전을 SQLite 에 1회 적재 →
@@ -1685,8 +1685,9 @@ python main.py build-dict ^
   --word-dict ./input/단어사전.xlsx ^
   --term-dict ./input/용어사전.xlsx ^
   --domain-dict ./input/도메인사전.xlsx
-# RAG 까지 쓰려면 임베딩도 함께:
-python main.py build-dict --word-dict ... --term-dict ... --embed
+# 적재 시 용어사전 임베딩(RAG용)도 함께 생성된다(기본).
+# 임베딩 엔드포인트가 없거나 결정적 매칭만 쓰면:
+python main.py build-dict --word-dict ... --term-dict ... --no-embed
 
 # ── 2단계: 분석 (이후 반복, 사전 인자 불필요) ──
 python main.py recommend-names --schema-md ./output/schema/.../ASIS_schema.md
@@ -1701,7 +1702,9 @@ python main.py recommend-names --schema-md ... --no-rag --no-llm
 
 `build-dict` 옵션: `--word-dict` / `--term-dict` / `--domain-dict` /
 `--word-sheet` / `--term-sheet` / `--domain-sheet` / `--dict-db` /
-`--embed`(용어사전 임베딩 동시 생성).
+`--no-embed`(임베딩 생략). 임베딩은 **적재(build-dict) 시점에** 생성되며,
+`recommend-names` 는 분석만 하고 임베딩하지 않는다(있으면 RAG 후보검색에
+활용, 없으면 RAG 자동 비활성).
 
 **산출물** (`output/recommend_names/<날짜>/`):
 
