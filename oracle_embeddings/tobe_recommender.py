@@ -429,6 +429,48 @@ def rag_candidates(comment: str, config: dict, db_path: str,
     return [m for m in metas if m]
 
 
+def rag_candidates_batch(comments: list[str], config: dict, db_path: str,
+                         k: int = 5) -> list[list[dict]]:
+    """여러 코멘트의 RAG 후보를 한 번에 — 쿼리 임베딩 배치 + 단일 벡터검색.
+
+    건별 호출(rag_candidates) 대비 임베딩 API 호출을 크게 줄인다.
+    반환은 입력 순서에 정렬된 후보 리스트의 리스트.
+    """
+    from .vector_store import (
+        get_embedding_client,
+        init_vectordb,
+        _get_embeddings_batch,
+    )
+    out: list[list[dict]] = [[] for _ in comments]
+    cleaned = [(_clean_comment(c) or (c or "").strip()) for c in comments]
+    idxs = [i for i, q in enumerate(cleaned) if q]
+    if not idxs:
+        return out
+    try:
+        client = init_vectordb(db_path)
+        col = client.get_collection(STD_TERMS_COLLECTION)
+    except Exception:  # noqa: BLE001 — 컬렉션 없음
+        return out
+    emb = get_embedding_client(config)
+    ecfg = config.get("embedding", {})
+    model = ecfg.get("model", "nomic-embed-text")
+    qp = ecfg.get("query_prefix", "")
+    queries = [qp + cleaned[i] for i in idxs]
+    try:
+        vecs: list[list[float]] = []
+        for s in range(0, len(queries), 64):  # 임베딩 API 배치
+            vecs.extend(_get_embeddings_batch(emb, model, queries[s:s + 64]))
+        res = col.query(query_embeddings=vecs, n_results=k)
+    except Exception as e:  # noqa: BLE001
+        logger.error("RAG 배치 검색 실패: %s", e)
+        return out
+    metas = res.get("metadatas") or []
+    for pos, i in enumerate(idxs):
+        ms = metas[pos] if pos < len(metas) else []
+        out[i] = [m for m in (ms or []) if m]
+    return out
+
+
 # ─────────────────────────────────────────────────────────────────
 # Tier 4: LLM 보조
 # ─────────────────────────────────────────────────────────────────
@@ -490,20 +532,26 @@ def assist_with_llm(recs: list[ColumnRec], sd: StdDict, config: dict,
     model = os.environ.get("LLM_MODEL") or config.get("llm", {}).get("model", "llama3")
 
     print(f"  LLM 보조 대상: {len(targets)}건 / model: {model} / RAG: {use_rag}")
+
+    # RAG 후보를 미리 한 번에 (쿼리 임베딩 배치 + 단일 init). 건별 임베딩 호출 회피.
+    cand_by_target: list[list[dict]] = [[] for _ in targets]
+    if use_rag:
+        cand_by_target = rag_candidates_batch(
+            [r.comment for r in targets], config, db_path, top_k)
+        n_q = sum(1 for c in cand_by_target if c)
+        print(f"  RAG 쿼리 임베딩: {len(targets)}건 배치 처리 (후보 확보 {n_q}건)")
+
     updated = 0
     for start in range(0, len(targets), batch_size):
         chunk = targets[start:start + batch_size]
         items = []
         for i, r in enumerate(chunk):
-            cands = []
-            if use_rag and r.comment:
-                cands = rag_candidates(r.comment, config, db_path, top_k)
             items.append({
                 "idx": i,
                 "asis": r.column,
                 "meaning": r.comment or "(코멘트 없음)",
                 "frags": r.unmatched_frags or ([r.column] if not r.tokens else []),
-                "candidates": cands,
+                "candidates": cand_by_target[start + i],
             })
         try:
             resp = client.chat.completions.create(
