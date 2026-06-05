@@ -123,6 +123,28 @@ class SheetDetectionTest(unittest.TestCase):
         self.assertEqual(_classify_header("1. 논리\n명"), "logical")
         self.assertEqual(_classify_header("물리명 "), "physical")
 
+    def test_picks_data_sheet_over_near_empty(self):
+        # 거의 빈 "Sheet 1"(1셀) 보다 실제 데이터 시트를 선택해야 함
+        from openpyxl import Workbook
+
+        from oracle_embeddings.std_dict import _pick_sheet
+        tmp = tempfile.mkdtemp()
+        wb = Workbook()
+        s1 = wb.active
+        s1.title = "Sheet 1"
+        s1["A1"] = "논리명"  # 거의 빈 시트
+        s2 = wb.create_sheet("단어사전")
+        s2.append(["논리명", "물리명", "표준여부"])
+        for i in range(30):
+            s2.append([f"단어{i}", f"W{i}", "Y"])
+        path = os.path.join(tmp, "multi.xlsx")
+        wb.save(path)
+
+        name, rows, idx, _ = _pick_sheet(path, None)
+        self.assertEqual(name, "단어사전")
+        self.assertEqual(len(rows), 31)
+        self.assertIn("physical", idx)
+
     def test_nfd_unicode_header_and_data(self):
         # macOS 등에서 생성된 NFD(조합형) 한글도 인식돼야 함
         import unicodedata

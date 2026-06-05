@@ -196,40 +196,66 @@ def compose_data_type(data_type: str, length: str, scale: str) -> str:
 # ─────────────────────────────────────────────────────────────────
 
 def _all_sheets(path: str) -> list[tuple[str, list[tuple]]]:
-    """워크북의 모든 시트를 (이름, rows) 로 반환."""
+    """워크북의 모든 시트를 (이름, rows) 로 반환.
+
+    `read_only=False` (일반 모드) 로 읽는다 — POI/사내도구/DRM 으로 생성된
+    엑셀은 XML `<dimension>` 태그가 깨져(`A1:A1`) read_only 에서 1셀만 읽히는
+    경우가 있어, dimension 에 의존하지 않는 일반 모드로 전체 셀을 읽는다.
+    """
     try:
         from openpyxl import load_workbook
     except ImportError as e:  # pragma: no cover
         raise ImportError("openpyxl 가 필요합니다: pip install openpyxl") from e
-    wb = load_workbook(path, data_only=True, read_only=True)
+    wb = load_workbook(path, data_only=True, read_only=False)
     out = []
     for name in wb.sheetnames:
         ws = wb[name]
-        out.append((name, [row for row in ws.iter_rows(values_only=True)]))
+        rows = [row for row in ws.iter_rows(values_only=True)]
+        out.append((name, rows))
     wb.close()
     return out
 
 
-def _pick_sheet(path: str, sheet: str | None):
-    """논리명+물리명 헤더가 잡히는 시트 자동 선택.
+def _sheet_score(rows: list[tuple]):
+    """시트의 헤더 인식 결과 → (양쪽인식?, 논리만?, 헤더행, idx, 데이터행수)."""
+    hr = _find_header_row(rows)
+    idx = _header_index(rows[hr])
+    both = "logical" in idx and "physical" in idx
+    only_logical = "logical" in idx
+    return both, only_logical, hr, idx, len(rows)
 
-    Returns ``(sheet_name, rows, header_idx, header_row)``. 표지/설명 시트가
-    앞에 있어도 데이터 시트를 찾아낸다. `sheet` 지정 시 해당 시트만.
+
+def _pick_sheet(path: str, sheet: str | None):
+    """데이터 시트 자동 선택.
+
+    Returns ``(sheet_name, rows, header_idx, header_row)``. 논리명+물리명 이
+    모두 잡히고 **행 수가 가장 많은** 시트를 고른다 (표지/거의-빈 시트가 앞에
+    있어도 실제 데이터 시트 선택). `sheet` 지정 시 해당 시트만.
     """
     sheets = _all_sheets(path)
     if sheet:
         sheets = [(n, r) for (n, r) in sheets if n == sheet] or sheets
-    fallback = None
+    best_both = None      # (rows수, name, rows, idx, hr)
+    best_logical = None
     for name, rows in sheets:
         if not rows:
             continue
-        hr = _find_header_row(rows)
-        idx = _header_index(rows[hr])
-        if "logical" in idx and "physical" in idx:
-            return name, rows, idx, hr
-        if fallback is None:
-            fallback = (name, rows, idx, hr)
-    return fallback or ("", [], {}, 0)
+        both, only_logical, hr, idx, nrows = _sheet_score(rows)
+        if both:
+            if best_both is None or nrows > best_both[0]:
+                best_both = (nrows, name, rows, idx, hr)
+        elif only_logical and best_logical is None:
+            best_logical = (nrows, name, rows, idx, hr)
+    chosen = best_both or best_logical
+    if chosen:
+        _, name, rows, idx, hr = chosen
+        return name, rows, idx, hr
+    # 헤더 인식 실패 — 첫 비어있지 않은 시트 (진단용)
+    for name, rows in sheets:
+        if rows:
+            hr = _find_header_row(rows)
+            return name, rows, _header_index(rows[hr]), hr
+    return "", [], {}, 0
 
 
 def diagnose_xlsx(path: str) -> str:
