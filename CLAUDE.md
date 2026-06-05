@@ -30,7 +30,7 @@
 - **브랜치 전략**: GitHub Flow — `main` 안정. `claude/<task>-<id>` 피처
   브랜치 → PR squash-merge.
 
-## 주요 커맨드 (25종)
+## 주요 커맨드 (26종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -40,7 +40,8 @@
 | `erd` / `erd-md` / `erd-group` / `erd-rag` | Mermaid + 인터랙티브 HTML ERD | 선택 | X |
 | `terms` | 스키마 + React 소스에서 용어사전 | O | X |
 | `morpheme` | 속성명 형태소분석 | O | X |
-| `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (단어/용어사전 Excel→SQLite, 정확매칭→단어조합→RAG→LLM 4계층) | 선택 | X |
+| `build-dict` | 단어/용어사전 Excel → SQLite 적재 (기존 삭제 후 재적재). 적재 1회 후 recommend-names 는 무인자 수행 | 선택 | X |
+| `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (적재된 SQLite 표준사전, 정확매칭→단어조합→RAG→LLM 4계층) | 선택 | X |
 | `standardize` | 표준화 리포트 (8섹션) | 선택 | 선택 |
 | `review-sql` | SQL 안티패턴 + LLM 개선안 | 선택 | X |
 | `validate-naming` | DDL/이름 표준 준수 검증 | X | X |

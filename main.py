@@ -1861,8 +1861,9 @@ def cmd_recommend_names(args):
     elif os.path.exists(dict_db):
         print("  Excel 인자 없음 → 기존 SQLite 캐시로 바로 수행 (적재 불필요).")
     else:
-        print("  Error: SQLite 캐시가 없습니다. 최초 1회만 "
-              "--word-dict/--term-dict 로 적재하세요.")
+        print("  Error: SQLite 캐시가 없습니다. 먼저 적재하세요:")
+        print("    python main.py build-dict --word-dict <단어사전.xlsx> "
+              "--term-dict <용어사전.xlsx>")
         return
     try:
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
@@ -1940,6 +1941,67 @@ def cmd_recommend_names(args):
     print(f"  Excel:    {os.path.abspath(xlsx_path)}")
     print(f"\n  Total {stats.total} / 정확 {stats.tier1} / 표준 {stats.already_std} / "
           f"조합 {stats.tier2} / LLM {stats.tier_llm} / 미매칭 {stats.unmatched}")
+
+
+def cmd_build_dict(args):
+    """build-dict — 단어/용어사전 Excel 을 SQLite 에 적재 (기존 내용 삭제 후 재적재)."""
+    from oracle_embeddings.std_dict import (
+        build_std_dict,
+        diagnose_xlsx,
+        load_std_dict,
+    )
+
+    load_dotenv()
+    config = load_config(args.config)
+    db_path = config.get("vectordb", {}).get("db_path", "./vectordb")
+    dict_db = args.dict_db or os.path.join(db_path, "standard_dict.sqlite")
+
+    if not (args.word_dict or args.term_dict):
+        print("  Error: --word-dict 또는 --term-dict 중 최소 하나는 필요합니다.")
+        return
+
+    print("=== 표준사전 적재 (기존 내용 전체 삭제 후 재적재) ===")
+    print(f"  단어사전: {args.word_dict or '(없음)'}")
+    print(f"  용어사전: {args.term_dict or '(없음)'}")
+    print(f"  SQLite:   {dict_db}")
+
+    try:
+        stats = build_std_dict(dict_db, args.word_dict, args.term_dict,
+                               args.word_sheet, args.term_sheet)
+    except Exception as e:  # noqa: BLE001 — Excel 읽기 실패 시 진단 출력
+        print(f"  Error: 적재 실패 — {type(e).__name__}: {e}")
+        for p in (args.word_dict, args.term_dict):
+            if p:
+                try:
+                    print(diagnose_xlsx(p))
+                except Exception:  # noqa: BLE001
+                    pass
+        return
+
+    sd = load_std_dict(dict_db)
+    print(f"\n  적재 완료: 단어 {stats['words']}건(만료 {stats['word_expired']}) / "
+          f"용어 {stats['terms']}건(만료 {stats['term_expired']})")
+    print(f"  매칭 인덱스: 용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
+          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
+
+    if not sd.has_terms() and not sd.has_words():
+        print("  ⚠ 적재됐지만 매칭 인덱스가 비었습니다 — 헤더/시트 확인:")
+        for p in (args.word_dict, args.term_dict):
+            if p:
+                print(diagnose_xlsx(p))
+        return
+
+    if args.embed:
+        print("\n=== 용어사전 임베딩 (RAG 후보검색용) ===")
+        from oracle_embeddings import tobe_recommender as tr
+        try:
+            n = tr.embed_std_terms(sd, config, db_path)
+            print(f"  임베딩 {n}건 저장")
+        except Exception as e:  # noqa: BLE001
+            print(f"  [!] 임베딩 건너뜀 ({e}) — RAG 없이도 추천은 동작합니다.")
+
+    print("\n  이후 분석은 사전 인자 없이 바로 실행하세요:")
+    print("    python main.py recommend-names --schema-md <AS-IS 스키마.md>")
 
 
 def _run_frontend_only(args, frontend_dir: str, is_frontends_root: bool,
@@ -2881,6 +2943,31 @@ def main():
         help="출력 디렉토리 (기본: output/morpheme/<YYYYMMDD>/)",
     )
 
+    # build-dict command
+    bd_parser = subparsers.add_parser(
+        "build-dict",
+        help="단어/용어사전 Excel → SQLite 적재 (기존 내용 삭제 후 재적재). "
+             "이후 recommend-names 는 사전 인자 없이 DB 로 수행",
+    )
+    bd_parser.add_argument(
+        "--word-dict",
+        help="단어사전 Excel (논리명/물리명/물리의미/표준여부/속성분류어/동의어 ...)",
+    )
+    bd_parser.add_argument(
+        "--term-dict",
+        help="용어사전 Excel (논리명/물리명/도메인명/데이터유형/길이/소수점 ...)",
+    )
+    bd_parser.add_argument(
+        "--dict-db",
+        help="표준사전 SQLite 경로 (기본: <vectordb>/standard_dict.sqlite)",
+    )
+    bd_parser.add_argument("--word-sheet", help="단어사전 시트명 (기본 자동선택)")
+    bd_parser.add_argument("--term-sheet", help="용어사전 시트명 (기본 자동선택)")
+    bd_parser.add_argument(
+        "--embed", action="store_true",
+        help="적재와 함께 용어사전을 임베딩 (recommend-names 의 RAG 후보검색용)",
+    )
+
     # recommend-names command
     rec_parser = subparsers.add_parser(
         "recommend-names",
@@ -2998,6 +3085,8 @@ def main():
         cmd_validate_migration(args)
     elif args.command == "morpheme":
         cmd_morpheme(args)
+    elif args.command == "build-dict":
+        cmd_build_dict(args)
     elif args.command == "recommend-names":
         cmd_recommend_names(args)
     elif args.command == "all":

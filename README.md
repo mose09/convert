@@ -18,7 +18,8 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
 | `grid-labels` | AG Grid `columnDefs` 의 `(field, headerName)` 페어 추출 (regex, deterministic) | X | X |
 | `morpheme` | 형태소분석 — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일 시트 xlsx + md 요약) | X | O |
-| `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (표준 단어사전/용어사전 Excel → SQLite 캐시, Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM) | X | 선택 |
+| `build-dict` | 단어/용어사전 Excel → SQLite 적재 (기존 내용 삭제 후 재적재). 1회 적재 후 recommend-names 는 사전 인자 없이 DB 로 수행 | X | 선택 |
+| `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (적재된 SQLite 표준사전 기반, Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM) | X | 선택 |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
 | `validate-naming` | 테이블/컬럼명 네이밍 표준 검증 | X | X |
@@ -1669,22 +1670,31 @@ Excel 로 받아 **SQLite 캐시**(`<vectordb>/standard_dict.sqlite`)로 1회
    유사 표준용어 top-k 후보 검색.
 4. **LLM** — 미매칭 단편을 RAG 후보를 참고해 표준 물리명으로 추천.
 
+**절차는 2단계로 분리** — ① `build-dict` 로 사전을 SQLite 에 1회 적재 →
+② `recommend-names` 로 사전 인자 없이 분석.
+
 ```powershell
-# 최초 — 두 사전 Excel 지정 (SQLite 캐시 + 임베딩 자동 생성)
-python main.py recommend-names ^
-  --schema-md ./output/schema/20260604/ASIS_schema.md ^
+# ── 1단계: 적재 (최초 1회, 또는 사전 갱신 시) ──
+# 기존 적재 내용을 전부 삭제하고 다시 적재한다.
+python main.py build-dict ^
   --word-dict ./input/단어사전.xlsx ^
   --term-dict ./input/용어사전.xlsx
+# RAG 까지 쓰려면 임베딩도 함께:
+python main.py build-dict --word-dict ... --term-dict ... --embed
 
-# 이후 — 캐시 재사용 (사전 인자 생략 가능)
+# ── 2단계: 분석 (이후 반복, 사전 인자 불필요) ──
 python main.py recommend-names --schema-md ./output/schema/.../ASIS_schema.md
 
 # 결정적 사전매칭만 (LLM/RAG 미사용, 폐쇄망 빠른 검토)
 python main.py recommend-names --schema-md ... --no-rag --no-llm
-
-# 사전 강제 재빌드
-python main.py recommend-names --schema-md ... --word-dict ... --term-dict ... --rebuild-dict
 ```
+
+> `recommend-names` 에 `--word-dict`/`--term-dict` 를 직접 넘기면 적재가
+>필요할 때(캐시 없음/Excel 변경) 자동 적재하는 단축 실행도 지원하지만,
+> 권장 흐름은 위처럼 `build-dict` 로 적재 단계를 명시적으로 분리하는 것이다.
+
+`build-dict` 옵션: `--word-dict` / `--term-dict` / `--word-sheet` /
+`--term-sheet` / `--dict-db` / `--embed`(용어사전 임베딩 동시 생성).
 
 **산출물** (`output/recommend_names/<날짜>/`):
 

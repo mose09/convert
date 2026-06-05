@@ -114,9 +114,12 @@ Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM 으로 TO-
       (결정적 코어는 임베딩/LLM 없이 독립 동작) + 용어사전 임베딩
 - [x] `oracle_embeddings/tobe_report.py` — Markdown + 3시트 Excel
 - [x] `main.py` — `recommend-names` subparser + `cmd_recommend_names()`
+- [x] `build-dict` subparser — 적재 단계 분리 (기존 삭제 후 재적재, `--embed`)
 - [x] 출력: `output/recommend_names/<YYYYMMDD>/tobe_recommend_*.{md,xlsx}`
 - [x] README §16 + 기능표/경로표 + docs_builder 매핑 + user_manual 재빌드
-- [ ] 사용자 실제 단어/용어사전 Excel 로 헤더 인식·매칭률 1차 검증
+- [x] 로더 견고화: 전체 시트 자동스캔 / NFC·숨은문자 / read_only 해제
+      (깨진 dimension) / 셀별 repr 진단
+- [ ] 사용자 실제 단어/용어사전 Excel 로 매칭률 1차 검증
 
 ---
 
