@@ -18,7 +18,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `terms` | 용어사전 자동 생성 (스키마 + React) | X | O |
 | `grid-labels` | AG Grid `columnDefs` 의 `(field, headerName)` 페어 추출 (regex, deterministic) | X | X |
 | `morpheme` | 형태소분석 — 속성명 txt → LLM 단어 분해 리포트 (속성명/컨피던스/단어1..12/비고 단일 시트 xlsx + md 요약) | X | O |
-| `build-dict` | 단어/용어사전 Excel → SQLite 적재 (기존 내용 삭제 후 재적재). 1회 적재 후 recommend-names 는 사전 인자 없이 DB 로 수행 | X | 선택 |
+| `build-dict` | 단어/용어/도메인사전 Excel → SQLite 적재 (기존 내용 삭제 후 재적재). 1회 적재 후 recommend-names 는 사전 인자 없이 DB 로 수행 | X | 선택 |
 | `recommend-names` | AS-IS 스키마 → TO-BE 속성명 추천 (적재된 SQLite 표준사전 기반, Tier1 정확매칭 → Tier2 단어조합 → Tier3 RAG → Tier4 LLM) | X | 선택 |
 | `gen-ddl` | 자연어 → 표준 DDL 생성 (+ 검증) | 선택 | O |
 | `audit-standards` | 전체 스키마 표준 위반 일괄 검사 | X | X |
@@ -1649,8 +1649,13 @@ Excel 로 받아 **SQLite 캐시**(`<vectordb>/standard_dict.sqlite`)로 1회
 - 용어사전: `논리명 / 물리명 / 구성정보 / 물리의미 / 도메인명 /
   데이터유형 / 길이 / 소수점 / 표준여부 / 개인정보구분 / 암호화여부 /
   설명 / 만료일자 / 출처구분`
+- 도메인사전(선택): `도메인그룹명 / 도메인명 / 데이터유형 / 길이 / 소수점 /
+  개인정보구분 / 암호화여부 / 설명 / 만료일자 / 출처구분`. 동일 도메인명이
+  그룹별로 여러 개 존재할 수 있어 중복을 보존하며, 데이터유형 추론 보정에 쓴다.
 
-`표준여부=N` 및 `만료일자` 지난 항목은 정확매칭 인덱스에서 제외된다.
+`만료일자` 지난 항목은 매칭 인덱스에서 제외된다. `표준여부` 는 `N/X/×/비표준`
+등 명시적 부정 표기만 비표준으로 보고, 그 외(`Y/○/표준/공백`)는 표준으로
+견고하게 처리한다.
 
 헤더는 유니코드 NFC 정규화(NFD 조합형 한글 흡수)·숨은문자(zero-width/BOM)·
 괄호 부가설명·공백·개행·앞 번호를 무시하고 자동 인식하며, 표지/설명 시트가
@@ -1678,7 +1683,8 @@ Excel 로 받아 **SQLite 캐시**(`<vectordb>/standard_dict.sqlite`)로 1회
 # 기존 적재 내용을 전부 삭제하고 다시 적재한다.
 python main.py build-dict ^
   --word-dict ./input/단어사전.xlsx ^
-  --term-dict ./input/용어사전.xlsx
+  --term-dict ./input/용어사전.xlsx ^
+  --domain-dict ./input/도메인사전.xlsx
 # RAG 까지 쓰려면 임베딩도 함께:
 python main.py build-dict --word-dict ... --term-dict ... --embed
 
@@ -1693,8 +1699,9 @@ python main.py recommend-names --schema-md ... --no-rag --no-llm
 >필요할 때(캐시 없음/Excel 변경) 자동 적재하는 단축 실행도 지원하지만,
 > 권장 흐름은 위처럼 `build-dict` 로 적재 단계를 명시적으로 분리하는 것이다.
 
-`build-dict` 옵션: `--word-dict` / `--term-dict` / `--word-sheet` /
-`--term-sheet` / `--dict-db` / `--embed`(용어사전 임베딩 동시 생성).
+`build-dict` 옵션: `--word-dict` / `--term-dict` / `--domain-dict` /
+`--word-sheet` / `--term-sheet` / `--domain-sheet` / `--dict-db` /
+`--embed`(용어사전 임베딩 동시 생성).
 
 **산출물** (`output/recommend_names/<날짜>/`):
 

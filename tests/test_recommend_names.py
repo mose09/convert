@@ -13,8 +13,11 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from oracle_embeddings.std_dict import (  # noqa: E402
+    _is_std_value,
+    build_std_dict,
     compose_data_type,
     ensure_std_dict,
+    load_std_dict,
     norm_kor,
 )
 from oracle_embeddings.tobe_recommender import recommend_column  # noqa: E402
@@ -168,6 +171,76 @@ class SheetDetectionTest(unittest.TestCase):
             ("물리의미(영문풀네임)", "eng"),  # 물리명 으로 오분류되면 안 됨
         ]:
             self.assertEqual(_classify_header(h), expect, h)
+
+
+class WordAbbrAndStdTest(unittest.TestCase):
+    """표준여부 표기 다양성 + 중복 논리명 약어 해결 회귀."""
+
+    def test_is_std_value_lenient(self):
+        for v in ("Y", "표준", "○", "사용", "", "예", "O"):
+            self.assertTrue(_is_std_value(v), v)
+        for v in ("N", "X", "×", "비표준", "폐기"):
+            self.assertFalse(_is_std_value(v), v)
+
+    def _build(self, rows):
+        from openpyxl import Workbook
+        tmp = tempfile.mkdtemp()
+        wb = Workbook(); ws = wb.active
+        ws.append(["논리명", "물리명", "표준여부", "속성분류어"])
+        for r in rows:
+            ws.append(r)
+        wp = os.path.join(tmp, "w.xlsx"); wb.save(wp)
+        db = os.path.join(tmp, "sd.sqlite")
+        build_std_dict(db, word_xlsx=wp)
+        return load_std_dict(db)
+
+    def test_duplicate_logical_first_empty_physical(self):
+        # 같은 '확인' 이 두 번: 첫 행 물리명 비었고 둘째 행 CHK → CHK 써야 함
+        sd = self._build([["확인", "", "Y", "N"], ["확인", "CHK", "Y", "N"],
+                          ["여부", "YN", "Y", "Y"]])
+        self.assertEqual(sd.logical_to_abbr.get("확인"), "CHK")
+        rec = recommend_column("T", "X1", "확인여부", sd)
+        self.assertEqual(rec.tobe_name, "CHK_YN")
+
+    def test_nonstd_text_still_resolves_abbr(self):
+        # 표준여부 가 '표준' 텍스트여도 약어 사용
+        sd = self._build([["처리", "PROC", "표준", "N"]])
+        rec = recommend_column("T", "X", "처리", sd)
+        self.assertEqual(rec.tobe_name, "PROC")
+
+    def test_unmatched_fragment_wrapped(self):
+        sd = self._build([["번호", "NO", "Y", "Y"]])
+        rec = recommend_column("T", "X", "미지단어번호", sd)
+        self.assertIn("«미지단어»", rec.tobe_name)
+        self.assertTrue(rec.tobe_name.endswith("_NO"))
+
+    def test_comment_marker_stripped(self):
+        sd = self._build([["고객", "CUST", "Y", "N"]])
+        rec = recommend_column("T", "X", "고객(LLM추천)", sd)
+        self.assertEqual(rec.tobe_name, "CUST")
+
+
+class DomainDictTest(unittest.TestCase):
+    def test_domain_multi_entry_and_type(self):
+        from openpyxl import Workbook
+        tmp = tempfile.mkdtemp()
+        wb = Workbook(); ws = wb.active
+        ws.append(["도메인그룹명", "도메인명", "데이터유형", "길이", "소수점",
+                   "개인정보구분", "암호화여부", "설명", "만료일자", "출처구분"])
+        ws.append(["금액", "금액", "NUMBER", "15", "2", "N", "N", "", "", ""])
+        ws.append(["외화금액", "금액", "NUMBER", "18", "3", "N", "N", "", "", ""])
+        ws.append(["율", "율", "NUMBER", "5", "2", "N", "N", "", "", ""])
+        dp = os.path.join(tmp, "dom.xlsx"); wb.save(dp)
+        db = os.path.join(tmp, "sd.sqlite")
+        st = build_std_dict(db, domain_xlsx=dp)
+        self.assertEqual(st["domains"], 3)
+        sd = load_std_dict(db)
+        self.assertTrue(sd.has_domains())
+        # 동일 도메인명 '금액' 2개 보존
+        self.assertEqual(len(sd.domain_by_name[norm_kor("금액")]), 2)
+        dtype, single = sd.resolve_domain_type("금액")
+        self.assertEqual(dtype, "NUMBER(15,2)")  # 최빈/첫값
+        self.assertFalse(single)                 # 다중이라 단일 아님
 
 
 if __name__ == "__main__":
