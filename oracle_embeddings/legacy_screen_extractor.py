@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v35"  # v35: sibling fallback 가드 — sub_rel 이 index 면 그 자체가 main 이므로 wrapper 폴더 추가 안 함 (화면 두 개로 갈려 SEARCH URL 흡수 실패 케이스)
+SCREEN_SCHEMA_VERSION = "v36"  # v36: sibling fallback parent+grandparent 복원, wrapper 회피는 callback handler 정의 (handleX/onX) 가드로 판별
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1372,31 +1372,62 @@ def extract_screen_layouts(
         print(f"  screen layout: main entry 강제추가 실패 — {_e}")
 
     # Fallback — _collect_main_entries 가 0 이거나 모두 by_file 에 있는
-    # 경우: handlers_by_url 에 등록된 sub file 의 직속 parent 폴더 안
-    # index.* 도 main 후보로 추가. apps/ 레이아웃 외 단일 repo 의 임의
+    # 경우: handlers_by_url 에 등록된 sub file 의 parent / grandparent
+    # 폴더 안 index.* 도 main 후보로 추가. apps/ 외 단일 repo 의 임의
     # 폴더 구조 (예: src/MaterialMaster/index.js + src/MaterialMaster/
     # Search/index.js) 에서 _collect_main_entries 가 못 잡는 경우 cover.
     #
-    # 가드 — sub_rel 자체가 ``X/index.*`` 형태면 그 자체가 main 후보이고
-    # by_file 에 이미 있음. 그 위 wrapper 폴더 (hypm_materialMaster/index.js
-    # 같은 lazy-loader / 래퍼) 까지 main 으로 추가하면 같은 화면이 두 개로
-    # 갈리고 wrapper 쪽 closure 에서는 handleSearch 정의 못 찾아 URL 흡수
-    # 실패. 사용자 보고: "루트에 있는건 SEARCH url 제외, 하위 폴더에 있는
-    # index.js 에 SEARCH url 만 표기" 케이스 fix.
+    # wrapper 회피 가드:
+    # - parent index = sub_rel 자기 자신이면 skip (cand != sub_rel)
+    # - grandparent index 는 callback handler 정의 (handleX / onX) 가
+    #   있어야 main 으로 인정 — wrapper / lazy-loader index.js (정의 없음)
+    #   는 제외. 사용자 보고: hypm_materialMaster/index.js (wrapper) +
+    #   hypm_materialMaster/MaterialMaster/index.js (진짜 main) 같은
+    #   nested 폴더에서 wrapper 가 main 으로 추가되어 SEARCH URL 흡수
+    #   실패하던 케이스 fix.
+    _HANDLER_DEF_RE = re.compile(
+        r"\b(?:const\s+|let\s+|var\s+|this\.)?(?:handle|on)[A-Z_]\w*"
+        r"\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|\w*\s*\()"
+    )
+
+    def _is_real_main_candidate(abs_path: str) -> bool:
+        try:
+            with open(abs_path, encoding="utf-8", errors="ignore") as fh:
+                cand_content = fh.read(40000)
+            return bool(_HANDLER_DEF_RE.search(cand_content))
+        except Exception:
+            return False
+
     if main_added_force == 0:
         sibling_mains = set()
         for sub_rel in list(by_file.keys()):
-            basename = os.path.basename(sub_rel).rsplit(".", 1)[0].lower()
-            if basename == "index":
-                # sub_rel 자체가 main 후보 — wrapper 폴더 추가 회피
-                continue
             parent = os.path.dirname(sub_rel).replace(os.sep, "/")
             if not parent:
                 continue
+            # 1) parent index 시도 — sub_rel 자기 자신 제외
+            parent_found = False
             for ext in (".js", ".jsx", ".ts", ".tsx"):
                 cand = f"{parent}/index{ext}"
                 abs_cand = os.path.join(frontend_dir, cand)
-                if os.path.isfile(abs_cand) and cand not in by_file:
+                if (cand != sub_rel
+                        and os.path.isfile(abs_cand)
+                        and cand not in by_file):
+                    sibling_mains.add(cand)
+                    parent_found = True
+                    break
+            if parent_found:
+                continue
+            # 2) grandparent index 시도 — callback handler 정의 가드
+            grand = os.path.dirname(parent).replace(os.sep, "/")
+            if not grand:
+                continue
+            for ext in (".js", ".jsx", ".ts", ".tsx"):
+                cand = f"{grand}/index{ext}"
+                abs_cand = os.path.join(frontend_dir, cand)
+                if (cand != sub_rel
+                        and os.path.isfile(abs_cand)
+                        and cand not in by_file
+                        and _is_real_main_candidate(abs_cand)):
                     sibling_mains.add(cand)
                     break
         for main_rel in sibling_mains:
