@@ -46,22 +46,31 @@ def _norm_header(h) -> str:
     t = unicodedata.normalize("NFC", str(h))  # NFD 조합형 → NFC 완성형
     t = _ZW_RE.sub("", t)                      # zero-width / BOM 제거
     t = re.sub(r"\(.*?\)", "", t)              # 괄호 부가설명 제거
+    t = re.sub(r"[*※★●○◦:：·]", "", t)         # 필수표시/장식 기호 제거
     t = re.sub(r"\s+", "", t)                  # 개행/탭/NBSP 포함 모든 공백 제거
     t = re.sub(r"^[0-9]+[.)\-_]?", "", t)      # 앞 번호 (1. / 2) / 3-) 제거
     return t.strip()
 
 
 def _classify_header(h: str) -> str | None:
-    """엑셀 헤더 셀 1개를 표준 필드 키로 분류 (없으면 None)."""
+    """엑셀 헤더 셀 1개를 표준 필드 키로 분류 (없으면 None).
+
+    정확매칭 우선 → 부분포함 폴백. 필수표시(``*``/``※``)·접두어(표준/단어/
+    컬럼)·접미어가 붙은 ``표준단어논리명*`` 같은 표기도 잡는다. 단, ``물리의미``
+    (eng) 가 ``물리명`` 보다 먼저 걸러지도록 순서 주의.
+    """
     t = _norm_header(h)
     if not t:
         return None
-    if t in ("논리명", "한글명", "논리명칭", "한글", "한글명칭", "속성명", "컬럼논리명"):
-        return "logical"
-    if t in ("물리명", "컬럼명", "영문약어", "물리", "물리명칭", "컬럼물리명", "영문명약어"):
-        return "physical"
+    # eng 를 물리명/논리명 포함검사보다 먼저 (물리의미 가 物理 로 오분류되지 않게)
     if "물리의미" in t or "영문풀" in t or t in ("영문명", "영문"):
         return "eng"
+    if t in ("논리명", "한글명", "논리명칭", "한글", "한글명칭", "속성명", "컬럼논리명") \
+            or "논리명" in t or "한글명" in t:
+        return "logical"
+    if t in ("물리명", "컬럼명", "영문약어", "물리", "물리명칭", "컬럼물리명", "영문명약어") \
+            or "물리명" in t or "컬럼명" in t or "영문약어" in t:
+        return "physical"
     if "구성정보" in t or t == "구성":
         return "compose"
     if "도메인" in t:
@@ -102,8 +111,8 @@ def _header_index(header_row) -> dict[str, int]:
 
 
 def _find_header_row(rows: list[tuple]) -> int:
-    """헤더 행 위치 탐색. 상위 10행 중 `논리명`+`물리명` 둘 다 잡히는 첫 행."""
-    for r in range(min(10, len(rows))):
+    """헤더 행 위치 탐색. 상위 20행 중 `논리명`+`물리명` 둘 다 잡히는 첫 행."""
+    for r in range(min(20, len(rows))):
         idx = _header_index(rows[r])
         if "logical" in idx and "physical" in idx:
             return r
@@ -224,20 +233,33 @@ def _pick_sheet(path: str, sheet: str | None):
 
 
 def diagnose_xlsx(path: str) -> str:
-    """0건일 때 자가진단 — 시트명 + 각 시트 헤더행 인식 결과 1줄 요약."""
+    """0건일 때 자가진단 — 시트명 + 헤더행 셀별 repr·분류 결과.
+
+    repr 로 출력해 숨은문자/None/실제 글자가 그대로 드러나게 한다.
+    """
     lines = [f"  진단: {os.path.basename(path)}"]
-    for name, rows in _all_sheets(path):
+    sheets = _all_sheets(path)
+    lines.append(f"    시트({len(sheets)}): {[n for n, _ in sheets]}")
+    for name, rows in sheets:
         if not rows:
             lines.append(f"    - [{name}] 빈 시트")
             continue
+        nonnull = sum(1 for r in rows[:5] for c in r if c is not None)
         hr = _find_header_row(rows)
         idx = _header_index(rows[hr])
-        head = [str(c) for c in rows[hr][:12] if c is not None]
         ok = "logical" in idx and "physical" in idx
         mark = "✓논리+물리 인식" if ok else "✗논리/물리 미인식"
         lines.append(
             f"    - [{name}] {len(rows)}행, 헤더추정 {hr + 1}행: {mark} "
-            f"(인식 {sorted(idx)}) / 헤더={head}")
+            f"(상위5행 비어있지않은셀 {nonnull}개)")
+        if nonnull == 0:
+            lines.append("        ⚠ 셀이 전부 None — DRM/보안 또는 캐시값 없음 의심")
+            continue
+        for ci, c in enumerate(rows[hr][:14]):
+            if c is None:
+                continue
+            key = _classify_header(c)
+            lines.append(f"        col{ci}: {c!r} → {key or '✗미분류'}")
     return "\n".join(lines)
 
 

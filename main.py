@@ -1852,6 +1852,7 @@ def cmd_recommend_names(args):
     print("=== Step 1: 표준사전 로드 ===")
     print(f"  단어사전: {args.word_dict or '(미지정)'}")
     print(f"  용어사전: {args.term_dict or '(미지정)'}")
+    from oracle_embeddings.std_dict import diagnose_xlsx
     will_build = args.rebuild_dict or needs_rebuild(dict_db, args.word_dict, args.term_dict)
     try:
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
@@ -1859,6 +1860,15 @@ def cmd_recommend_names(args):
                              word_sheet=args.word_sheet, term_sheet=args.term_sheet)
     except FileNotFoundError as e:
         print(f"  Error: {e}")
+        return
+    except Exception as e:  # noqa: BLE001 — Excel 읽기 실패 시 진단 출력
+        print(f"  Error: 사전 파일 읽기 실패 — {type(e).__name__}: {e}")
+        for p in (args.word_dict, args.term_dict):
+            if p:
+                try:
+                    print(diagnose_xlsx(p))
+                except Exception as de:  # noqa: BLE001
+                    print(f"  진단 실패({p}): {de}")
         return
     # 기존 캐시가 비어있는데 Excel 이 주어졌으면 1회 강제 재빌드 (mtime 동일해도)
     if (not sd.has_terms() and not sd.has_words()
@@ -1871,7 +1881,6 @@ def cmd_recommend_names(args):
           f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
     if not sd.has_terms() and not sd.has_words():
         print("  Error: 표준사전이 비어있습니다. (헤더 인식 실패 또는 데이터 시트 미선택)")
-        from oracle_embeddings.std_dict import diagnose_xlsx
         if args.word_dict:
             print(diagnose_xlsx(args.word_dict))
         if args.term_dict:
