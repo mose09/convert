@@ -123,6 +123,18 @@ class SheetDetectionTest(unittest.TestCase):
         self.assertEqual(_classify_header("1. 논리\n명"), "logical")
         self.assertEqual(_classify_header("물리명 "), "physical")
 
+    def test_nfd_unicode_header_and_data(self):
+        # macOS 등에서 생성된 NFD(조합형) 한글도 인식돼야 함
+        import unicodedata
+
+        from oracle_embeddings.std_dict import _classify_header, norm_kor
+        self.assertEqual(_classify_header(unicodedata.normalize("NFD", "논리명")),
+                         "logical")
+        self.assertEqual(_classify_header(unicodedata.normalize("NFD", "물리명")),
+                         "physical")
+        self.assertEqual(norm_kor(unicodedata.normalize("NFD", "고객번호")),
+                         norm_kor("고객번호"))
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
