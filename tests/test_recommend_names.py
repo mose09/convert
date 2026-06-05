@@ -98,5 +98,31 @@ class RecommendCoreTest(unittest.TestCase):
         self.assertEqual(rec.confidence, 0.0)
 
 
+class SheetDetectionTest(unittest.TestCase):
+    """표지 시트 + 개행/번호 헤더 자동 인식 회귀."""
+
+    def test_cover_sheet_skipped_and_header_normalized(self):
+        from openpyxl import Workbook
+
+        from oracle_embeddings.std_dict import _classify_header, _pick_sheet
+        tmp = tempfile.mkdtemp()
+        wb = Workbook()
+        cover = wb.active
+        cover.title = "표지"
+        cover.append(["표준 단어사전", "v1"])
+        ws = wb.create_sheet("단어목록")
+        ws.append(["1. 논리\n명", "물리명 ", "표준여부(Y,N)"])
+        ws.append(["고객", "CUST", "Y"])
+        path = os.path.join(tmp, "w.xlsx")
+        wb.save(path)
+
+        name, _, idx, _ = _pick_sheet(path, None)
+        self.assertEqual(name, "단어목록")
+        self.assertIn("logical", idx)
+        self.assertIn("physical", idx)
+        self.assertEqual(_classify_header("1. 논리\n명"), "logical")
+        self.assertEqual(_classify_header("물리명 "), "physical")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

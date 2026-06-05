@@ -1855,14 +1855,29 @@ def cmd_recommend_names(args):
     will_build = args.rebuild_dict or needs_rebuild(dict_db, args.word_dict, args.term_dict)
     try:
         sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict,
-                             force=args.rebuild_dict)
+                             force=args.rebuild_dict,
+                             word_sheet=args.word_sheet, term_sheet=args.term_sheet)
     except FileNotFoundError as e:
         print(f"  Error: {e}")
         return
+    # 기존 캐시가 비어있는데 Excel 이 주어졌으면 1회 강제 재빌드 (mtime 동일해도)
+    if (not sd.has_terms() and not sd.has_words()
+            and (args.word_dict or args.term_dict) and not args.rebuild_dict):
+        print("  기존 캐시가 비어있어 강제 재빌드합니다...")
+        sd = ensure_std_dict(dict_db, args.word_dict, args.term_dict, force=True,
+                             word_sheet=args.word_sheet, term_sheet=args.term_sheet)
+
     print(f"  용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
           f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']}")
     if not sd.has_terms() and not sd.has_words():
-        print("  Error: 표준사전이 비어있습니다.")
+        print("  Error: 표준사전이 비어있습니다. (헤더 인식 실패 또는 데이터 시트 미선택)")
+        from oracle_embeddings.std_dict import diagnose_xlsx
+        if args.word_dict:
+            print(diagnose_xlsx(args.word_dict))
+        if args.term_dict:
+            print(diagnose_xlsx(args.term_dict))
+        print("  → 위 진단에서 데이터 시트명을 확인해 --word-sheet/--term-sheet 로 "
+              "지정하거나, 헤더 표기를 알려주세요. --rebuild-dict 와 함께 재실행.")
         return
 
     use_rag = not args.no_rag
@@ -2867,6 +2882,14 @@ def main():
     rec_parser.add_argument(
         "--dict-db",
         help="표준사전 SQLite 캐시 경로 (기본: <vectordb>/standard_dict.sqlite)",
+    )
+    rec_parser.add_argument(
+        "--word-sheet",
+        help="단어사전 시트명 (미지정 시 논리명+물리명 잡히는 시트 자동 선택)",
+    )
+    rec_parser.add_argument(
+        "--term-sheet",
+        help="용어사전 시트명 (미지정 시 자동 선택)",
     )
     rec_parser.add_argument(
         "--rebuild-dict", action="store_true",

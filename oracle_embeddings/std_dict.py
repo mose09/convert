@@ -30,20 +30,27 @@ logger = logging.getLogger(__name__)
 # 헤더 자동 인식
 # ─────────────────────────────────────────────────────────────────
 
-def _classify_header(h: str) -> str | None:
-    """엑셀 헤더 셀 1개를 표준 필드 키로 분류 (없으면 None).
+def _norm_header(h) -> str:
+    """헤더 셀 정규화 — 괄호 부가설명·모든 공백(개행/탭 포함)·앞 번호 제거.
 
-    헤더의 괄호 부가설명 `(...)` 과 공백은 제거 후 판정.
-    예: ``물리의미(영문풀네임)`` → ``eng``, ``표준여부(Y,N)`` → ``is_std``.
+    예: ``1. 논리\n명(한글)`` → ``논리명``.
     """
-    if not h:
-        return None
-    t = re.sub(r"\(.*?\)", "", str(h)).strip().replace(" ", "")
+    if h is None:
+        return ""
+    t = re.sub(r"\(.*?\)", "", str(h))      # 괄호 부가설명 제거
+    t = re.sub(r"\s+", "", t)                # 개행/탭 포함 모든 공백 제거
+    t = re.sub(r"^[0-9]+[.)\-_]?", "", t)    # 앞 번호 (1. / 2) / 3-) 제거
+    return t.strip()
+
+
+def _classify_header(h: str) -> str | None:
+    """엑셀 헤더 셀 1개를 표준 필드 키로 분류 (없으면 None)."""
+    t = _norm_header(h)
     if not t:
         return None
-    if t in ("논리명", "한글명", "논리명칭", "한글"):
+    if t in ("논리명", "한글명", "논리명칭", "한글", "한글명칭", "속성명", "컬럼논리명"):
         return "logical"
-    if t in ("물리명", "컬럼명", "영문약어", "물리"):
+    if t in ("물리명", "컬럼명", "영문약어", "물리", "물리명칭", "컬럼물리명", "영문명약어"):
         return "physical"
     if "물리의미" in t or "영문풀" in t or t in ("영문명", "영문"):
         return "eng"
@@ -167,24 +174,65 @@ def compose_data_type(data_type: str, length: str, scale: str) -> str:
 # Excel 로드
 # ─────────────────────────────────────────────────────────────────
 
-def _read_xlsx(path: str, sheet: str | None) -> list[tuple]:
+def _all_sheets(path: str) -> list[tuple[str, list[tuple]]]:
+    """워크북의 모든 시트를 (이름, rows) 로 반환."""
     try:
         from openpyxl import load_workbook
     except ImportError as e:  # pragma: no cover
         raise ImportError("openpyxl 가 필요합니다: pip install openpyxl") from e
     wb = load_workbook(path, data_only=True, read_only=True)
-    ws = wb[sheet] if sheet and sheet in wb.sheetnames else wb.active
-    rows = [row for row in ws.iter_rows(values_only=True)]
+    out = []
+    for name in wb.sheetnames:
+        ws = wb[name]
+        out.append((name, [row for row in ws.iter_rows(values_only=True)]))
     wb.close()
-    return rows
+    return out
+
+
+def _pick_sheet(path: str, sheet: str | None):
+    """논리명+물리명 헤더가 잡히는 시트 자동 선택.
+
+    Returns ``(sheet_name, rows, header_idx, header_row)``. 표지/설명 시트가
+    앞에 있어도 데이터 시트를 찾아낸다. `sheet` 지정 시 해당 시트만.
+    """
+    sheets = _all_sheets(path)
+    if sheet:
+        sheets = [(n, r) for (n, r) in sheets if n == sheet] or sheets
+    fallback = None
+    for name, rows in sheets:
+        if not rows:
+            continue
+        hr = _find_header_row(rows)
+        idx = _header_index(rows[hr])
+        if "logical" in idx and "physical" in idx:
+            return name, rows, idx, hr
+        if fallback is None:
+            fallback = (name, rows, idx, hr)
+    return fallback or ("", [], {}, 0)
+
+
+def diagnose_xlsx(path: str) -> str:
+    """0건일 때 자가진단 — 시트명 + 각 시트 헤더행 인식 결과 1줄 요약."""
+    lines = [f"  진단: {os.path.basename(path)}"]
+    for name, rows in _all_sheets(path):
+        if not rows:
+            lines.append(f"    - [{name}] 빈 시트")
+            continue
+        hr = _find_header_row(rows)
+        idx = _header_index(rows[hr])
+        head = [str(c) for c in rows[hr][:12] if c is not None]
+        ok = "logical" in idx and "physical" in idx
+        mark = "✓논리+물리 인식" if ok else "✗논리/물리 미인식"
+        lines.append(
+            f"    - [{name}] {len(rows)}행, 헤더추정 {hr + 1}행: {mark} "
+            f"(인식 {sorted(idx)}) / 헤더={head}")
+    return "\n".join(lines)
 
 
 def _load_word_rows(path: str, sheet: str | None) -> list[dict]:
-    rows = _read_xlsx(path, sheet)
-    if not rows:
+    _, rows, idx, hr = _pick_sheet(path, sheet)
+    if not rows or "logical" not in idx:
         return []
-    hr = _find_header_row(rows)
-    idx = _header_index(rows[hr])
     out = []
     for row in rows[hr + 1:]:
         logical = _cell(row, idx, "logical")
@@ -206,11 +254,9 @@ def _load_word_rows(path: str, sheet: str | None) -> list[dict]:
 
 
 def _load_term_rows(path: str, sheet: str | None) -> list[dict]:
-    rows = _read_xlsx(path, sheet)
-    if not rows:
+    _, rows, idx, hr = _pick_sheet(path, sheet)
+    if not rows or "logical" not in idx:
         return []
-    hr = _find_header_row(rows)
-    idx = _header_index(rows[hr])
     out = []
     for row in rows[hr + 1:]:
         logical = _cell(row, idx, "logical")
@@ -273,12 +319,13 @@ def needs_rebuild(db_path: str, word_xlsx: str | None, term_xlsx: str | None) ->
 
 
 def build_std_dict(db_path: str, word_xlsx: str | None = None,
-                   term_xlsx: str | None = None) -> dict:
+                   term_xlsx: str | None = None, word_sheet: str | None = None,
+                   term_sheet: str | None = None) -> dict:
     """단어사전/용어사전 Excel → SQLite 캐시 생성. 통계 dict 반환."""
     os.makedirs(os.path.dirname(os.path.abspath(db_path)), exist_ok=True)
 
-    words = _load_word_rows(word_xlsx, None) if word_xlsx else []
-    terms = _load_term_rows(term_xlsx, None) if term_xlsx else []
+    words = _load_word_rows(word_xlsx, word_sheet) if word_xlsx else []
+    terms = _load_term_rows(term_xlsx, term_sheet) if term_xlsx else []
 
     # 만료 항목 집계 (적재는 하되 표준 인덱스에서 제외하도록 플래그만)
     word_expired = sum(1 for w in words if _is_expired(w["expire"]))
@@ -463,12 +510,13 @@ def load_std_dict(db_path: str) -> StdDict:
 
 
 def ensure_std_dict(db_path: str, word_xlsx: str | None, term_xlsx: str | None,
-                    force: bool = False) -> StdDict:
+                    force: bool = False, word_sheet: str | None = None,
+                    term_sheet: str | None = None) -> StdDict:
     """필요 시 빌드 후 로드. (mtime 변경/강제 시 재빌드)"""
     if force or needs_rebuild(db_path, word_xlsx, term_xlsx):
         if not (word_xlsx or term_xlsx):
             raise FileNotFoundError(
                 f"표준사전 SQLite 가 없고 (--word-dict/--term-dict) 도 없습니다: {db_path}"
             )
-        build_std_dict(db_path, word_xlsx, term_xlsx)
+        build_std_dict(db_path, word_xlsx, term_xlsx, word_sheet, term_sheet)
     return load_std_dict(db_path)
