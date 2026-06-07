@@ -1905,11 +1905,28 @@ def cmd_recommend_names(args):
               "--domain-sheet 로 지정하거나, 헤더 표기를 알려주세요.")
         return
 
+    # 사전 참조 진단 모드 — 특정 단어가 사전에서 어떻게 매칭되는지 확인
+    if args.probe:
+        print("\n=== 사전 참조 진단 (probe) ===")
+        for term in [t.strip() for t in args.probe.split(";") if t.strip()]:
+            p = tr.probe_term(term, sd)
+            src = ("용어사전" if p["in_term_dict"]
+                   else ("단어사전" + ("(동의어)" if p["is_synonym"] else "")
+                         if p["in_word_dict"] else "사전에 없음"))
+            print(f"  '{term}': 등재={src} / 논리명={p['resolved_logical'] or '-'}"
+                  f" / 물리명={p['abbr'] or '-'} → 추천={p['tobe']} (tier={p['tier']})")
+            print(f"      분해={p['tokens']}")
+        return
+
     use_rag = not args.no_rag
     if use_rag and not tr.has_std_terms_collection(db_path):
         print("  [i] RAG 임베딩이 없어 RAG 비활성 — 쓰려면 `build-dict` 로 "
               "(임베딩 엔드포인트 설정 후) 재적재하세요.")
         use_rag = False
+
+    if not args.schema_md:
+        print("  Error: --schema-md 가 필요합니다 (또는 --probe 로 사전 진단).")
+        return
 
     print("\n=== Step 2: AS-IS 스키마 파싱 ===")
     schema = parse_schema_md(args.schema_md)
@@ -2988,8 +3005,13 @@ def main():
         help="AS-IS 스키마 → TO-BE 속성명 추천 (표준 단어사전/용어사전 기반 + RAG/LLM 보조)",
     )
     rec_parser.add_argument(
-        "--schema-md", required=True,
-        help="AS-IS 스키마 .md (schema 커맨드 산출물)",
+        "--schema-md",
+        help="AS-IS 스키마 .md (schema 커맨드 산출물). --probe 만 쓸 땐 생략 가능",
+    )
+    rec_parser.add_argument(
+        "--probe",
+        help="사전 참조 진단 — 세미콜론(;)으로 구분한 단어들이 사전에서 어떻게 "
+             "매칭되는지 출력 (예: --probe \"시설;USL VAL\"). 스키마 분석은 건너뜀",
     )
     rec_parser.add_argument(
         "--word-dict",
