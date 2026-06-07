@@ -255,17 +255,45 @@ def _clean_comment(comment: str | None) -> str:
     return re.sub(r"\s+", " ", c).strip()
 
 
+_HANGUL_RE = re.compile(r"[가-힣ㄱ-ㅎㅏ-ㅣ]")
+
+
+def _has_hangul(s: str) -> bool:
+    return bool(_HANGUL_RE.search(s or ""))
+
+
 def recommend_column(table: str, column: str, comment: str | None,
                      sd: StdDict) -> ColumnRec:
     raw = (comment or "").strip()
     cleaned = _clean_comment(raw)
-    # 마커만 있던 코멘트는 비게 됨 → 물리명 기준으로 폴백
+    # 한글 코멘트만 형태소(논리명) 분해. 영문 코멘트(예: "USL VAL")는 한글
+    # 분해기에 넣으면 엉뚱하게 쪼개지므로 물리명 기준으로 처리.
+    use_comment = bool(cleaned) and _has_hangul(cleaned)
     rec = ColumnRec(table=table, column=column, comment=raw,
-                    basis="comment" if cleaned else "column")
-    if cleaned:
-        rec.comment = raw  # 리포트엔 원본 코멘트 노출
+                    basis="comment" if use_comment else "column")
+    if use_comment:
         return _from_comment(rec, sd, cleaned)
     return _from_physical(rec, sd)
+
+
+def probe_term(term: str, sd: StdDict) -> dict:
+    """단어 1개가 사전에 어떻게 등재됐고 결정적 매칭이 뭘 내는지 진단."""
+    from .std_dict import norm_kor
+    nk = norm_kor(term)
+    logical = sd.syn_to_logical.get(nk)
+    rec = recommend_column("(probe)", term, term, sd)
+    return {
+        "term": term,
+        "norm": nk,
+        "in_term_dict": nk in sd.term_by_logical,       # 용어사전 논리명 정확매칭
+        "in_word_dict": logical is not None,            # 단어사전 논리명/동의어 등재
+        "resolved_logical": logical or "",
+        "is_synonym": bool(logical) and norm_kor(logical) != nk,
+        "abbr": sd.logical_to_abbr.get(logical, "") if logical else "",
+        "tobe": rec.tobe_name,
+        "tier": rec.tier,
+        "tokens": [(t.frag, t.abbr, t.matched) for t in rec.tokens],
+    }
 
 
 def recommend_schema(schema: dict, sd: StdDict) -> tuple[list[ColumnRec], RecommendStats]:

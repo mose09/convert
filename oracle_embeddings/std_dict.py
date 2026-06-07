@@ -616,6 +616,8 @@ def load_std_dict(db_path: str) -> StdDict:
 
     # 단어사전
     word_keys: set[str] = set()
+    _abbr_std: dict[str, str] = {}   # 논리명 → 물리명 (표준 행)
+    _abbr_any: dict[str, str] = {}   # 논리명 → 물리명 (표준여부 무관)
     for r in cur.execute("SELECT * FROM word"):
         if r["expired"]:
             continue
@@ -628,16 +630,22 @@ def load_std_dict(db_path: str) -> StdDict:
             sd.word_by_logical[r["logical"]] = wr
         if r["physical"] and r["physical"] not in sd.abbr_to_logical:
             sd.abbr_to_logical[r["physical"]] = r["logical"]
-        # 논리명 → 물리명 (표준여부 무관, 물리명 있는 첫 항목). 매칭됐는데
-        # 약어가 비어 한글이 그대로 박히는 문제 방지.
-        if r["logical"] and r["physical"] and r["logical"] not in sd.logical_to_abbr:
-            sd.logical_to_abbr[r["logical"]] = r["physical"]
+        # 논리명 → 물리명: 표준 행 우선, 없으면 비표준으로 폴백 (시설→FACI(표준)
+        # 가 FAC(비표준)에 가려지지 않게 + 확인처럼 비표준만 있으면 그거라도 사용)
+        if r["logical"] and r["physical"]:
+            if r["logical"] not in _abbr_any:
+                _abbr_any[r["logical"]] = r["physical"]
+            if r["is_std"] and r["logical"] not in _abbr_std:
+                _abbr_std[r["logical"]] = r["physical"]
         # 동의어/논리명 → 논리명 매핑 (표준 단어로 귀결)
         for key in [r["logical"], *syns]:
             nk = norm_kor(key)
             if nk and nk not in sd.syn_to_logical:
                 sd.syn_to_logical[nk] = r["logical"]
                 word_keys.add(nk)
+
+    # 표준 행 우선으로 논리명→물리명 확정 (비표준은 표준 없을 때만 폴백)
+    sd.logical_to_abbr = {**_abbr_any, **_abbr_std}
 
     # 분류어 데이터유형 추론: 용어사전 물리명 끝 토큰 == 분류어 물리명 인 경우 집계
     classifier_phys = {
