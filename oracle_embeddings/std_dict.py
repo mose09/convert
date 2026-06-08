@@ -149,6 +149,19 @@ def _cell(row, idx: dict[str, int], key: str) -> str:
     return str(v).strip()
 
 
+# 매칭키 정규화: norm_kor + 대문자 (영문 대소문자 차이 흡수, 한글은 영향 없음)
+def _match_key(s: str | None) -> str:
+    return norm_kor(s).upper()
+
+
+# 후보 우선순위: 표준Y[논리명0>동의어1>물리의미2] > 표준N[+10]
+_FIELD_RANK = {"논리명": 0, "동의어": 1, "물리의미": 2}
+
+
+def _cand_rank(is_std: bool, field: str) -> int:
+    return _FIELD_RANK[field] + (0 if is_std else 10)
+
+
 def _is_yes(s: str) -> bool:
     return str(s).strip().upper() in ("Y", "YES", "TRUE", "1", "O", "○", "●", "예", "사용")
 
@@ -554,12 +567,12 @@ class StdDict:
     # Tier1: 용어사전 정확매칭
     term_by_logical: dict[str, TermRow] = field(default_factory=dict)  # norm논리명 → term
     term_by_physical: dict[str, TermRow] = field(default_factory=dict)  # 물리명 → term
-    # Tier2: 단어사전 조합
-    word_by_logical: dict[str, WordRow] = field(default_factory=dict)  # 논리명 → word
-    syn_to_logical: dict[str, str] = field(default_factory=dict)  # norm(동의어/논리명) → 논리명
-    word_keys_sorted: list[str] = field(default_factory=list)  # norm 논리명/동의어 (길이 desc)
+    # Tier2: 단어사전 — 6단계 우선순위 후보맵
+    word_by_logical: dict[str, WordRow] = field(default_factory=dict)  # 논리명 → word (분류어 등)
+    # 매칭키(논리명/동의어/물리의미 norm·대문자) → [(rank, 논리명, 물리명, 필드)]
+    cand_by_key: dict[str, list] = field(default_factory=dict)
+    word_keys_sorted: list[str] = field(default_factory=list)  # cand_by_key 키 (길이 desc, 한글 munch용)
     abbr_to_logical: dict[str, str] = field(default_factory=dict)  # 물리명 → 논리명
-    logical_to_abbr: dict[str, str] = field(default_factory=dict)  # 논리명 → 물리명 (표준여부 무관, 전 단어)
     classifier_type: dict[str, tuple[str, str]] = field(default_factory=dict)  # 분류어논리명 → (domain, data_type)
     # 도메인사전: 동일 도메인명 다중 엔트리 보존
     domain_by_name: dict[str, list[DomainEntry]] = field(default_factory=dict)  # norm도메인명 → [entry...]
@@ -570,10 +583,37 @@ class StdDict:
         return bool(self.term_by_logical or self.term_by_physical)
 
     def has_words(self) -> bool:
-        return bool(self.word_by_logical)
+        return bool(self.cand_by_key)
 
     def has_domains(self) -> bool:
         return bool(self.domain_by_name)
+
+    def resolve_key(self, match_key: str):
+        """이미 정규화된 매칭키 → 최우선 후보 (논리명, 물리명, 필드) | None.
+
+        우선순위: 표준Y[논리명>동의어>물리의미] > 표준N[논리명>동의어>물리의미].
+        """
+        cands = self.cand_by_key.get(match_key)
+        if not cands:
+            return None
+        rank, logical, physical, field = min(cands)
+        return logical, physical, field
+
+    def resolve_word(self, token: str, prefer_physical: bool = False):
+        """토큰(원문) → (논리명, 물리명, 필드) | None.
+
+        prefer_physical=True 면 물리명(이미 표준약어) 매칭을 최우선으로,
+        아니면 6단계 후 물리명을 폴백으로 시도.
+        """
+        up = (token or "").strip().upper()
+        if prefer_physical and up in self.abbr_to_logical:
+            return self.abbr_to_logical[up], up, "물리명"
+        hit = self.resolve_key(_match_key(token))
+        if hit:
+            return hit
+        if up in self.abbr_to_logical:
+            return self.abbr_to_logical[up], up, "물리명"
+        return None
 
     def resolve_domain_type(self, domain_name: str) -> tuple[str, bool]:
         """도메인명 → (대표 데이터유형, 단일여부). 다중이면 최빈값+단일=False."""
@@ -614,38 +654,39 @@ def load_std_dict(db_path: str) -> StdDict:
     # 분류어별 대표 (도메인, 데이터유형) — 용어사전 물리명 마지막 토큰 기준 최빈값
     classifier_samples: dict[str, Counter] = defaultdict(Counter)
 
-    # 단어사전
-    word_keys: set[str] = set()
-    _abbr_std: dict[str, str] = {}   # 논리명 → 물리명 (표준 행)
-    _abbr_any: dict[str, str] = {}   # 논리명 → 물리명 (표준여부 무관)
+    # 단어사전 — 6단계 우선순위 후보맵 구축
+    #   매칭키(논리명/동의어/물리의미) → [(rank, 논리명, 물리명, 필드)]
+    #   rank: 표준Y[논리명0>동의어1>물리의미2] > 표준N[+10]
+    def _add_cand(raw_key: str, is_std: bool, logical: str, physical: str, field: str):
+        k = _match_key(raw_key)
+        if not k or not physical:  # 물리명 없으면 약어를 못 만들므로 후보 제외
+            return
+        sd.cand_by_key.setdefault(k, []).append(
+            (_cand_rank(is_std, field), logical, physical, field))
+
     for r in cur.execute("SELECT * FROM word"):
         if r["expired"]:
             continue
         syns = _split_synonyms(r["synonyms"])
+        is_std = bool(r["is_std"])
+        logical, physical, eng = r["logical"], r["physical"], r["eng"]
         wr = WordRow(
-            logical=r["logical"], physical=r["physical"], eng=r["eng"],
+            logical=logical, physical=physical, eng=eng,
             is_classifier=bool(r["is_classifier"]), synonyms=syns, desc=r["desc"],
         )
-        if r["is_std"] and r["logical"] and r["logical"] not in sd.word_by_logical:
-            sd.word_by_logical[r["logical"]] = wr
-        if r["physical"] and r["physical"] not in sd.abbr_to_logical:
-            sd.abbr_to_logical[r["physical"]] = r["logical"]
-        # 논리명 → 물리명: 표준 행 우선, 없으면 비표준으로 폴백 (시설→FACI(표준)
-        # 가 FAC(비표준)에 가려지지 않게 + 확인처럼 비표준만 있으면 그거라도 사용)
-        if r["logical"] and r["physical"]:
-            if r["logical"] not in _abbr_any:
-                _abbr_any[r["logical"]] = r["physical"]
-            if r["is_std"] and r["logical"] not in _abbr_std:
-                _abbr_std[r["logical"]] = r["physical"]
-        # 동의어/논리명 → 논리명 매핑 (표준 단어로 귀결)
-        for key in [r["logical"], *syns]:
-            nk = norm_kor(key)
-            if nk and nk not in sd.syn_to_logical:
-                sd.syn_to_logical[nk] = r["logical"]
-                word_keys.add(nk)
+        if is_std and logical and logical not in sd.word_by_logical:
+            sd.word_by_logical[logical] = wr
+        if physical and physical not in sd.abbr_to_logical:
+            sd.abbr_to_logical[physical] = logical
+        # 후보 등록 (논리명 → 동의어들 → 물리의미)
+        if logical:
+            _add_cand(logical, is_std, logical, physical, "논리명")
+        for syn in syns:
+            _add_cand(syn, is_std, logical, physical, "동의어")
+        if eng:
+            _add_cand(eng, is_std, logical, physical, "물리의미")
 
-    # 표준 행 우선으로 논리명→물리명 확정 (비표준은 표준 없을 때만 폴백)
-    sd.logical_to_abbr = {**_abbr_any, **_abbr_std}
+    sd.word_keys_sorted = sorted(sd.cand_by_key.keys(), key=len, reverse=True)
 
     # 분류어 데이터유형 추론: 용어사전 물리명 끝 토큰 == 분류어 물리명 인 경우 집계
     classifier_phys = {
@@ -678,19 +719,18 @@ def load_std_dict(db_path: str) -> StdDict:
         if types:
             sd.domain_type[nk] = Counter(types).most_common(1)[0][0]
 
-    sd.word_keys_sorted = sorted(word_keys, key=len, reverse=True)
     sd.counts = {
         "terms": len(sd.term_by_logical),
         "words": len(sd.word_by_logical),
-        "synonyms": len(sd.syn_to_logical),
+        "match_keys": len(sd.cand_by_key),
         "classifiers": len(sd.classifier_type),
         "domains": len(sd.domain_by_name),
         "domain_rows": sum(len(v) for v in sd.domain_by_name.values()),
     }
     conn.close()
-    logger.info("표준사전 로드: 용어 %d / 단어 %d / 동의어 %d / 분류어타입 %d / "
+    logger.info("표준사전 로드: 용어 %d / 단어 %d / 매칭키 %d / 분류어타입 %d / "
                 "도메인 %d(행 %d)",
-                sd.counts["terms"], sd.counts["words"], sd.counts["synonyms"],
+                sd.counts["terms"], sd.counts["words"], sd.counts["match_keys"],
                 sd.counts["classifiers"], sd.counts["domains"],
                 sd.counts["domain_rows"])
     return sd

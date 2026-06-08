@@ -16,7 +16,7 @@ import re
 import time
 from dataclasses import dataclass, field
 
-from .std_dict import StdDict, TermRow, norm_kor
+from .std_dict import StdDict, TermRow, _match_key, norm_kor
 
 logger = logging.getLogger(__name__)
 
@@ -84,11 +84,12 @@ def _split_physical(name: str) -> list[str]:
 
 
 def tokenize_korean(comment: str, sd: StdDict) -> list[TokenMatch]:
-    """한글 코멘트를 표준 단어(논리명/동의어) 기준 최장일치 분해.
+    """한글 코멘트를 표준 매칭키(논리명/동의어/물리의미) 기준 최장일치 분해.
 
-    인식 안 되는 구간은 미매칭 단편으로 누적 (1글자 조사성 잡음은 버림).
+    매칭된 키는 6단계 우선순위(표준Y[논리명>동의어>물리의미]>표준N[...])로
+    물리명을 확정. 인식 안 되는 구간은 미매칭 단편으로 누적.
     """
-    text = norm_kor(comment)
+    text = _match_key(comment)  # NFC + 공백/기호 제거 + 대문자
     if not text:
         return []
     maxlen = len(sd.word_keys_sorted[0]) if sd.word_keys_sorted else 0
@@ -106,20 +107,16 @@ def tokenize_korean(comment: str, sd: StdDict) -> list[TokenMatch]:
     while i < n:
         hit = None
         for L in range(min(maxlen, n - i), 0, -1):
-            sub = text[i:i + L]
-            logical = sd.syn_to_logical.get(sub)
-            if logical:
-                hit = (L, logical)
+            res = sd.resolve_key(text[i:i + L])
+            if res:
+                hit = (L, res)
                 break
         if hit:
             if pending:
                 flush()
-            L, logical = hit
-            # 표준여부 N 단어도 물리명이 있으면 사용 (logical_to_abbr 는 전 단어 포함)
-            abbr = sd.logical_to_abbr.get(logical, "")
-            via = "word" if text[i:i + L] == norm_kor(logical) else "synonym"
+            L, (logical, abbr, field) = hit
             tokens.append(TokenMatch(frag=text[i:i + L], logical=logical,
-                                     abbr=abbr, matched=True, via=via))
+                                     abbr=abbr, matched=True, via=field))
             i += L
         else:
             pending += text[i]
@@ -191,17 +188,17 @@ def _apply_term(rec: ColumnRec, tr: TermRow, tier: str, note: str) -> ColumnRec:
     return rec
 
 
-def _from_comment(rec: ColumnRec, sd: StdDict, cleaned: str) -> ColumnRec:
-    norm = norm_kor(cleaned)
-    tr = sd.term_by_logical.get(norm)
-    if tr:
-        return _apply_term(rec, tr, "정확매칭(용어)", "용어사전 논리명 1:1 매칭")
-    # 단어조합
-    rec.tokens = tokenize_korean(cleaned, sd)
+def _set_tier(rec: ColumnRec, up: str, sd: StdDict,
+              mark_already_std: bool = False) -> ColumnRec:
+    """토큰 매칭 결과로 tier 설정 + 마무리."""
     rec.tobe_name = _compose_name(rec.tokens)
     rec.domain, rec.data_type = _infer_domain_type(rec.tokens, sd)
     if rec.tokens and all(t.matched for t in rec.tokens):
-        rec.tier = "단어조합"
+        if mark_already_std and rec.tobe_name == up:
+            rec.tier = "이미표준"
+            rec.note = "AS-IS 물리명이 이미 표준 약어"
+        else:
+            rec.tier = "단어조합"
     elif any(t.matched for t in rec.tokens):
         rec.tier = "단어조합(부분)"
     else:
@@ -209,10 +206,37 @@ def _from_comment(rec: ColumnRec, sd: StdDict, cleaned: str) -> ColumnRec:
     return _finalize(rec)
 
 
-def _from_physical(rec: ColumnRec, sd: StdDict) -> ColumnRec:
-    up = rec.column.upper()
-    tr = sd.term_by_physical.get(up)
+def _from_comment(rec: ColumnRec, sd: StdDict, cleaned: str) -> ColumnRec:
+    # Tier1: 용어사전 논리명 1:1 정확매칭
+    tr = sd.term_by_logical.get(norm_kor(cleaned))
     if tr:
+        return _apply_term(rec, tr, "정확매칭(용어)", "용어사전 논리명 1:1 매칭")
+    # Tier2: 한글 최장일치 분해 (논리명>동의어>물리의미, 표준Y>N)
+    rec.tokens = tokenize_korean(cleaned, sd)
+    return _set_tier(rec, rec.column.upper(), sd)
+
+
+def _resolve_token_list(rec: ColumnRec, raw_tokens: list[str], sd: StdDict) -> ColumnRec:
+    """영문/물리명 토큰들을 물리명 우선 + 6단계 우선순위로 해석."""
+    for tok in raw_tokens:
+        hit = sd.resolve_word(tok, prefer_physical=True)
+        if hit:
+            logical, abbr, field = hit
+            rec.tokens.append(TokenMatch(frag=tok.upper(), logical=logical,
+                                         abbr=abbr, matched=True, via=field))
+        else:
+            rec.tokens.append(TokenMatch(frag=tok.upper(), matched=False,
+                                         via="unmatched"))
+    return _set_tier(rec, rec.column.upper(), sd, mark_already_std=True)
+
+
+def _from_physical(rec: ColumnRec, sd: StdDict, source: str | None = None) -> ColumnRec:
+    """물리명/영문 텍스트 기준 매칭. source 미지정 시 컬럼명 사용."""
+    text = source if source is not None else rec.column
+    up = rec.column.upper()
+    # 용어사전 물리명 전체 정확매칭 (컬럼명 기준)
+    tr = sd.term_by_physical.get(up)
+    if tr and source is None:
         rec.tokens = [TokenMatch(frag=up, logical=tr.logical or "", abbr=up,
                                  matched=True, via="term")]
         rec.tobe_name = up
@@ -221,24 +245,7 @@ def _from_physical(rec: ColumnRec, sd: StdDict) -> ColumnRec:
         rec.note = "AS-IS 물리명이 용어사전 표준"
         rec.confidence = 1.0
         return rec
-    # 물리명 분해 → 표준 약어 검증
-    for tok in _split_physical(rec.column):
-        logical = sd.abbr_to_logical.get(tok)
-        if logical:
-            rec.tokens.append(TokenMatch(frag=tok, logical=logical, abbr=tok,
-                                         matched=True, via="abbr"))
-        else:
-            rec.tokens.append(TokenMatch(frag=tok, matched=False, via="unmatched"))
-    rec.tobe_name = _compose_name(rec.tokens)
-    rec.domain, rec.data_type = _infer_domain_type(rec.tokens, sd)
-    if rec.tokens and all(t.matched for t in rec.tokens):
-        rec.tier = "이미표준" if rec.tobe_name == up else "단어조합"
-        rec.note = "모든 토큰이 표준 약어" if rec.tobe_name == up else ""
-    elif any(t.matched for t in rec.tokens):
-        rec.tier = "단어조합(부분)"
-    else:
-        rec.tier = "미매칭"
-    return _finalize(rec)
+    return _resolve_token_list(rec, _split_physical(text), sd)
 
 
 # 코멘트 노이즈: 괄호 주석 + enrich-schema 등이 붙이는 마커
@@ -268,28 +275,33 @@ def recommend_column(table: str, column: str, comment: str | None,
     cleaned = _clean_comment(raw)
     # 한글 코멘트만 형태소(논리명) 분해. 영문 코멘트(예: "USL VAL")는 한글
     # 분해기에 넣으면 엉뚱하게 쪼개지므로 물리명 기준으로 처리.
-    use_comment = bool(cleaned) and _has_hangul(cleaned)
-    rec = ColumnRec(table=table, column=column, comment=raw,
-                    basis="comment" if use_comment else "column")
-    if use_comment:
+    if cleaned and _has_hangul(cleaned):
+        # 한글 코멘트 → 형태소 분해 (논리명/동의어/물리의미)
+        rec = ColumnRec(table=table, column=column, comment=raw, basis="comment")
         return _from_comment(rec, sd, cleaned)
+    if cleaned:
+        # 영문 코멘트(예: "USL VAL", "Detail Description") → 토큰 분해 후
+        # 물리명/물리의미 기준 매칭 (한글 분해기에 넣지 않음)
+        rec = ColumnRec(table=table, column=column, comment=raw, basis="comment")
+        return _from_physical(rec, sd, source=cleaned)
+    # 코멘트 없음 → 컬럼 물리명 기준
+    rec = ColumnRec(table=table, column=column, comment=raw, basis="column")
     return _from_physical(rec, sd)
 
 
 def probe_term(term: str, sd: StdDict) -> dict:
     """단어 1개가 사전에 어떻게 등재됐고 결정적 매칭이 뭘 내는지 진단."""
-    from .std_dict import norm_kor
     nk = norm_kor(term)
-    logical = sd.syn_to_logical.get(nk)
+    hit = sd.resolve_word(term)  # 6단계 우선순위 (논리명>동의어>물리의미, Y>N)
     rec = recommend_column("(probe)", term, term, sd)
     return {
         "term": term,
         "norm": nk,
         "in_term_dict": nk in sd.term_by_logical,       # 용어사전 논리명 정확매칭
-        "in_word_dict": logical is not None,            # 단어사전 논리명/동의어 등재
-        "resolved_logical": logical or "",
-        "is_synonym": bool(logical) and norm_kor(logical) != nk,
-        "abbr": sd.logical_to_abbr.get(logical, "") if logical else "",
+        "in_word_dict": hit is not None,                # 단어사전 어느 필드든 등재
+        "resolved_logical": hit[0] if hit else "",
+        "matched_field": hit[2] if hit else "",         # 논리명/동의어/물리의미/물리명
+        "abbr": hit[1] if hit else "",
         "tobe": rec.tobe_name,
         "tier": rec.tier,
         "tokens": [(t.frag, t.abbr, t.matched) for t in rec.tokens],

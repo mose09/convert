@@ -198,7 +198,7 @@ class WordAbbrAndStdTest(unittest.TestCase):
         # 같은 '확인' 이 두 번: 첫 행 물리명 비었고 둘째 행 CHK → CHK 써야 함
         sd = self._build([["확인", "", "Y", "N"], ["확인", "CHK", "Y", "N"],
                           ["여부", "YN", "Y", "Y"]])
-        self.assertEqual(sd.logical_to_abbr.get("확인"), "CHK")
+        self.assertEqual(sd.resolve_word("확인"), ("확인", "CHK", "논리명"))
         rec = recommend_column("T", "X1", "확인여부", sd)
         self.assertEqual(rec.tobe_name, "CHK_YN")
 
@@ -241,6 +241,52 @@ class DomainDictTest(unittest.TestCase):
         dtype, single = sd.resolve_domain_type("금액")
         self.assertEqual(dtype, "NUMBER(15,2)")  # 최빈/첫값
         self.assertFalse(single)                 # 다중이라 단일 아님
+
+
+class PriorityTest(unittest.TestCase):
+    """6단계 우선순위: 표준Y[논리명>동의어>물리의미] > 표준N[...]."""
+
+    def _build(self, rows):
+        from openpyxl import Workbook
+        tmp = tempfile.mkdtemp()
+        wb = Workbook(); ws = wb.active
+        ws.append(["논리명", "물리명", "물리의미", "표준여부", "속성분류어",
+                   "동의어", "설명", "만료일자", "출처구분"])
+        for r in rows:
+            ws.append(r)
+        wp = os.path.join(tmp, "w.xlsx"); wb.save(wp)
+        db = os.path.join(tmp, "sd.sqlite")
+        build_std_dict(db, word_xlsx=wp)
+        return load_std_dict(db)
+
+    def test_primary_logical_beats_synonym(self):
+        # 시설: 자기 논리명(FACI) vs 공장의 동의어(FAC) → 논리명 우선
+        sd = self._build([
+            ["시설", "FACI", "FACILITY", "Y", "N", "", "", "", ""],
+            ["공장", "FAC", "FACTORY", "Y", "N", "시설", "", "", ""],
+        ])
+        self.assertEqual(sd.resolve_word("시설"), ("시설", "FACI", "논리명"))
+
+    def test_physical_meaning_matches_english(self):
+        # 영문 풀네임 코멘트 → 물리의미 매칭
+        sd = self._build([["설명", "DESC", "DESCRIPTION", "Y", "N", "", "", "", ""]])
+        self.assertEqual(sd.resolve_word("Description"), ("설명", "DESC", "물리의미"))
+        rec = recommend_column("T", "X", "Detail Description", sd)
+        self.assertTrue(rec.tobe_name.endswith("DESC"))
+
+    def test_standard_tier_beats_nonstandard(self):
+        # 같은 키 '확인': 표준N 논리명(CHK) vs 표준Y 동의어(소유=점검,INSP)
+        sd = self._build([
+            ["확인", "CHK", "", "N", "N", "", "", "", ""],
+            ["점검", "INSP", "", "Y", "N", "확인", "", "", ""],
+        ])
+        # 표준Y 동의어가 표준N 논리명을 이긴다
+        self.assertEqual(sd.resolve_word("확인"), ("점검", "INSP", "동의어"))
+
+    def test_synonym_comma_separated(self):
+        sd = self._build([["고객", "CUST", "", "Y", "N", "손님, 거래처", "", "", ""]])
+        self.assertEqual(sd.resolve_word("거래처")[1], "CUST")
+        self.assertEqual(sd.resolve_word("손님")[1], "CUST")
 
 
 if __name__ == "__main__":
