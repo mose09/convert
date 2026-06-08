@@ -1910,9 +1910,12 @@ def cmd_recommend_names(args):
         print("\n=== 사전 참조 진단 (probe) ===")
         for term in [t.strip() for t in args.probe.split(";") if t.strip()]:
             p = tr.probe_term(term, sd)
-            src = ("용어사전" if p["in_term_dict"]
-                   else ("단어사전" + ("(동의어)" if p["is_synonym"] else "")
-                         if p["in_word_dict"] else "사전에 없음"))
+            if p["in_term_dict"]:
+                src = "용어사전"
+            elif p["in_word_dict"]:
+                src = f"단어사전({p['matched_field']})"  # 논리명/동의어/물리의미/물리명
+            else:
+                src = "사전에 없음"
             print(f"  '{term}': 등재={src} / 논리명={p['resolved_logical'] or '-'}"
                   f" / 물리명={p['abbr'] or '-'} → 추천={p['tobe']} (tier={p['tier']})")
             print(f"      분해={p['tokens']}")
