@@ -327,7 +327,7 @@ def _collect_stats(recs: list[ColumnRec]) -> RecommendStats:
             st.already_std += 1
         elif r.tier.startswith("단어조합"):
             st.tier2 += 1
-        elif r.tier in ("RAG+LLM", "LLM"):
+        elif "LLM" in r.tier:
             st.tier_llm += 1
         else:
             st.unmatched += 1
@@ -530,22 +530,59 @@ def _build_llm_prompt(items: list[dict]) -> str:
     for it in items:
         cand = ""
         if it.get("candidates"):
-            cand = " / 표준후보: " + ", ".join(
-                f"{c.get('logical','')}→{c.get('physical')}" for c in it["candidates"][:5])
+            names = [c.get("logical", "") for c in it["candidates"][:6] if c.get("logical")]
+            if names:
+                cand = " / 표준후보: " + ", ".join(names)
         lines.append(
             f"{it['idx']}. AS-IS={it['asis']} | 의미={it['meaning']}"
-            f" | 미매칭단어={', '.join(it['frags']) or '-'}{cand}")
+            f" | 미매칭={', '.join(it['frags']) or '-'}{cand}")
     body = "\n".join(lines)
     return (
-        "당신은 한국 공공/금융 SI 의 데이터 표준화 전문가입니다. "
-        "AS-IS 컬럼을 TO-BE 표준 물리명(영문 대문자+언더스코어 약어 조합)으로 추천하세요.\n"
-        "표준 약어를 모르면 일반적 약어를 쓰되 confidence 를 낮추세요. "
-        "후보가 적절하면 그 물리명을 사용하세요.\n\n"
+        "당신은 한국 데이터 표준화 전문가입니다. 각 AS-IS 컬럼이 어떤 "
+        "'표준 단어(논리명)'들로 구성되는지 **한국어 논리명 리스트**로 판단하세요.\n"
+        "- 가능하면 제시된 '표준후보'(사전 등재어) 중에서 고르세요.\n"
+        "- 후보가 부적절하면 의미상 가장 가까운 표준 논리명을 한국어로 쓰세요.\n"
+        "- 물리명(영문약어)은 시스템이 사전에서 가져오므로 **만들지 마세요**.\n\n"
         f"## 대상 ({len(items)}건)\n{body}\n\n"
         "각 항목을 아래 JSON 배열로만 응답 (설명/코드펜스 금지):\n"
-        '[{"idx":번호,"tobe_name":"물리명","data_type":"타입또는빈값",'
+        '[{"idx":번호,"words":["표준논리명1","표준논리명2"],'
         '"confidence":0.0~1.0,"note":"근거"}]'
     )
+
+
+def _apply_llm_words(rec: ColumnRec, words: list, sd: StdDict,
+                     confidence: float, note: str, used_rag: bool) -> bool:
+    """LLM 이 제시한 표준단어(논리명)들을 **사전에서 재조회**해 물리명 확정.
+
+    물리명/도메인/데이터유형은 항상 사전에서 가져온다(LLM 자유생성 아님).
+    """
+    tokens: list[TokenMatch] = []
+    resolved = 0
+    for w in words:
+        w = str(w).strip()
+        if not w:
+            continue
+        hit = sd.resolve_word(w)
+        if hit:
+            logical, abbr, field = hit
+            tokens.append(TokenMatch(frag=w, logical=logical, abbr=abbr,
+                                     matched=True, via=f"llm:{field}"))
+            resolved += 1
+        else:
+            tokens.append(TokenMatch(frag=w, matched=False, via="llm"))
+    if not tokens:
+        return False
+    rec.tokens = tokens
+    rec.tobe_name = _compose_name(tokens)
+    rec.domain, rec.data_type = _infer_domain_type(tokens, sd)
+    rec.confidence = confidence
+    full = resolved == len(tokens)
+    rec.tier = ("RAG+LLM(사전)" if used_rag else "LLM(사전)") if full \
+        else ("RAG+LLM(부분)" if used_rag else "LLM(부분)")
+    rec.note = (rec.note + " / " if rec.note else "") + \
+        (note or "LLM 표준단어 변환→사전조회")
+    _finalize(rec)
+    return True
 
 
 def _extract_json_objects(text: str) -> list[dict]:
@@ -676,20 +713,31 @@ def assist_with_llm(recs: list[ColumnRec], sd: StdDict, config: dict,
                 continue
         for i, r in enumerate(chunk):
             p = by_idx.get(i)
-            if not p or not p.get("tobe_name"):
+            if not p:
                 continue
-            r.tobe_name = str(p["tobe_name"]).upper().strip()
-            if p.get("data_type"):
-                r.data_type = str(p["data_type"]).strip()
-            r.tier = "RAG+LLM" if (use_rag and r.comment) else "LLM"
             try:
-                r.confidence = max(0.0, min(1.0, float(p.get("confidence", 0.5))))
+                conf = max(0.0, min(1.0, float(p.get("confidence", 0.5))))
             except (TypeError, ValueError):
-                r.confidence = 0.5
+                conf = 0.5
             note = str(p.get("note", "")).strip()
-            r.note = (r.note + " / " if r.note else "") + (note or "LLM 추천")
-            if len(r.tobe_name) > ORACLE_NAME_MAX:
-                r.note += f" / 길이초과({len(r.tobe_name)})"
-            updated += 1
+            used_rag = bool(use_rag and r.comment)
+            words = p.get("words")
+            if isinstance(words, str):
+                words = [words]
+            # LLM 표준단어 분해 → 사전 재조회 (물리명은 사전에서)
+            if isinstance(words, list) and words \
+                    and _apply_llm_words(r, words, sd, conf, note, used_rag):
+                updated += 1
+            elif p.get("tobe_name"):
+                # 폴백: 사전에 못 맞춘 경우만 LLM 자유생성 물리명 (저신뢰)
+                r.tobe_name = str(p["tobe_name"]).upper().strip()
+                if p.get("data_type"):
+                    r.data_type = str(p["data_type"]).strip()
+                r.tier = "LLM(생성)"
+                r.confidence = min(conf, 0.5)
+                r.note = (r.note + " / " if r.note else "") + \
+                    (note or "LLM 생성(사전 미매칭)")
+                _finalize(r)
+                updated += 1
     print(f"  LLM 보조 완료: {updated}건 갱신")
     return updated
