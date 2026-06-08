@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v37"  # v37: main_force 진단 final summary 에 항상 출력 (묻힘 방지) + _HANDLER_DEF_RE 단순화 (handle*/on* 단어 존재만)
+SCREEN_SCHEMA_VERSION = "v38"  # v38: main_force_files + unresolved_handlers 추가 진단 — main_added_force>0 이고 url_resolved=0 케이스 디버깅용
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1354,6 +1354,7 @@ def extract_screen_layouts(
     _diag_n_all = 0
     _diag_n_index = 0
     _diag_n_main_entries = 0
+    _diag_main_force_files: list = []  # 강제 추가된 main rel paths
     try:
         from .legacy_react_api_scanner import _scan_dir, _collect_main_entries
         all_files = _scan_dir(frontend_dir)
@@ -1368,6 +1369,7 @@ def extract_screen_layouts(
             if main_rel not in by_file:
                 by_file[main_rel] = {}
                 main_added_force += 1
+                _diag_main_force_files.append(main_rel)
     except Exception as _e:
         print(f"  screen layout: main entry 강제추가 실패 — {_e}")
 
@@ -1435,6 +1437,7 @@ def extract_screen_layouts(
         for main_rel in sibling_mains:
             by_file[main_rel] = {}
             main_added_force += 1
+            _diag_main_force_files.append(main_rel)
 
     if main_added_force:
         print(f"  screen layout: +{main_added_force} main entry 강제 추가 "
@@ -1469,6 +1472,7 @@ def extract_screen_layouts(
     popup_added = 0
     sub_events_absorbed = 0
     sub_urls_resolved = 0
+    _diag_unresolved_handlers: set = set()  # resolve 실패한 sub_handler 들
     files_seen: set = set(files)
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
@@ -1574,6 +1578,8 @@ def extract_screen_layouts(
                         if resolved:
                             v = {**v, "urls": resolved}
                             sub_urls_resolved += 1
+                        else:
+                            _diag_unresolved_handlers.add(sub_handler)
                     url_map[k] = v
                     sub_events_absorbed += 1
 
@@ -1705,6 +1711,18 @@ def extract_screen_layouts(
           f"fallback={fallback_calls}, total={len(out)}"
           f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}"
           f"{absorb_stats}{main_force_stats}")
+    # 추가 진단 — main_added_force > 0 인데 url_resolved=0 인 케이스
+    # 디버깅용 (별도 줄로 출력해서 묻힘 방지).
+    if _diag_main_force_files:
+        sample = _diag_main_force_files[:3]
+        print(f"  screen layout: main_force_files={sample}"
+              + (f" (+{len(_diag_main_force_files)-3})"
+                 if len(_diag_main_force_files) > 3 else ""))
+    if sub_events_absorbed and sub_urls_resolved == 0 and _diag_unresolved_handlers:
+        sample = sorted(_diag_unresolved_handlers)[:5]
+        print(f"  screen layout: unresolved_handlers={sample}"
+              + (f" (+{len(_diag_unresolved_handlers)-5})"
+                 if len(_diag_unresolved_handlers) > 5 else ""))
     return out
 
 
