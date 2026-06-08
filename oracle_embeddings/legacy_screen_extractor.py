@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v36"  # v36: sibling fallback parent+grandparent 복원, wrapper 회피는 callback handler 정의 (handleX/onX) 가드로 판별
+SCREEN_SCHEMA_VERSION = "v37"  # v37: main_force 진단 final summary 에 항상 출력 (묻힘 방지) + _HANDLER_DEF_RE 단순화 (handle*/on* 단어 존재만)
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1385,10 +1385,12 @@ def extract_screen_layouts(
     #   hypm_materialMaster/MaterialMaster/index.js (진짜 main) 같은
     #   nested 폴더에서 wrapper 가 main 으로 추가되어 SEARCH URL 흡수
     #   실패하던 케이스 fix.
-    _HANDLER_DEF_RE = re.compile(
-        r"\b(?:const\s+|let\s+|var\s+|this\.)?(?:handle|on)[A-Z_]\w*"
-        r"\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|\w*\s*\()"
-    )
+    # handle* / on* prefix 단어 존재 — 진짜 main 의 callback handler 정의
+    # 단서. wrapper / lazy-loader (단순 re-export 또는 React.lazy) 는 보통
+    # handle/on prefix 안 가짐. regex 단순화로 다양한 정의 형태 (arrow /
+    # function decl / class method / 객체 property) 모두 cover + import 만
+    # 있는 wrapper 는 capitalized handle/on identifier 없어서 자동 제외.
+    _HANDLER_DEF_RE = re.compile(r"\b(?:handle|on)[A-Z_]\w*")
 
     def _is_real_main_candidate(abs_path: str) -> bool:
         try:
@@ -1692,9 +1694,17 @@ def extract_screen_layouts(
         f", sub_absorbed={sub_events_absorbed}(url_resolved={sub_urls_resolved})"
         if sub_events_absorbed else ""
     )
+    # main 강제추가 진단 — 항상 표시 (0 이어도). 단방향 환경에서 진단
+    # 메시지가 LLM 출력 사이에 묻혀서 사용자가 못 보던 문제 fix.
+    main_force_stats = (
+        f", main_force={main_added_force}"
+        f"(scan={_diag_n_all},idx={_diag_n_index},entries={_diag_n_main_entries},"
+        f"by_file={len(by_file)})"
+    )
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
           f"fallback={fallback_calls}, total={len(out)}"
-          f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}{absorb_stats}")
+          f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}"
+          f"{absorb_stats}{main_force_stats}")
     return out
 
 
