@@ -1894,7 +1894,7 @@ def cmd_recommend_names(args):
                              domain_xlsx=args.domain_dict, domain_sheet=args.domain_sheet)
 
     print(f"  용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
-          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']} / "
+          f"매칭키 {sd.counts['match_keys']} / 분류어타입 {sd.counts['classifiers']} / "
           f"도메인 {sd.counts.get('domains', 0)}")
     if not sd.has_terms() and not sd.has_words():
         print("  Error: 표준사전이 비어있습니다. (헤더 인식 실패 또는 데이터 시트 미선택)")
@@ -2007,7 +2007,7 @@ def cmd_build_dict(args):
           f"용어 {stats['terms']}건(만료 {stats['term_expired']}) / "
           f"도메인 {stats['domains']}건(만료 {stats['domain_expired']})")
     print(f"  매칭 인덱스: 용어 {sd.counts['terms']} / 단어 {sd.counts['words']} / "
-          f"동의어 {sd.counts['synonyms']} / 분류어타입 {sd.counts['classifiers']} / "
+          f"매칭키 {sd.counts['match_keys']} / 분류어타입 {sd.counts['classifiers']} / "
           f"도메인명 {sd.counts['domains']}(행 {sd.counts['domain_rows']})")
 
     if not sd.has_terms() and not sd.has_words() and not sd.has_domains():
