@@ -289,5 +289,39 @@ class PriorityTest(unittest.TestCase):
         self.assertEqual(sd.resolve_word("손님")[1], "CUST")
 
 
+class LlmWordsTest(unittest.TestCase):
+    """LLM 표준단어 변환 → 사전 재조회 (물리명은 사전 권위)."""
+
+    def _sd(self):
+        from openpyxl import Workbook
+        tmp = tempfile.mkdtemp()
+        wb = Workbook(); ws = wb.active
+        ws.append(["논리명", "물리명", "물리의미", "표준여부", "속성분류어",
+                   "동의어", "설명", "만료일자", "출처구분"])
+        ws.append(["고객", "CUST", "CUSTOMER", "Y", "N", "손님,거래선", "", "", ""])
+        ws.append(["번호", "NO", "NUMBER", "Y", "Y", "", "", "", ""])
+        wp = os.path.join(tmp, "w.xlsx"); wb.save(wp)
+        db = os.path.join(tmp, "sd.sqlite")
+        build_std_dict(db, word_xlsx=wp)
+        return load_std_dict(db)
+
+    def test_llm_words_resolved_from_dict(self):
+        from oracle_embeddings.tobe_recommender import ColumnRec, _apply_llm_words
+        sd = self._sd()
+        rec = ColumnRec(table="T", column="G_NO", comment="거래선번호", basis="comment")
+        ok = _apply_llm_words(rec, ["고객", "번호"], sd, 0.8, "거래선=고객", used_rag=True)
+        self.assertTrue(ok)
+        self.assertEqual(rec.tobe_name, "CUST_NO")  # 물리명은 사전에서
+        self.assertEqual(rec.tier, "RAG+LLM(사전)")
+
+    def test_llm_words_partial_marks_unknown(self):
+        from oracle_embeddings.tobe_recommender import ColumnRec, _apply_llm_words
+        sd = self._sd()
+        rec = ColumnRec(table="T", column="X", comment="무언가", basis="comment")
+        _apply_llm_words(rec, ["고객", "듣보단어"], sd, 0.6, "", used_rag=False)
+        self.assertEqual(rec.tobe_name, "CUST_«듣보단어»")
+        self.assertEqual(rec.tier, "LLM(부분)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
