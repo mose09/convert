@@ -548,21 +548,72 @@ def _build_llm_prompt(items: list[dict]) -> str:
     )
 
 
+def _extract_json_objects(text: str) -> list[dict]:
+    """깨진/절단된 배열에서도 균형 잡힌 ``{...}`` 객체만 골라 개별 파싱.
+
+    LLM 이 배열 중간에 깨진 JSON(누락 콤마/절단)을 뱉어도 정상 객체는 살린다.
+    """
+    objs: list[dict] = []
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if esc:
+            esc = False
+            continue
+        if ch == "\\":
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+        if in_str:
+            continue
+        if ch == "{":
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == "}":
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    frag = text[start:i + 1]
+                    try:
+                        objs.append(json.loads(frag))
+                    except Exception:  # noqa: BLE001 — 흔한 손상 경량 복구
+                        try:
+                            objs.append(json.loads(re.sub(r",\s*([}\]])", r"\1", frag)))
+                        except Exception:  # noqa: BLE001
+                            pass
+                    start = -1
+    return objs
+
+
 def _parse_json_array(text: str) -> list[dict]:
-    text = text.strip()
+    """LLM 응답 → dict 리스트. 실패해도 예외 없이 살릴 수 있는 객체만 반환."""
+    text = (text or "").strip()
     m = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if m:
         text = m.group(1).strip()
-    if not text.startswith("["):
-        s, e = text.find("["), text.rfind("]")
+    sliced = text
+    if not sliced.startswith("["):
+        s, e = sliced.find("["), sliced.rfind("]")
         if s != -1 and e > s:
-            text = text[s:e + 1]
-    return json.loads(text)
+            sliced = sliced[s:e + 1]
+    try:
+        parsed = json.loads(sliced)
+        if isinstance(parsed, list):
+            return [p for p in parsed if isinstance(p, dict)]
+        if isinstance(parsed, dict):
+            return [parsed]
+    except Exception:  # noqa: BLE001 — 부분 복구로 폴백
+        pass
+    return _extract_json_objects(text)
 
 
 def assist_with_llm(recs: list[ColumnRec], sd: StdDict, config: dict,
                     use_rag: bool, db_path: str, top_k: int = 5,
-                    batch_size: int = 20, timeout: int = 120) -> int:
+                    batch_size: int = 10, timeout: int = 120) -> int:
     """미해결 컬럼을 RAG 후보 + LLM 으로 보강. 갱신 건수 반환."""
     targets = [r for r in recs if needs_assist(r)]
     if not targets:
@@ -602,12 +653,27 @@ def assist_with_llm(recs: list[ColumnRec], sd: StdDict, config: dict,
                 ],
                 temperature=0.0, timeout=timeout,
             )
-            parsed = _parse_json_array(resp.choices[0].message.content or "")
-        except Exception as e:  # noqa: BLE001
-            logger.error("LLM 보조 배치 실패: %s", e)
+            content = resp.choices[0].message.content or ""
+        except Exception as e:  # noqa: BLE001 — LLM 호출 실패 (네트워크/타임아웃)
+            logger.error("LLM 호출 실패: %s", e)
             time.sleep(1)
             continue
-        by_idx = {int(p.get("idx", -1)): p for p in parsed if isinstance(p, dict)}
+        parsed = _parse_json_array(content)  # 예외 없이 살릴 수 있는 객체만
+        if not parsed:
+            logger.warning("LLM 응답 JSON 파싱 0건 (배치 %d~%d) — 건너뜀",
+                           start, start + len(chunk) - 1)
+            continue
+        if len(parsed) < len(chunk):
+            logger.warning("LLM 응답 부분 복구: %d/%d 건만 파싱",
+                           len(parsed), len(chunk))
+        by_idx = {}
+        for p in parsed:
+            if not isinstance(p, dict):
+                continue
+            try:
+                by_idx[int(p.get("idx", -1))] = p
+            except (TypeError, ValueError):
+                continue
         for i, r in enumerate(chunk):
             p = by_idx.get(i)
             if not p or not p.get("tobe_name"):
