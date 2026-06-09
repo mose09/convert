@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v38"  # v38: main_force_files + unresolved_handlers 추가 진단 — main_added_force>0 이고 url_resolved=0 케이스 디버깅용
+SCREEN_SCHEMA_VERSION = "v39"  # v39: 검색영역 정의서 + DataTable 그리드 정의서에서 UI 타입 컬럼 제외 (사용자 양식 변경)
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1933,12 +1933,12 @@ def _render_input_panel(fields: List[ScreenField]) -> str:
 
 
 def _render_search_table(fields: List[ScreenField]) -> str:
-    """검색 패널 9컬럼 화면정의서 표 (grid 와 parallel).
+    """검색 패널 8컬럼 화면정의서 표.
 
-    컬럼: No / 필드(영문) / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고 /
-    UI 타입 / 동작. 기본값은 placeholder 우선 (UI 가시값) → default fallback.
+    컬럼: No / 필드(영문) / 라벨 / 타입 / 길이 / 필수 / 기본값 / 유효성 규칙 및 비고
+    / 동작. 기본값은 placeholder 우선 (UI 가시값) → default fallback.
     동작은 단순 dropdown 이면 옵션 값 줄바꿈, LLM 이 cascading 동작
-    채웠으면 그 값 우선.
+    채웠으면 그 값 우선. UI 타입은 사용자 요청으로 제외 (v38+).
 
     필드(영문) — input element 의 id 우선, 없으면 name (ScreenField.name 에
     이미 그 순서로 추출돼있음).
@@ -1961,7 +1961,6 @@ def _render_search_table(fields: List[ScreenField]) -> str:
             f"<td>{'필수' if f.required else '선택'}</td>"
             f"<td>{_esc(display_default)}</td>"
             f"<td>{_esc(validation_display)}</td>"
-            f"<td>{_esc(f.ui_type or '')}</td>"
             f"<td>{action_html}</td>"
             "</tr>"
         )
@@ -1970,7 +1969,7 @@ def _render_search_table(fields: List[ScreenField]) -> str:
         "<table class='search-spec'><thead><tr>"
         "<th>No</th><th>필드(영문)</th><th>라벨</th><th>타입</th><th>길이</th>"
         "<th>필수</th><th>기본값</th><th>유효성 규칙 및 비고</th>"
-        "<th>UI 타입</th><th>동작</th>"
+        "<th>동작</th>"
         "</tr></thead><tbody>"
         + "".join(rows)
         + "</tbody></table>"
@@ -1978,8 +1977,9 @@ def _render_search_table(fields: List[ScreenField]) -> str:
 
 
 def _render_table(cols: List[TableColumn]) -> str:
-    """화면정의서 표 양식 — NO / 필드명(영문) / 필드설명 / 타입 / 필수여부 /
-    속성 / UI타입 / 설명 / 동작 9컬럼.
+    """화면정의서 표 양식 — NO / 필드명(영문) / 헤더명 / 타입 / 길이 /
+    필수여부 / 속성 / 필드설명 / 동작 9컬럼. UI타입 컬럼은 사용자 요청으로
+    제외 (v38+).
 
     grid 의 ``condition`` 이 다르면 condition 별로 sub-section 분리
     (``{tab === 'A' && <Grid/>}`` 같이 분기 render 되는 grid). 같은
@@ -2008,17 +2008,16 @@ def _render_table(cols: List[TableColumn]) -> str:
 def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
     """내부 헬퍼 — 단일 grid (또는 단일 condition group) 의 표 렌더.
 
-    컬럼 순서 (사용자 명시):
+    컬럼 순서 (사용자 명시, v38+ UI타입 제외):
       NO / 필드명(영문) / 헤더명 / 타입 / 길이 / 필수여부 / 속성 / 필드설명
-      / UI타입 / 동작
+      / 동작
     """
     headers = ["NO", "필드명(영문)", "헤더명", "타입", "길이", "필수여부",
-               "속성", "필드설명", "UI타입", "동작"]
+               "속성", "필드설명", "동작"]
     head_row = "".join(f"<th>{h}</th>" for h in headers)
     body_rows = []
     for i, c in enumerate(cols, start=1):
         attribute = c.attribute or ("H" if c.hide else "O/R")
-        ui = c.ui_type or "Text Field(Basic)"
         dtype = (c.data_type or "String").capitalize()
         required = "필수" if c.required else "선택"
         length = getattr(c, "length", "") or ""
@@ -2032,7 +2031,6 @@ def _render_table_inner(cols: List[TableColumn], heading: str | None) -> str:
             f"<td>{_esc(required)}</td>"
             f"<td>{_esc(attribute)}</td>"
             f"<td>{_esc(c.description)}</td>"
-            f"<td>{_esc(ui)}</td>"
             f"<td>{_esc(c.action)}</td>"
             f"</tr>"
         )
