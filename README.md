@@ -598,11 +598,12 @@ python main.py analyze-legacy `
 - **Search Panel (검색영역)** — `<section className="search-area">` (또는 `search-form` / `filter-area` / `criteria-area`) 안의 `<div className="search-item">` 단위 입력. search-area container 가 없으면 검색영역 추출 자체를 skip.
 - **Input Panel (입력영역)** — `<table>` 기반 입력 폼 (한국 SI 흔한 패턴 — `<tr><th>라벨</th><td><Input/></td></tr>`). edit form / modal popup form 등. 검색영역과 별도 섹션으로 출력.
 
-두 영역 모두 같은 9컬럼: **No / 라벨 / 타입 (keyboard input 만) / 길이 / 필수 / 기본값 (placeholder 우선) / 유효성 규칙 및 비고 / UI 타입 / 동작**.
+- **Search Panel (검색영역)** 8컬럼: **No / 라벨 / 타입 (keyboard input 만) / 길이 / 필수 / 기본값 (placeholder 우선) / 유효성 규칙 및 비고 / 동작**. (v39+ UI 타입 컬럼 제외)
+- **Input Panel (입력영역)** 9컬럼: 위 + **UI 타입** (Search 와 달리 유지).
 
 - **필수** 자동 추출: `onSave` / `handleSave` / `onSubmit` 등 핸들러 body 안 `if (isNull(X)) errorMsg.push('[X]')` 패턴 → X 가 필수
 - **유효성 규칙** 자동 추출: `isNumber` / `isNegative` / `< 0` / `.length > N` / `.test()` 등 → "숫자만 허용" / "음수 불가" / "길이 제한 (N)" 등으로 변환
-- **UI 타입** 자동 분류: `Select(Single/Multi)` / `Text Field(Basic/Search Box)` / `DatePicker` / `Date Range` / `Checkbox` / `Radio Group` / `Number Field` / `Password` / `Popover`
+- **UI 타입** (입력영역만) 자동 분류: `Select(Single/Multi)` / `Text Field(Basic/Search Box)` / `DatePicker` / `Date Range` / `Checkbox` / `Radio Group` / `Number Field` / `Password` / `Popover`
 - **동작** 자동 추출: 단순 dropdown 은 옵션 값 줄바꿈 (예: `전체\nY\nN`). cascading dependency (FAB→Team 등) 는 `_detect_cascading_clears` 가 setState clear 패턴 분석해서 "변경 시 X, Y 초기화" 자동 채움. LLM (`--llm-per-trigger`) 사용 시 더 풍부한 설명으로 보강.
 
 ---

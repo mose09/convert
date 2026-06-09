@@ -26,14 +26,16 @@ _HEADERS = {
             "truncated", "검색 필드 수", "그리드 컬럼 수", "탭 수",
             "버튼 수", "검증 규칙 수", "API 호출 수 (factual)",
             "팝업 ref 수"],
+    # 검색조건 / 그리드컬럼: UI 타입 컬럼 제외 (사용자 요청, v38+).
+    # 입력영역은 유지 (요청 외).
     "검색조건": ["화면명", "No", "필드(영문)", "라벨", "타입", "길이",
-                "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
+                "필수", "기본값", "유효성 규칙 및 비고",
                 "동작", "소스파일"],
     "입력영역": ["화면명", "No", "필드(영문)", "라벨", "타입", "길이",
                 "필수", "기본값", "유효성 규칙 및 비고", "UI 타입",
                 "동작", "소스파일"],
     "그리드컬럼": ["화면명", "NO", "필드명(영문)", "필드설명", "타입",
-                  "필수여부", "속성", "UI타입", "설명", "동작",
+                  "필수여부", "속성", "설명", "동작",
                   "너비", "정렬", "소스파일"],
     "탭": ["화면명", "순번", "탭명", "컨텐츠 컴포넌트", "소스파일"],
     "이벤트": ["화면명", "트리거(라벨)", "종류", "핸들러", "API 호출",
@@ -67,12 +69,11 @@ def _rows_for_form_fields(s: ScreenSpec, panel_type: str = "search"):
         if getattr(ff, "panel_type", "search") != panel_type:
             continue
         # 기본값: placeholder 우선 (UI 가시값) → defaultValue fallback.
-        # placeholder 가 "Select 하세요" 같은 빈 안내문이라도 default 보다
-        # 사용자 화면에 보이는 값이므로 우선.
         display_default = ff.placeholder or ff.default or ""
         # 유효성 규칙 = LLM 판단 칸 (validation_rule) > 인라인 prop 요약 (validation)
         validation_display = ff.validation_rule or ff.validation or ""
-        yield [
+        # 검색조건은 UI 타입 제외, 입력영역은 포함 (사용자 요청, v38+).
+        row = [
             s.screen_id, ff.order,
             ff.name,                    # 필드(영문) — input id/name/field
             ff.label,
@@ -81,20 +82,21 @@ def _rows_for_form_fields(s: ScreenSpec, panel_type: str = "search"):
             "필수" if ff.required else "선택",
             display_default,
             validation_display,
-            ff.ui_type or "",
-            ff.action or "",
-            ff.source_file,
         ]
+        if panel_type == "input":
+            row.append(ff.ui_type or "")
+        row.extend([ff.action or "", ff.source_file])
+        yield row
 
 
 def _rows_for_grid_columns(s: ScreenSpec):
+    # UI 타입 컬럼 제외 (사용자 요청, v38+).
     from .extractors import _compose_attribute
     for c in s.grid_columns:
         attribute = _compose_attribute(c.visible, c.editable)
         yield [s.screen_id, c.order, c.data_key, c.header, c.data_type,
                "필수" if c.required else "선택",
                attribute,
-               c.ui_type or "Text Field(Basic)",
                c.description, c.action,
                c.width, "Y" if c.sortable else "N", c.source_file]
 
