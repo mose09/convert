@@ -286,10 +286,21 @@ def _build_indexes(classes: list[dict], framework: str = "mixed",
             # ``Mapper``/``Dao`` suffix or ``@Mapper`` annotation.
             mappers[fqcn] = c
 
+    # Daemon (배치) entry 가진 클래스 별도 인덱스 — Spring Batch Tasklet /
+    # ItemReader/Processor/Writer + Quartz Job. controllers 가 아니라
+    # 별도. analyze-legacy --analyze-daemons 옵트인 시 chain BFS 대상.
+    daemons: dict[str, dict] = {}
+    for c in classes:
+        if c.get("daemon_entries"):
+            fqcn = c.get("fqcn") or ""
+            if fqcn:
+                daemons[fqcn] = c
+
     return {
         "controllers_by_fqcn": controllers,
         "services_by_fqcn": services,
         "mappers_by_fqcn": mappers,
+        "daemons_by_fqcn": daemons,
         "by_simple": by_simple,
     }
 
@@ -1636,6 +1647,53 @@ def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
     return ordered
 
 
+def _build_daemon_row(daemon: dict, controller: dict, indexes: dict,
+                      mybatis_idx: dict, base_dirs: dict,
+                      backend_repo: str = "",
+                      rfc_depth: int = 3) -> dict:
+    """daemon entry 1건 (Spring Batch Tasklet / Quartz Job 등) 의 chain 추적.
+
+    controller endpoint 와 같은 ``_resolve_endpoint_chain`` BFS 재사용 —
+    daemon entry method 의 body 에서 Service → DAO → XML → Table → RFC
+    추적. 사용자 명시 8컬럼 + 보조 메타 emit. legacy_report 의 "데몬"
+    시트가 그대로 사용.
+    """
+    fake_endpoint = {
+        "annotation": "Daemon",
+        "http_method": daemon.get("daemon_kind", "DAEMON").upper(),
+        "path": "",
+        "full_url": (
+            f"daemon:{controller.get('class_name', '')}#"
+            f"{daemon.get('method_name', '')}"
+        ),
+        "method_name": daemon.get("method_name", ""),
+        "_method_idx": daemon.get("_method_idx"),
+        "line_number": daemon.get("line_number", 1),
+    }
+    chain = _resolve_endpoint_chain(
+        fake_endpoint, controller, indexes, mybatis_idx, rfc_depth=rfc_depth
+    )
+
+    tables_list = chain.get("tables") or []
+    crud_map = chain.get("table_crud") or {}
+    tables_with_crud = _format_table_crud(tables_list, crud_map)
+
+    return {
+        "daemon_folder": backend_repo,
+        "class_fqcn": controller.get("fqcn", ""),
+        "daemon_kind": daemon.get("daemon_kind", ""),
+        "daemon_method": daemon.get("method_name", ""),
+        "service": ";\n".join(chain.get("services") or []),
+        "service_methods": ";\n".join(chain.get("service_methods") or []),
+        "dao": ";\n".join(chain.get("mapper_fqcns") or []),
+        "xml": ";\n".join(chain.get("xml_files") or []),
+        "xml_method": ";\n".join(chain.get("sql_ids") or []),
+        "tables": tables_with_crud,
+        "rfc": ";\n".join(chain.get("rfcs") or []),
+        "filepath": controller.get("filepath", ""),
+    }
+
+
 def _build_row(endpoint: dict, controller: dict, indexes: dict,
                mybatis_idx: dict, menu_entry: dict | None,
                react_file: str | None, base_dirs: dict,
@@ -1791,6 +1849,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    closure_token_budget: int = 12000,
                    closure_popup_augment: bool = False,
                    llm_per_trigger: bool = False,
+                   analyze_daemons: bool = False,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2366,6 +2425,32 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if not row["matched"]:
                 unmatched.append(row)
 
+    # Daemon (배치) entries — Spring Batch / Quartz. 옵트인 (analyze_daemons).
+    # daemons_by_fqcn 인덱스에서 iterate. backend_repo basename 을 데몬폴더
+    # 컬럼으로.
+    daemon_rows: list[dict] = []
+    if analyze_daemons:
+        try:
+            backend_repo_basename = os.path.basename(
+                (backend_dir or "").rstrip(os.sep) or "backend"
+            ) or "backend"
+        except Exception:
+            backend_repo_basename = "backend"
+        daemons_idx = indexes.get("daemons_by_fqcn") or {}
+        for daemon_class in daemons_idx.values():
+            if daemon_class.get("abstract"):
+                continue
+            for de in daemon_class.get("daemon_entries") or []:
+                drow = _build_daemon_row(
+                    de, daemon_class, indexes, mybatis_idx, base_dirs,
+                    backend_repo=backend_repo_basename,
+                    rfc_depth=rfc_depth,
+                )
+                daemon_rows.append(drow)
+        if daemon_rows:
+            print(f"  daemons: {len(daemon_rows)} batch entries 추출 "
+                  f"(Spring Batch / Quartz)")
+
     if skipped_no_menu:
         print(f"  menu-only: skipped {skipped_no_menu} non-matching endpoints "
               f"(chain resolution saved)")
@@ -2588,6 +2673,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         "biz_map": biz_map,
         "fe_biz_map": fe_biz_map,
         "endpoint_spec_map": endpoint_spec_map,
+        "daemon_rows": daemon_rows,
     }
 
 
@@ -2659,6 +2745,7 @@ def analyze_legacy_batch(backends_root: str,
                         closure_token_budget: int = 12000,
                         closure_popup_augment: bool = False,
                         llm_per_trigger: bool = False,
+                        analyze_daemons: bool = False,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -2749,6 +2836,7 @@ def analyze_legacy_batch(backends_root: str,
     all_fe_biz_map: dict = {}
     all_endpoint_spec_map: dict = {}
     all_orphans = []
+    all_daemon_rows: list = []
     per_project_stats = {}
     project_frameworks = {}
 
@@ -2798,6 +2886,7 @@ def analyze_legacy_batch(backends_root: str,
             closure_token_budget=closure_token_budget,
             closure_popup_augment=closure_popup_augment,
             llm_per_trigger=llm_per_trigger,
+            analyze_daemons=analyze_daemons,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream
@@ -2811,6 +2900,7 @@ def analyze_legacy_batch(backends_root: str,
         all_rows.extend(result.get("rows", []))
         all_unmatched.extend(result.get("unmatched_controllers", []))
         all_orphans.extend(result.get("orphan_menus", []))
+        all_daemon_rows.extend(result.get("daemon_rows") or [])
         per_project_stats[name] = result.get("stats", {})
         project_frameworks[name] = result.get("backend_framework", "")
         sub_biz = result.get("biz_map") or {}
@@ -2882,4 +2972,5 @@ def analyze_legacy_batch(backends_root: str,
         "biz_map": all_biz_map,
         "fe_biz_map": all_fe_biz_map,
         "endpoint_spec_map": all_endpoint_spec_map,
+        "daemon_rows": all_daemon_rows,
     }

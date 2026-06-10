@@ -650,6 +650,22 @@ python main.py analyze-legacy `
 python main.py analyze-legacy `
   --backend-dir ... --frontend-dir ... `
   --extract-biz-logic --row-per-trigger
+
+# 6) 배치 데몬도 같이 분석 (Spring Batch + Quartz)
+python main.py analyze-legacy `
+  --backends-root C:\workspace\backend `
+  --frontends-root C:\workspace\frontend `
+  --menu-md input\menu.md `
+  --analyze-daemons
+# → 결과 xlsx 에 새 '데몬' 시트:
+#    데몬폴더 / 클래스 / 데몬종류 / 메소드 / 서비스 / 서비스메소드 /
+#    DAO / XML / XML메서드 / 테이블(CRUD) / RFC / 파일
+# 인식 패턴 (Java code 기반):
+#  - Spring Batch: implements Tasklet | ItemReader | ItemProcessor |
+#    ItemWriter | ItemStream{Reader,Writer}
+#  - Quartz: implements Job (org.quartz.Job) | extends QuartzJobBean |
+#    @DisallowConcurrentExecution / @PersistJobDataAfterExecution
+# 데몬폴더 = backend root 의 basename (--backends-root 멀티 시 각 sub-repo).
 ```
 
 **프론트 트리거 → 백엔드 chain 인식 범위 (자동)**:

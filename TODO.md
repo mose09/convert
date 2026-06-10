@@ -176,6 +176,31 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: 데몬(배치) 분석 — Spring Batch + Quartz
+
+기존 Controller → Service → DAO → XML → Table → RFC 체인 추출이 웹 컨트
+롤러만 인식. 사용자 요청: 배치 데몬 (Spring Batch Tasklet/ItemReader/
+Processor/Writer, Quartz Job) entry 도 같은 체인 추적해서 별도 시트
+"데몬" 으로 emit.
+
+- [x] `legacy_java_parser._extract_daemon_entries` + `parse_java_file` —
+      Spring Batch (`implements Tasklet|ItemReader|ItemProcessor|ItemWriter|
+      ItemStream{Reader,Writer}`) + Quartz (`implements Job`,
+      `extends QuartzJobBean`, `@DisallowConcurrentExecution` /
+      `@PersistJobDataAfterExecution`)
+- [x] `_build_indexes` 에 `daemons_by_fqcn` 인덱스 추가
+- [x] `legacy_analyzer._build_daemon_row` + `analyze_legacy` daemon
+      iteration — `_resolve_endpoint_chain` BFS 재사용 (controller 와
+      같은 체인)
+- [x] `legacy_report` save_legacy_excel / save_legacy_batch_excel 양쪽에
+      새 시트 "데몬" 12컬럼 (사용자 명시 8컬럼 + 보조 메타)
+- [x] `analyze_legacy_batch` daemon_rows aggregation
+- [x] `main.py` `--analyze-daemons` opt-in flag + analyze_legacy /
+      analyze_legacy_batch 양쪽 wiring
+- [x] README + user_manual.html 재빌드
+- [ ] (follow-up) Quartz XML 정의 인식 (`*-quartz*.xml`, `JobDetailBean`)
+      — Java code 패턴으로 대부분 cover 되어 추후 보강
+
 ### 진행 중: trigger 단위 LLM 분석 — Phase 2+3 (LLM 호출 + 머지)
 
 Phase 1 (PR #266) 의 bundle 을 받아 LLM 호출 + 응답 캐시 + screen layout 머지.
