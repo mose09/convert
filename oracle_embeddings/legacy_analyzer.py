@@ -1963,6 +1963,22 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
 
     classes = parse_all_java(backend_dir)
 
+    # 진단 — parse_all_java 결과 중 daemon_entries 가진 클래스 카운트
+    # + 첫 5개 sample. parse 단계에서 인식 / _build_indexes 등록 단계
+    # 사이 누락 확정용.
+    _daemon_classes = [c for c in classes if c.get("daemon_entries")]
+    if _daemon_classes or analyze_daemons:
+        kind_counts: dict[str, int] = {}
+        for c in _daemon_classes:
+            for de in c.get("daemon_entries") or []:
+                k = de.get("daemon_kind", "?")
+                kind_counts[k] = kind_counts.get(k, 0) + 1
+        samples = [c.get("fqcn", "") for c in _daemon_classes[:5]]
+        print(f"  [parse] daemon classes in '{os.path.basename(backend_dir)}': "
+              f"{len(_daemon_classes)}, by kind={dict(sorted(kind_counts.items()))}")
+        if samples:
+            print(f"  [parse] daemon samples: {samples}")
+
     # Library repos (``--library-dir``): scanned for .java + MyBatis XMLs
     # but their classes are flagged ``is_library=True`` so ``_build_indexes``
     # keeps them OUT of the controller index (no endpoint rows generated).
