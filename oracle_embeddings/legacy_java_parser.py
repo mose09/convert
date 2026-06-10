@@ -2476,6 +2476,105 @@ def resolve_type_fqcn(type_simple: str, imports: dict, package: str) -> str:
     return type_simple
 
 
+# ── Daemon (배치 데몬) entry 식별 ─────────────────────────────────────
+# Spring Batch + Quartz 인식 — Controller 와 같은 chain (Service → DAO →
+# XML → Table → RFC) 추적용. analyze-legacy --analyze-daemons opt-in.
+
+_SPRING_BATCH_INTERFACES = (
+    "Tasklet", "ItemReader", "ItemStreamReader",
+    "ItemProcessor", "ItemWriter", "ItemStreamWriter",
+)
+_QUARTZ_BASE_CLASSES = ("QuartzJobBean", "QuartzJob")
+
+# Spring Batch interface → method name + daemon_kind 매핑
+_BATCH_METHOD_BY_TYPE = {
+    "Tasklet":           ("execute",   "spring_batch_tasklet"),
+    "ItemReader":        ("read",      "spring_batch_reader"),
+    "ItemStreamReader":  ("read",      "spring_batch_reader"),
+    "ItemProcessor":     ("process",   "spring_batch_processor"),
+    "ItemWriter":        ("write",     "spring_batch_writer"),
+    "ItemStreamWriter":  ("write",     "spring_batch_writer"),
+}
+
+# Quartz 어노테이션 (clue — Job 명시적 implements 없이도 식별)
+_QUARTZ_ANNOTATIONS_RE = re.compile(
+    r"@(?:DisallowConcurrentExecution|PersistJobDataAfterExecution)\b"
+)
+
+
+def _extract_daemon_entries(content_nc: str, class_info: dict) -> list[dict]:
+    """Spring Batch / Quartz 데몬 entry 식별.
+
+    인식 패턴 (any 매칭):
+      - ``implements Tasklet | ItemReader | ItemProcessor | ItemWriter``
+        등 Spring Batch 인터페이스
+      - ``implements Job`` (``org.quartz.Job``)
+      - ``extends QuartzJobBean``
+      - ``@DisallowConcurrentExecution`` / ``@PersistJobDataAfterExecution``
+        클래스 어노테이션 (Quartz Job 클래스의 표지)
+
+    각 매칭마다 daemon entry 1건. method_name 은 인터페이스의 contract
+    method (Tasklet → execute, ItemReader → read 등) 또는 Quartz 의
+    ``execute`` / ``executeInternal``.
+
+    Returns: ``[{"daemon_kind", "method_name", "daemon_type",
+    "line_number"}, ...]``
+    """
+    entries: list[dict] = []
+    seen_kinds: set[str] = set()
+
+    # 1) Spring Batch — implements
+    for impl in class_info.get("implements", []):
+        impl_clean = re.sub(r"<.*$", "", impl).strip()
+        if impl_clean in _BATCH_METHOD_BY_TYPE:
+            method, kind = _BATCH_METHOD_BY_TYPE[impl_clean]
+            if kind in seen_kinds:
+                continue
+            seen_kinds.add(kind)
+            entries.append({
+                "daemon_kind": kind,
+                "method_name": method,
+                "daemon_type": impl_clean,
+                "line_number": class_info.get("line_number", 1),
+            })
+
+    # 2) Quartz — implements org.quartz.Job
+    for impl in class_info.get("implements", []):
+        impl_clean = re.sub(r"<.*$", "", impl).strip()
+        if impl_clean == "Job" and "quartz_job" not in seen_kinds:
+            seen_kinds.add("quartz_job")
+            entries.append({
+                "daemon_kind": "quartz_job",
+                "method_name": "execute",
+                "daemon_type": "Job",
+                "line_number": class_info.get("line_number", 1),
+            })
+
+    # 3) Quartz — extends QuartzJobBean
+    extends_clean = re.sub(r"<.*$", "", class_info.get("extends", "")).strip()
+    if extends_clean in _QUARTZ_BASE_CLASSES and "quartz_job" not in seen_kinds:
+        seen_kinds.add("quartz_job")
+        entries.append({
+            "daemon_kind": "quartz_job",
+            "method_name": "executeInternal",
+            "daemon_type": extends_clean,
+            "line_number": class_info.get("line_number", 1),
+        })
+
+    # 4) Quartz — 어노테이션 (implements/extends 없는 케이스 보완)
+    if "quartz_job" not in seen_kinds:
+        head = content_nc[:class_info.get("start", len(content_nc))]
+        if _QUARTZ_ANNOTATIONS_RE.search(head):
+            entries.append({
+                "daemon_kind": "quartz_job",
+                "method_name": "execute",
+                "daemon_type": "Job",  # 추정
+                "line_number": class_info.get("line_number", 1),
+            })
+
+    return entries
+
+
 def parse_java_file(filepath: str) -> dict:
     """Parse a single .java file into a structured metadata dict.
 
@@ -2655,6 +2754,17 @@ def parse_java_file(filepath: str) -> dict:
             candidates[0]["is_endpoint"] = True
             ep["_method_idx"] = methods.index(candidates[0])
 
+    # Daemon (배치) entry 인식 — Spring Batch / Quartz. Controller endpoint 와
+    # 별도 list 로 관리. analyze-legacy --analyze-daemons 옵트인 시 같은
+    # chain BFS (Service → DAO → XML → Table → RFC) 로 추적.
+    daemon_entries = _extract_daemon_entries(content_nc, class_info)
+    for de in daemon_entries:
+        mname = de.get("method_name")
+        candidates = method_by_name.get(mname) if mname else None
+        if candidates:
+            candidates[0]["is_daemon"] = True
+            de["_method_idx"] = methods.index(candidates[0])
+
     # Resolve extends to FQCN too (may need this for abstract controller chain)
     extends_fqcn = ""
     if class_info.get("extends"):
@@ -2674,6 +2784,7 @@ def parse_java_file(filepath: str) -> dict:
         "class_request_mapping": class_paths,
         "autowired_fields": autowired,
         "endpoints": endpoints,
+        "daemon_entries": daemon_entries,
         "methods": methods,
         "rfc_calls": rfc_calls,
         "rfc_hint_count": rfc_hint_count,

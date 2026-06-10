@@ -2369,6 +2369,7 @@ def cmd_analyze_legacy(args):
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
             llm_per_trigger=getattr(args, "llm_per_trigger", False),
+            analyze_daemons=getattr(args, "analyze_daemons", False),
             output_dir=_screens_output_root(output_dir),
         )
     else:
@@ -2403,6 +2404,7 @@ def cmd_analyze_legacy(args):
             closure_token_budget=getattr(args, "closure_token_budget", 12000),
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
             llm_per_trigger=getattr(args, "llm_per_trigger", False),
+            analyze_daemons=getattr(args, "analyze_daemons", False),
             output_dir=_screens_output_root(output_dir),
         )
 
@@ -2764,6 +2766,15 @@ def main():
                                 "메인의 ``<Modal>`` 안 import 만 보는 기존 휴리스틱이 "
                                 "놓친 popup 잡음. tree-sitter wheel 필요. "
                                 "미설치 시 자동 skip.")
+    al_parser.add_argument("--analyze-daemons", action="store_true",
+                           help="(옵트인) Spring Batch (Tasklet / ItemReader / "
+                                "ItemProcessor / ItemWriter) 와 Quartz (Job / "
+                                "QuartzJobBean / @DisallowConcurrentExecution) "
+                                "entry 도 Controller 와 같은 chain (Service → DAO "
+                                "→ XML → Table → RFC) 추적. 결과는 별도 '데몬' "
+                                "시트로 emit — 8컬럼 (데몬폴더 / 서비스 / "
+                                "서비스메소드 / DAO / XML / XML메서드 / "
+                                "테이블(CRUD) / RFC).")
 
     # discover-patterns command
     dp_parser = subparsers.add_parser(

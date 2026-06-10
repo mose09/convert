@@ -889,6 +889,35 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
         _write_row(ws, i, [table, len(progs_sorted), preview])
     _auto_width(ws)
 
+    # 데몬 시트 — Spring Batch / Quartz 배치 entry chain. analyze_legacy 가
+    # --analyze-daemons 옵트인 시 result["daemon_rows"] 채움. 사용자 명시
+    # 8컬럼 + 보조 메타 (클래스 / 데몬종류).
+    daemon_rows = result.get("daemon_rows") or []
+    if daemon_rows:
+        ws = wb.create_sheet("데몬")
+        _write_header(ws, [
+            "데몬폴더", "클래스", "데몬종류", "메소드",
+            "서비스", "서비스메소드", "DAO",
+            "XML", "XML메서드", "테이블(CRUD)", "RFC",
+            "파일",
+        ])
+        for i, d in enumerate(daemon_rows, start=2):
+            _write_row(ws, i, [
+                d.get("daemon_folder", ""),
+                d.get("class_fqcn", ""),
+                d.get("daemon_kind", ""),
+                d.get("daemon_method", ""),
+                d.get("service", ""),
+                d.get("service_methods", ""),
+                d.get("dao", ""),
+                d.get("xml", ""),
+                d.get("xml_method", ""),
+                d.get("tables", ""),
+                d.get("rfc", ""),
+                d.get("filepath", ""),
+            ])
+        _auto_width(ws)
+
     # Sheet 8: Business Logic (Phase A — opt-in via --extract-biz-logic).
     # biz_map 이 비어있으면 시트 자체를 만들지 않아 기존 리포트와 동일.
     biz_map = result.get("biz_map") or {}
@@ -1325,6 +1354,33 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
             proj_preview, prog_preview,
         ])
     _auto_width(ws)
+
+    # 데몬 시트 — Spring Batch / Quartz batch entry chain (batch 통합).
+    daemon_rows = result.get("daemon_rows") or []
+    if daemon_rows:
+        ws = wb.create_sheet("데몬")
+        _write_header(ws, [
+            "데몬폴더", "클래스", "데몬종류", "메소드",
+            "서비스", "서비스메소드", "DAO",
+            "XML", "XML메서드", "테이블(CRUD)", "RFC",
+            "파일",
+        ])
+        for i, d in enumerate(daemon_rows, start=2):
+            _write_row(ws, i, [
+                d.get("daemon_folder", ""),
+                d.get("class_fqcn", ""),
+                d.get("daemon_kind", ""),
+                d.get("daemon_method", ""),
+                d.get("service", ""),
+                d.get("service_methods", ""),
+                d.get("dao", ""),
+                d.get("xml", ""),
+                d.get("xml_method", ""),
+                d.get("tables", ""),
+                d.get("rfc", ""),
+                d.get("filepath", ""),
+            ])
+        _auto_width(ws)
 
     # Sheet 7: Business Logic (Phase A — opt-in).
     biz_map = result.get("biz_map") or {}
