@@ -30,7 +30,7 @@ from typing import Any, Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
-SCREEN_SCHEMA_VERSION = "v39"  # v39: 검색영역 정의서 + DataTable 그리드 정의서에서 UI 타입 컬럼 제외 (사용자 양식 변경)
+SCREEN_SCHEMA_VERSION = "v40"  # v40: 디버깅 끝난 unresolved_handlers 진단 정리 (popup/SEARCH URL 추적 완료)
 
 _DEFAULT_CONFIG = {
     "llm_max_chars": 32000,    # 큰 React 파일 대응 (Qwen 397B 컨텍스트 활용)
@@ -1472,7 +1472,6 @@ def extract_screen_layouts(
     popup_added = 0
     sub_events_absorbed = 0
     sub_urls_resolved = 0
-    _diag_unresolved_handlers: set = set()  # resolve 실패한 sub_handler 들
     files_seen: set = set(files)
 
     # 출력될 flowchart 형태 sample 이미지 — 한 번 lookup, 모든 화면 공통.
@@ -1578,8 +1577,6 @@ def extract_screen_layouts(
                         if resolved:
                             v = {**v, "urls": resolved}
                             sub_urls_resolved += 1
-                        else:
-                            _diag_unresolved_handlers.add(sub_handler)
                     url_map[k] = v
                     sub_events_absorbed += 1
 
@@ -1718,11 +1715,6 @@ def extract_screen_layouts(
         print(f"  screen layout: main_force_files={sample}"
               + (f" (+{len(_diag_main_force_files)-3})"
                  if len(_diag_main_force_files) > 3 else ""))
-    if sub_events_absorbed and sub_urls_resolved == 0 and _diag_unresolved_handlers:
-        sample = sorted(_diag_unresolved_handlers)[:5]
-        print(f"  screen layout: unresolved_handlers={sample}"
-              + (f" (+{len(_diag_unresolved_handlers)-5})"
-                 if len(_diag_unresolved_handlers) > 5 else ""))
     return out
 
 

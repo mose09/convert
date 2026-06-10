@@ -2513,6 +2513,14 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         except Exception:
             backend_repo_basename = "backend"
         daemons_idx = indexes.get("daemons_by_fqcn") or {}
+        # 진단 — daemons_by_fqcn 카운트 + 종류별 breakdown
+        kind_counts: dict[str, int] = {}
+        for dc in daemons_idx.values():
+            for de in dc.get("daemon_entries") or []:
+                kind = de.get("daemon_kind", "?")
+                kind_counts[kind] = kind_counts.get(kind, 0) + 1
+        print(f"  daemons: daemons_by_fqcn={len(daemons_idx)} classes, "
+              f"entries by kind={dict(sorted(kind_counts.items()))}")
         for daemon_class in daemons_idx.values():
             if daemon_class.get("abstract"):
                 continue
