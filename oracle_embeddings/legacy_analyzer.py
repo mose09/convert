@@ -2997,6 +2997,19 @@ def analyze_legacy_batch(backends_root: str,
         if sub_spec:
             all_endpoint_spec_map.update(sub_spec)
 
+    # batch 진단 — daemon_rows aggregation 결과 1줄 (사용자 환경에서
+    # 서브 백엔드별 daemon 인식은 잘 됐는데 머지 누락되는지 확인용).
+    if all_daemon_rows:
+        kind_counts: dict[str, int] = {}
+        for d in all_daemon_rows:
+            k = d.get("daemon_kind", "?")
+            kind_counts[k] = kind_counts.get(k, 0) + 1
+        print(f"\n  daemons (batch): {len(all_daemon_rows)} rows aggregated "
+              f"across {len(projects)} backends, by kind={dict(sorted(kind_counts.items()))}")
+    else:
+        print(f"\n  daemons (batch): 0 rows aggregated across {len(projects)} "
+              f"backends (analyze_daemons={analyze_daemons})")
+
     # Aggregate stats across projects
     def _sum(key):
         return sum(s.get(key, 0) or 0 for s in per_project_stats.values())

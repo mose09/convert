@@ -893,6 +893,7 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     # --analyze-daemons 옵트인 시 result["daemon_rows"] 채움. 사용자 명시
     # 8컬럼 + 보조 메타 (클래스 / 데몬종류).
     daemon_rows = result.get("daemon_rows") or []
+    print(f"  [report] daemon_rows in result: {len(daemon_rows)}")
     if daemon_rows:
         ws = wb.create_sheet("데몬")
         _write_header(ws, [
@@ -1357,6 +1358,7 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
 
     # 데몬 시트 — Spring Batch / Quartz batch entry chain (batch 통합).
     daemon_rows = result.get("daemon_rows") or []
+    print(f"  [report] daemon_rows in batch result: {len(daemon_rows)}")
     if daemon_rows:
         ws = wb.create_sheet("데몬")
         _write_header(ws, [
