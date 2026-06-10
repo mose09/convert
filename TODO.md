@@ -198,8 +198,11 @@ Processor/Writer, Quartz Job) entry 도 같은 체인 추적해서 별도 시트
 - [x] `main.py` `--analyze-daemons` opt-in flag + analyze_legacy /
       analyze_legacy_batch 양쪽 wiring
 - [x] README + user_manual.html 재빌드
-- [ ] (follow-up) Quartz XML 정의 인식 (`*-quartz*.xml`, `JobDetailBean`)
-      — Java code 패턴으로 대부분 cover 되어 추후 보강
+- [x] Quartz XML 정의 인식 (`quartz_data.xml`, `spring-quartz.xml` 등) —
+      `extract_quartz_xml_jobs` + `_attach_xml_daemons`. 3 패턴 cover:
+      Quartz native ``<job-class>``, Spring ``JobDetailFactoryBean``,
+      Spring ``MethodInvokingJobDetailFactoryBean`` (targetObject +
+      targetMethod 으로 service bean 의 메소드를 daemon entry 로 등록)
 
 ### 진행 중: trigger 단위 LLM 분석 — Phase 2+3 (LLM 호출 + 머지)
 

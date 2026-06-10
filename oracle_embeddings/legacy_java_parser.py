@@ -2575,6 +2575,133 @@ def _extract_daemon_entries(content_nc: str, class_info: dict) -> list[dict]:
     return entries
 
 
+# ── Quartz XML 정의 파서 ────────────────────────────────────────────
+# 사용자 환경 흔한 패턴 — Java code 에는 implements Job 없는데 별도
+# ``quartz_data.xml`` / ``*-quartz.xml`` 에 Job 클래스 매핑 정의.
+
+_QUARTZ_XML_KEYWORDS = (
+    "job-scheduling-data", "JobDetailFactoryBean",
+    "MethodInvokingJobDetailFactoryBean", "org.quartz",
+    "<job-class", "<job-detail",
+)
+
+_QUARTZ_JOB_CLASS_RE = re.compile(
+    r"<job-class\s*>\s*([\w.$]+)\s*</job-class>"
+)
+_QUARTZ_JOB_NAME_RE = re.compile(
+    r"<job-name\s*>\s*([\w.$_-]+)\s*</job-name>"
+)
+_SPRING_JOB_DETAIL_BEAN_RE = re.compile(
+    r"<bean\b[^>]*\bclass\s*=\s*\"[^\"]*\.JobDetailFactoryBean\"[^>]*>"
+    r"(.*?)"
+    r"</bean>",
+    re.DOTALL,
+)
+_SPRING_METHOD_INVOKE_BEAN_RE = re.compile(
+    r"<bean\b[^>]*\bclass\s*=\s*\"[^\"]*\.MethodInvokingJobDetailFactoryBean\"[^>]*>"
+    r"(.*?)"
+    r"</bean>",
+    re.DOTALL,
+)
+_BEAN_PROPERTY_VALUE_RE = re.compile(
+    r"<property\s+name\s*=\s*\"(\w+)\"\s+value\s*=\s*\"([^\"]+)\""
+)
+_BEAN_PROPERTY_REF_RE = re.compile(
+    r"<property\s+name\s*=\s*\"(\w+)\"\s+ref\s*=\s*\"([^\"]+)\""
+)
+
+
+def extract_quartz_xml_jobs(backend_dir: str) -> list[dict]:
+    """Quartz XML 정의 파일에서 Job 클래스 / 메소드 매핑 추출.
+
+    인식 패턴 (3가지):
+      (a) Quartz native ``job-scheduling-data`` XML:
+          ``<job><job-class>com.X.Y</job-class></job>`` → execute() entry
+      (b) Spring ``JobDetailFactoryBean``:
+          ``<bean class="...JobDetailFactoryBean">
+             <property name="jobClass" value="com.X.Y"/></bean>``
+      (c) Spring ``MethodInvokingJobDetailFactoryBean``:
+          ``<property name="targetObject" ref="serviceBean"/>``
+          ``<property name="targetMethod" value="methodName"/>``
+          → service bean 의 그 메소드를 daemon entry 로 등록
+
+    Returns: ``[{"job_class_fqcn", "method_name", "daemon_kind",
+    "daemon_type", "source_xml", "target_object_ref"}, ...]``
+    """
+    if not backend_dir or not os.path.isdir(backend_dir):
+        return []
+    out: list[dict] = []
+    for root, dirs, files in os.walk(backend_dir):
+        dirs[:] = [d for d in dirs
+                   if d not in ("target", "build", "node_modules", ".git",
+                                ".idea", ".gradle", "out")]
+        for fname in files:
+            if not fname.lower().endswith(".xml"):
+                continue
+            path = os.path.join(root, fname)
+            try:
+                content = _read_file_safe(path, limit=400000)
+            except Exception:
+                continue
+            if not any(kw in content for kw in _QUARTZ_XML_KEYWORDS):
+                continue
+            rel = os.path.relpath(path, backend_dir).replace("\\", "/")
+
+            # (a) Quartz native
+            for m in _QUARTZ_JOB_CLASS_RE.finditer(content):
+                fqcn = m.group(1).strip()
+                if fqcn:
+                    out.append({
+                        "job_class_fqcn": fqcn,
+                        "method_name": "execute",
+                        "daemon_kind": "quartz_job",
+                        "daemon_type": "JobDetail",
+                        "source_xml": rel,
+                        "target_object_ref": "",
+                    })
+
+            # (b) Spring JobDetailFactoryBean
+            for bm in _SPRING_JOB_DETAIL_BEAN_RE.finditer(content):
+                inner = bm.group(1)
+                for pm in _BEAN_PROPERTY_VALUE_RE.finditer(inner):
+                    if pm.group(1) == "jobClass":
+                        fqcn = pm.group(2).strip()
+                        if fqcn:
+                            out.append({
+                                "job_class_fqcn": fqcn,
+                                "method_name": "execute",
+                                "daemon_kind": "quartz_job",
+                                "daemon_type": "JobDetailFactoryBean",
+                                "source_xml": rel,
+                                "target_object_ref": "",
+                            })
+
+            # (c) MethodInvokingJobDetailFactoryBean — target bean.method
+            for bm in _SPRING_METHOD_INVOKE_BEAN_RE.finditer(content):
+                inner = bm.group(1)
+                ref = ""
+                method = ""
+                for pm in _BEAN_PROPERTY_REF_RE.finditer(inner):
+                    if pm.group(1) == "targetObject":
+                        ref = pm.group(2).strip()
+                        break
+                for pm in _BEAN_PROPERTY_VALUE_RE.finditer(inner):
+                    if pm.group(1) == "targetMethod":
+                        method = pm.group(2).strip()
+                        break
+                if ref and method:
+                    out.append({
+                        "job_class_fqcn": "",  # bean id — analyzer 가 resolve
+                        "method_name": method,
+                        "daemon_kind": "quartz_method_invoking",
+                        "daemon_type": "MethodInvokingJobDetail",
+                        "source_xml": rel,
+                        "target_object_ref": ref,
+                    })
+
+    return out
+
+
 def parse_java_file(filepath: str) -> dict:
     """Parse a single .java file into a structured metadata dict.
 

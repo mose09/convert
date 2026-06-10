@@ -1647,6 +1647,72 @@ def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
     return ordered
 
 
+def _attach_xml_daemons(xml_jobs: list[dict], indexes: dict,
+                        backend_dir: str) -> int:
+    """Quartz XML 정의로 발견된 job → indexes 의 클래스에 daemon entry
+    강제 부착. 클래스가 indexes 에 없으면 skip (라이브러리 jar 가능성).
+
+    Pattern 별 클래스 lookup:
+      (a)(b) job_class_fqcn 직접 → controllers/services/by_simple 조회
+      (c) target_object_ref (bean id) → simple name 매칭 (camelCase
+          첫글자 대문자) → services_by_fqcn / by_simple
+
+    Returns: 강제 부착 성공한 entry 수.
+    """
+    by_simple = indexes.get("by_simple") or {}
+    services_by_fqcn = indexes.get("services_by_fqcn") or {}
+    daemons_by_fqcn = indexes.setdefault("daemons_by_fqcn", {})
+    attached = 0
+    for j in xml_jobs:
+        fqcn = (j.get("job_class_fqcn") or "").strip()
+        target_class = None
+        if fqcn:
+            # 정확한 FQCN 또는 simple name 매칭
+            target_class = (
+                services_by_fqcn.get(fqcn)
+                or daemons_by_fqcn.get(fqcn)
+                or indexes.get("controllers_by_fqcn", {}).get(fqcn)
+                or indexes.get("mappers_by_fqcn", {}).get(fqcn)
+            )
+            if target_class is None:
+                simple = fqcn.rsplit(".", 1)[-1]
+                cands = by_simple.get(simple) or []
+                if cands:
+                    target_class = cands[0]
+        elif j.get("target_object_ref"):
+            # bean id → camelCase → service class lookup
+            ref = j["target_object_ref"]
+            # bean id 가 lowerCamel 이면 첫 글자 대문자로
+            simple = ref[:1].upper() + ref[1:] if ref else ""
+            cands = by_simple.get(simple) or []
+            if cands:
+                target_class = cands[0]
+        if target_class is None:
+            continue
+        # 해당 클래스에 daemon entry 강제 부착
+        method_name = j.get("method_name", "execute")
+        entry = {
+            "daemon_kind": j.get("daemon_kind", "quartz_job"),
+            "method_name": method_name,
+            "daemon_type": j.get("daemon_type", "Job"),
+            "line_number": 1,
+            "_via_xml": j.get("source_xml", ""),
+        }
+        # method body 매칭
+        methods_list = target_class.get("methods") or []
+        for i, m in enumerate(methods_list):
+            if m.get("name") == method_name:
+                entry["_method_idx"] = i
+                m["is_daemon"] = True
+                break
+        target_class.setdefault("daemon_entries", []).append(entry)
+        target_fqcn = target_class.get("fqcn", "")
+        if target_fqcn:
+            daemons_by_fqcn[target_fqcn] = target_class
+        attached += 1
+    return attached
+
+
 def _build_daemon_row(daemon: dict, controller: dict, indexes: dict,
                       mybatis_idx: dict, base_dirs: dict,
                       backend_repo: str = "",
@@ -2011,6 +2077,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     indexes["iface_to_impl"] = _resolve_service_impls(
         indexes["services_by_fqcn"], indexes["by_simple"]
     )
+
+    # Quartz XML 정의 (사용자 보고: quartz_data.xml 등) 에서 Job 클래스 /
+    # 메소드 매핑 추출 → daemons_by_fqcn 강제 등록. Java code 패턴에 안
+    # 잡히는 케이스 cover. opt-in (analyze_daemons) 시에만 동작.
+    if analyze_daemons:
+        from .legacy_java_parser import extract_quartz_xml_jobs
+        xml_jobs = extract_quartz_xml_jobs(backend_dir)
+        if xml_jobs:
+            _attach_xml_daemons(xml_jobs, indexes, backend_dir)
+            print(f"  daemons (Quartz XML): {len(xml_jobs)} job mapping 발견")
     # Report how many of those controllers came from stereotype match vs
     # the endpoint-promotion fallback, so users can understand the flow.
     promoted = sum(
