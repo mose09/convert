@@ -1705,7 +1705,19 @@ def _attach_xml_daemons(xml_jobs: list[dict], indexes: dict,
                 entry["_method_idx"] = i
                 m["is_daemon"] = True
                 break
-        target_class.setdefault("daemon_entries", []).append(entry)
+        # Dedupe — 같은 (daemon_kind, method_name) entry 가 이미 있으면 skip.
+        # Java code (implements Job) + XML 중복 정의 / XML 파일 여러개
+        # (dev/prod profile 등) 케이스에서 entry 가 N 번 append → daemon
+        # row 가 N 줄씩 중복 emit 되는 사용자 보고 fix.
+        existing = target_class.setdefault("daemon_entries", [])
+        already = any(
+            e.get("daemon_kind") == entry["daemon_kind"]
+            and e.get("method_name") == entry["method_name"]
+            for e in existing
+        )
+        if already:
+            continue
+        existing.append(entry)
         target_fqcn = target_class.get("fqcn", "")
         if target_fqcn:
             daemons_by_fqcn[target_fqcn] = target_class
@@ -2537,10 +2549,23 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 kind_counts[kind] = kind_counts.get(kind, 0) + 1
         print(f"  daemons: daemons_by_fqcn={len(daemons_idx)} classes, "
               f"entries by kind={dict(sorted(kind_counts.items()))}")
+        seen_daemon_keys: set = set()
         for daemon_class in daemons_idx.values():
             if daemon_class.get("abstract"):
                 continue
             for de in daemon_class.get("daemon_entries") or []:
+                # Safety-net dedupe — (class_fqcn, daemon_kind, method_name)
+                # 같은 row 가 이미 emit 됐으면 skip. _attach_xml_daemons
+                # 의 가드와 중복이지만 다른 path (Java code 가 중복 entry
+                # 만든 케이스 등) 도 cover.
+                key = (
+                    daemon_class.get("fqcn", ""),
+                    de.get("daemon_kind", ""),
+                    de.get("method_name", ""),
+                )
+                if key in seen_daemon_keys:
+                    continue
+                seen_daemon_keys.add(key)
                 drow = _build_daemon_row(
                     de, daemon_class, indexes, mybatis_idx, base_dirs,
                     backend_repo=backend_repo_basename,
