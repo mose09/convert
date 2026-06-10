@@ -660,11 +660,18 @@ python main.py analyze-legacy `
 # → 결과 xlsx 에 새 '데몬' 시트:
 #    데몬폴더 / 클래스 / 데몬종류 / 메소드 / 서비스 / 서비스메소드 /
 #    DAO / XML / XML메서드 / 테이블(CRUD) / RFC / 파일
-# 인식 패턴 (Java code 기반):
-#  - Spring Batch: implements Tasklet | ItemReader | ItemProcessor |
-#    ItemWriter | ItemStream{Reader,Writer}
-#  - Quartz: implements Job (org.quartz.Job) | extends QuartzJobBean |
-#    @DisallowConcurrentExecution / @PersistJobDataAfterExecution
+# 인식 패턴:
+#  Java code 기반 —
+#   - Spring Batch: implements Tasklet | ItemReader | ItemProcessor |
+#     ItemWriter | ItemStream{Reader,Writer}
+#   - Quartz: implements Job (org.quartz.Job) | extends QuartzJobBean |
+#     @DisallowConcurrentExecution / @PersistJobDataAfterExecution
+#  Quartz XML 정의 기반 (quartz_data.xml / spring-quartz.xml 등) —
+#   (a) Quartz native: <job-class>FQCN</job-class>
+#   (b) Spring JobDetailFactoryBean: <property name="jobClass" value="FQCN"/>
+#   (c) Spring MethodInvokingJobDetailFactoryBean:
+#       targetObject=beanRef + targetMethod=methodName
+#       → 그 service bean 의 그 메소드를 daemon entry 로 등록
 # 데몬폴더 = backend root 의 basename (--backends-root 멀티 시 각 sub-repo).
 ```
 
