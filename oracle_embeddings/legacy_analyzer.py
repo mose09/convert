@@ -2783,6 +2783,11 @@ def _looks_like_backend(path: str) -> bool:
     Accepts any directory that has a build descriptor (``pom.xml`` /
     ``build.gradle`` / ``build.gradle.kts`` / ``settings.gradle``) or a
     standard Java source layout (``src/main/java``).
+
+    Fallback: 어디 위치든 ``.java`` 파일이 1개 이상 있으면 backend 로
+    인정. build descriptor 없는 legacy / 사내 layout 의 sub-repo (Quartz
+    배치 잡 폴더 등) 도 자동 인식. SKIP_DIRS (target/build/.git 등) 는
+    여전히 제외해서 빌드 산출물 안 .class 는 신경 안 씀.
     """
     for marker in ("pom.xml", "build.gradle", "build.gradle.kts",
                    "settings.gradle", "settings.gradle.kts"):
@@ -2790,6 +2795,17 @@ def _looks_like_backend(path: str) -> bool:
             return True
     if os.path.isdir(os.path.join(path, "src", "main", "java")):
         return True
+    # Fallback — .java 파일이 한 개라도 있으면 backend 로 인정.
+    # backends-root 의 직속 sub-folder 만 검사하므로 false-positive risk
+    # 낮음 (test 폴더 같은 건 보통 sub-folder 형태로 안 들어옴).
+    try:
+        from .legacy_java_parser import SKIP_DIRS as _SKIP
+    except Exception:
+        _SKIP = {"target", "build", ".git", ".gradle", ".idea", "bin", "out"}
+    for root, dirs, files in os.walk(path):
+        dirs[:] = [d for d in dirs if d.lower() not in _SKIP]
+        if any(f.endswith(".java") for f in files):
+            return True
     return False
 
 
