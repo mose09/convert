@@ -259,6 +259,15 @@ Processor/Writer, Quartz Job) entry 도 같은 체인 추적해서 별도 시트
       Spring ``MethodInvokingJobDetailFactoryBean`` (targetObject +
       targetMethod 으로 service bean 의 메소드를 daemon entry 로 등록)
 
+### 진행 중: `diag_url_trace.py` — 버튼-URL 누락 5단계 추적 진단기
+
+`--extract-screen-layout` 에서 특정 버튼의 backend 호출 URL 이 화면정의서에
+안 잡힐 때, 실제 프론트 디렉토리에서 5단계 (raw 존재 → relevant 필터 →
+api_url_index → handler 링크 → screen 그룹) 중 어디서 빠지는지 한 줄씩 ✓/✗
+자동 판정. 폐쇄망/단방향 전제 — 긴 dump 없이 첫 ✗ 가 원인.
+
+- [ ] `diag_url_trace.py` 작성 (기존 scanner 함수 재사용, 신규 코드 최소)
+
 ### 진행 중: trigger 단위 LLM 분석 — Phase 2+3 (LLM 호출 + 머지)
 
 Phase 1 (PR #266) 의 bundle 을 받아 LLM 호출 + 응답 캐시 + screen layout 머지.
