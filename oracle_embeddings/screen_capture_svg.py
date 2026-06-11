@@ -118,8 +118,17 @@ def _render_node(node: dict, parts: list[str], text_scale: float = 1.0) -> None:
             f'{attrs}/>'
         )
 
-    for child in node.get("children") or []:
-        _render_node(child, parts, text_scale=text_scale)
+    children = node.get("children") or []
+    if children:
+        # FRAME 의 자식들을 <g> 로 감싸기 — Figma 가 Group 으로 인식해서
+        # 레이어 트리 보존 (사용자 보고: paste 결과가 flat 평면이라
+        # 컴포넌트 단위 선택/이동 어려움 fix). id 에 노드 이름 (tag#id.
+        # class 형태) → Figma 가 layer 이름으로 사용.
+        group_id = _esc(node.get("name") or "frame")
+        parts.append(f'<g id="{group_id}">')
+        for child in children:
+            _render_node(child, parts, text_scale=text_scale)
+        parts.append("</g>")
 
 
 def render_svg_from_capture(doc: dict, output_path: Path,
