@@ -30,7 +30,7 @@
 - **브랜치 전략**: GitHub Flow — `main` 안정. `claude/<task>-<id>` 피처
   브랜치 → PR squash-merge.
 
-## 주요 커맨드 (26종)
+## 주요 커맨드 (27종)
 
 | 커맨드 | 목적 | LLM | Oracle |
 |--------|------|-----|--------|
@@ -55,6 +55,7 @@
 | `validate-migration` | 변환 XML parse-only 검증 (Stage B) | X | O |
 | `screen-converter` | AS-IS 화면 캡처 + DRM 템플릿 캡처 → TO-BE PPTX 도형. 템플릿에서 1회 style profile 추출 (색·폰트·버튼) + 캡처별 layout 추출, `--frontend-dir` 로 React 소스 매칭 (Vision LLM, PoC) | O | X |
 | `screen-spec` | React 화면 closure → AST 패턴 추출 (검색/그리드/탭/이벤트+flow/검증) → 마스터 xlsx (시트=영역, LLM 0, 같은 소스 → 같은 결과 deterministic) | X | X |
+| `capture-screens` | AS-IS 화면 Playwright headless 렌더 → DOM 레이아웃 JSON (`docs/FIGMA_JSON_SPEC.md` 계약) → 사내 Figma 플러그인 (`figma_plugin/`) 으로 편집 가능 레이어. 외부 SaaS 전송 X. 모듈: `legacy_screen_capture.py` + `assets/dom_serializer.js`. 회귀: `verify_capture.py` (`/tmp/mock_capture` 자동 생성) | X | X |
 
 각 커맨드 상세 옵션: `python main.py <cmd> --help`. 모듈 / 파이프라인
 구조 / 회귀 mock / 해결된 이슈 표는 archive 참고.

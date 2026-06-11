@@ -269,7 +269,7 @@ CATEGORY_MAP: dict[str, list[str]] = {
     ],
     "AS-IS 분석": [
         "analyze-legacy", "discover-patterns", "convert-menu",
-        "screen-spec", "screen-converter",
+        "screen-spec", "screen-converter", "capture-screens",
     ],
     "마이그레이션": [
         "convert-mapping", "migration-impact",
@@ -288,6 +288,7 @@ SECTION_MAP: dict[str, int] = {
     "migrate-sql": 12, "validate-migration": 12,
     "morpheme": 13, "screen-converter": 14, "screen-spec": 15,
     "build-dict": 16, "recommend-names": 16,
+    "capture-screens": 17,
 }
 
 

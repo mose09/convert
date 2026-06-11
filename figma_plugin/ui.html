@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<!--
+  capture-screens Figma 플러그인 UI.
+  외부 CDN / 네트워크 요청 0 — 폐쇄망 안전. 순수 HTML/JS.
+
+  입력 2가지:
+    1) JSON 파일 선택 (capture-screens 산출물 — 여러 파일 가능)
+    2) textarea 에 JSON 직접 붙여넣기
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  body {
+    font-family: "Malgun Gothic", "Apple SD Gothic Neo", sans-serif;
+    font-size: 12px; margin: 0; padding: 12px; color: #222;
+  }
+  h2 { font-size: 14px; margin: 0 0 8px; }
+  .hint { color: #777; margin-bottom: 10px; line-height: 1.5; }
+  textarea {
+    width: 100%; height: 160px; box-sizing: border-box;
+    font-family: monospace; font-size: 11px;
+    border: 1px solid #ccc; border-radius: 4px; padding: 6px;
+  }
+  .row { margin: 10px 0; }
+  button {
+    background: #18a0fb; color: #fff; border: 0; border-radius: 6px;
+    padding: 8px 20px; font-size: 13px; cursor: pointer;
+  }
+  button:disabled { background: #aaa; cursor: default; }
+  #status { margin-top: 10px; color: #444; min-height: 18px; }
+  #progress { color: #18a0fb; font-weight: bold; }
+</style>
+</head>
+<body>
+  <h2>capture-screens JSON Import</h2>
+  <div class="hint">
+    <code>output/figma_capture/&lt;일자&gt;/&lt;화면&gt;.json</code> 파일을
+    선택하거나 아래에 붙여넣은 후 Import. 여러 파일 선택 시 화면당
+    프레임 1개씩 생성됩니다.
+  </div>
+
+  <div class="row">
+    <input type="file" id="file" accept=".json" multiple>
+  </div>
+
+  <div class="row">
+    <textarea id="paste" placeholder='{"schemaVersion": 1, "meta": {...}, "root": {...}}'></textarea>
+  </div>
+
+  <div class="row">
+    <button id="import">Import</button>
+    <span id="progress"></span>
+  </div>
+  <div id="status"></div>
+
+<script>
+(function () {
+  "use strict";
+  var btn = document.getElementById("import");
+  var fileInput = document.getElementById("file");
+  var pasteArea = document.getElementById("paste");
+  var statusEl = document.getElementById("status");
+  var progressEl = document.getElementById("progress");
+
+  function setStatus(msg) { statusEl.textContent = msg; }
+
+  // code.js 로부터 진행 상황 수신
+  window.onmessage = function (event) {
+    var msg = event.data.pluginMessage;
+    if (!msg) return;
+    if (msg.type === "progress") {
+      progressEl.textContent = msg.text || "";
+    } else if (msg.type === "done") {
+      progressEl.textContent = "";
+      setStatus(msg.text || "완료");
+      btn.disabled = false;
+    } else if (msg.type === "error") {
+      progressEl.textContent = "";
+      setStatus("오류: " + (msg.text || "unknown"));
+      btn.disabled = false;
+    }
+  };
+
+  function readFileAsText(file) {
+    return new Promise(function (resolve, reject) {
+      var r = new FileReader();
+      r.onload = function () { resolve(r.result); };
+      r.onerror = function () { reject(r.error); };
+      r.readAsText(file, "utf-8");
+    });
+  }
+
+  btn.addEventListener("click", function () {
+    var jobs = [];
+    var files = fileInput.files;
+    if (files && files.length) {
+      for (var i = 0; i < files.length; i++) {
+        jobs.push(readFileAsText(files[i]));
+      }
+    } else {
+      var pasted = pasteArea.value.trim();
+      if (!pasted) {
+        setStatus("JSON 파일을 선택하거나 붙여넣어 주세요.");
+        return;
+      }
+      jobs.push(Promise.resolve(pasted));
+    }
+
+    btn.disabled = true;
+    setStatus("");
+    Promise.all(jobs).then(function (texts) {
+      var docs = [];
+      for (var i = 0; i < texts.length; i++) {
+        try {
+          docs.push(JSON.parse(texts[i]));
+        } catch (e) {
+          setStatus("JSON 파싱 실패 (" + (i + 1) + "번째): " + e.message);
+          btn.disabled = false;
+          return;
+        }
+      }
+      parent.postMessage({ pluginMessage: { type: "import", docs: docs } }, "*");
+    }).catch(function (e) {
+      setStatus("파일 읽기 실패: " + e);
+      btn.disabled = false;
+    });
+  });
+})();
+</script>
+</body>
+</html>

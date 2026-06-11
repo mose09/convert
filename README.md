@@ -34,6 +34,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
 | `screen-converter` | AS-IS 화면 캡처 폴더 → TO-BE PPTX 도형 자동 생성 (Vision LLM 이 DRM 템플릿 캡처를 시각 참조로 layout JSON 추출 → python-pptx 렌더, PoC) | X | O |
 | `screen-spec` | React 화면 closure (entry + 자식 컴포넌트 BFS) → AST 패턴으로 검색·그리드·탭·이벤트+flow·검증 deterministic 추출 → 마스터 xlsx (시트=영역, 1열=화면명). 같은 소스 → 같은 산출물 보장 (LLM 0). PPTX 설계서에 시트 단위 복사·붙여넣기 워크플로우용 | X | X |
+| `capture-screens` | AS-IS 화면을 Playwright headless 브라우저로 실제 렌더 → DOM 레이아웃 JSON → 사내 Figma 플러그인 (`figma_plugin/`) 으로 편집 가능 레이어 재구성. 외부 SaaS 전송 없음 (폐쇄망) | X | X |
 | `embed` | .md를 벡터 DB에 임베딩 | X | X |
 | `erd-rag` | RAG로 Mermaid ERD 생성 | X | O |
 | `erd` | 직접 DB 접속 ERD 생성 | O | 선택 |
@@ -62,6 +63,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `output/migration/<날짜>/` | migration-impact + migrate-sql + validate-migration |
 | `output/screen-converter/<날짜>/` | screen-converter |
 | `output/screen-spec/<날짜>/` | screen-spec |
+| `output/figma_capture/<날짜>/` | capture-screens |
 
 예외:
 - `--output` 으로 명시 지정 시 사용자 경로 그대로 사용
@@ -1842,6 +1844,92 @@ TO-BE 물리명 / 도메인 / 데이터유형 / 신뢰도 / 단계 / 비고`.
 > 추천=FACI` 처럼 나오면 정상 참조, `등재=사전에 없음` 이면 해당 단어가
 > 적재 안 된 것(헤더/시트/표기 확인). 코멘트가 **영문**(예: `USL VAL`)이면
 > 한글 형태소 분해를 건너뛰고 물리명 기준으로 매칭한다.
+
+---
+
+### 17. AS-IS 화면 Figma 변환 (capture-screens)
+
+AS-IS 프론트엔드 (React 등) 화면을 **Playwright headless 브라우저로 실제
+렌더링**한 뒤 DOM 레이아웃을 JSON 으로 추출하고, 사내 **Figma 플러그인**
+(`figma_plugin/`) 이 그 JSON 을 읽어 `createFrame / createText /
+createRectangle` 로 **편집 가능한 디자인 레이어**를 재구성한다.
+
+- Vision LLM 추측 없음 — 렌더링된 실제 화면 기준 (deterministic).
+- html.to.design 같은 외부 SaaS 로 HTML 전송하지 않음 (폐쇄망/보안).
+- JSON 스키마 계약: [`docs/FIGMA_JSON_SPEC.md`](docs/FIGMA_JSON_SPEC.md)
+  (`schemaVersion: 1` — Python ↔ 플러그인의 유일한 계약 문서).
+
+**전제조건**: AS-IS 프론트가 **실행 가능한 상태** (dev 서버 또는 운영
+URL 접근). 정적 소스 분석이 아니라 렌더링된 화면을 캡처한다.
+
+```powershell
+# 1) 라우트 자동 추출 (React Router 스캔) — dry-run 으로 목록 먼저 확인
+python main.py capture-screens `
+  --frontend-dir C:\work\frontend `
+  --patterns output\legacy_analysis\patterns.yaml `
+  --list-only
+
+# 2) 캡처 실행
+python main.py capture-screens `
+  --base-url http://localhost:3000 `
+  --frontend-dir C:\work\frontend `
+  --patterns output\legacy_analysis\patterns.yaml `
+  --storage-state auth.json `
+  --viewport 1920x1080
+# 출력: output\figma_capture\<YYYYMMDD>\<라우트슬러그>.json (+ _failed.md)
+
+# 3) 라우트 수동 목록 / 단일 URL 모드
+python main.py capture-screens --base-url http://localhost:3000 --routes-file routes.txt
+python main.py capture-screens --base-url http://localhost:3000 --url /order/list
+```
+
+| 옵션 | 설명 |
+| --- | --- |
+| `--base-url` | AS-IS 프론트 베이스 URL. 미지정 시 `.env` 의 `FIGMA_CAPTURE_BASE_URL` |
+| `--routes-file` / `--frontend-dir` / `--url` | 라우트 소스 (우선순위 순). `--frontend-dir` 는 React Router 자동 추출 |
+| `--patterns` | patterns.yaml 의 `url.url_prefix_strip` / `url.react_route_prefix` 를 라우트 변환에 적용 (analyze-legacy 와 동일) |
+| `--storage-state` | Playwright storage_state JSON — 로그인 세션 주입 (아래 참고) |
+| `--wait-selector` / `--wait-ms` | 렌더 완료 대기. 미지정 시 networkidle |
+| `--viewport` | 기본 1920x1080 |
+| `--max-image-kb` | 이미지 base64 최대 크기 (기본 500). 초과/CORS 시 회색 placeholder |
+| `--param-fill key=value` | 동적 세그먼트 (`:id`/`{id}`) 치환. 미치환 동적 라우트는 skip + `_failed.md` 기록 |
+| `--list-only` | dry-run — 캡처 대상 라우트 목록만 출력 |
+
+**폐쇄망 Playwright 오프라인 설치** (Windows):
+
+```powershell
+# 인터넷 PC — wheel + 브라우저 번들 다운로드
+python -m pip download playwright -d .\wheels `
+  --platform win_amd64 --python-version 311 --only-binary=:all:
+python -m pip install playwright
+python -m playwright install chromium
+# → %USERPROFILE%\AppData\Local\ms-playwright 폴더 통째로 USB 복사
+
+# 폐쇄망 PC — wheel 설치 + 번들 경로 지정
+python -m pip install --no-index --find-links=.\wheels playwright
+set PLAYWRIGHT_BROWSERS_PATH=C:\tools\ms-playwright
+```
+
+**storage_state (로그인 세션) 만드는 법** — 인터넷/사내망 PC 에서 1회:
+
+```powershell
+python -c "from playwright.sync_api import sync_playwright; p = sync_playwright().start(); b = p.chromium.launch(headless=False); ctx = b.new_context(); pg = ctx.new_page(); pg.goto('http://your-asis-url/login'); input('브라우저에서 로그인 완료 후 Enter...'); ctx.storage_state(path='auth.json'); b.close()"
+# → 생성된 auth.json 을 --storage-state 로 전달
+```
+
+**Figma 플러그인 로드** (Figma 데스크톱):
+
+1. `Plugins` → `Development` → `Import plugin from manifest...`
+2. repo 의 `figma_plugin/manifest.json` 선택
+3. 플러그인 실행 → JSON 파일 선택 (여러 개 가능) 또는 textarea 붙여넣기 → `Import`
+4. 화면당 프레임 1개씩 생성 — 텍스트는 편집 가능한 텍스트 레이어,
+   한글 폰트는 `FONT_MAP` (맑은 고딕 → Noto Sans KR) 매핑, 미존재 시
+   Inter 폴백 + 카운트 표시
+
+**검증**: `python verify_capture.py` — mock 2장 캡처 후 노드 수 assert.
+
+> 1차 비범위: Auto Layout 자동 추론 / Figma Component 생성 / Polymer
+> 라우트 자동 / 스크롤 전체 캡처 (`--full-page`) / API mocking.
 
 ---
 

@@ -176,6 +176,61 @@ _진행 중 없음_
 `analyze-legacy` 본체 + 보조 커맨드 (`discover-patterns`, `convert-menu`)
 + React/Polymer 스캐너 / Java 파서 / 메뉴 로더 전부 포함.
 
+### 진행 중: capture-screens — AS-IS 화면 → Figma 편집 가능 레이어 변환
+
+작업지시서 (SPEC) 기반. Playwright 로 AS-IS React 화면 렌더 → DOM 레이아웃
+JSON 추출 → 사내 Figma 플러그인이 createFrame/createText/createRectangle 로
+편집 가능 레이어 재구성. 외부 SaaS 전송 없음 (폐쇄망/보안). STEP 순서대로
+하나씩 진행 (묶음 구현 금지).
+
+Phase A — Python 캡처 레이어
+- [x] STEP 1. TODO.md 작성 + 의존성 준비 (requirements.txt playwright,
+      .env.example FIGMA_CAPTURE_BASE_URL, 컨테이너 playwright 1.56 +
+      번들 chromium-1194 매칭 확인)
+- [x] STEP 2. `oracle_embeddings/assets/dom_serializer.js` —
+      `window.__serializeDom(options)`, body 재귀, TEXT 분리 / IMAGE /
+      FRAME / RECT 판정, rgb→hex, display:none/0×0 제외.
+      검증: mock 페이지 17 FRAME + 10 TEXT + 2 RECT, 한글/hidden OK
+- [x] STEP 3. `docs/FIGMA_JSON_SPEC.md` — 스키마 정식 명세
+      (schemaVersion: 1). Python ↔ 플러그인 유일 계약
+- [x] STEP 4. `legacy_screen_capture.py` 골격 + 단일 화면 캡처 —
+      `capture_screens()` 공개 API, slug 는 legacy_util.normalize_url,
+      진단 1줄 + `_failed.md`. 검증: mock 캡처 1건 + 동적 라우트 skip
+- [x] STEP 5. 라우트 소스 연동 — ① --routes-file ② --frontend-dir
+      (legacy_react_router.build_url_to_component_map) ③ --url.
+      patterns.yaml url_prefix_strip / react_route_prefix 적용. 동적
+      세그먼트 skip + --param-fill. 검증: mock React 3 라우트 추출
+- [x] STEP 6. 인증/대기/이미지 옵션 — capture_screens 시그니처에 모두
+      포함. 검증: 이미지 mock 페이지 base64 IMAGE 노드 1건
+- [x] STEP 7. main.py `capture-screens` 커맨드 통합 (26종 → 27종).
+      검증: --help + --list-only + mock e2e CLI 1건
+
+Phase B — Figma 플러그인
+- [x] STEP 8. `figma_plugin/` 골격 — manifest.json (networkAccess none)
+      / ui.html (textarea + 멀티 파일 선택 + 진행 카운터) / code.js
+      (onmessage + schemaVersion 검증).
+      ※ [ ] Figma 데스크톱 "Import plugin from manifest" 로드는 사용자
+      수동 확인 항목
+- [x] STEP 9. 노드 렌더러 — FRAME/RECT/TEXT/IMAGE → Figma API, 절대→상대
+      좌표, FONT_MAP (맑은고딕→Noto Sans KR) + Inter 폴백 + 카운트,
+      200노드 yield, base64→Uint8Array 자체 구현.
+      ※ [ ] mock JSON import 레이어 트리 생성은 사용자 수동 확인 항목
+- [x] STEP 10. 렌더러 견고화 — isInvalidSpec (rect 음수/NaN/빈 텍스트
+      skip), >3000 노드 경고, figma.notify 요약. 검증: 순수 함수 Node
+      테스트 (base64 4 길이 / 깨진 spec 7종 skip)
+
+Phase C — 검증 / 문서 / 마감
+- [x] STEP 11. `/tmp/mock_capture/` 정적 HTML 2장 (한글 UTF-8 + 이미지)
+      + `verify_capture.py` (mock 자산 자동 생성 + 노드 수 assert).
+      검증: ✓ 화면1 29노드 (TEXT 10), 화면2 IMAGE 1
+- [x] STEP 12. README §17 capture-screens 섹션 (폐쇄망 Playwright 오프라인
+      설치 + PLAYWRIGHT_BROWSERS_PATH + 플러그인 로드법 + storage_state)
+      + 기능 요약 표 + 경로 규약 표 + CLAUDE.md 커맨드 표 27종 +
+      docs_builder CATEGORY_MAP/SECTION_MAP + user_manual.html 재빌드
+- [x] STEP 13. 회귀 확인 (기존 6 커맨드 --help + analyze-legacy mock
+      endpoint=1/method-scope=1 변동 없음) + 커밋/푸시
+      (claude/capture-screens → PR squash-merge)
+
 ### 진행 중: 데몬(배치) 분석 — Spring Batch + Quartz
 
 기존 Controller → Service → DAO → XML → Table → RFC 체인 추출이 웹 컨트

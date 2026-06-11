@@ -1107,6 +1107,101 @@ def cmd_screen_converter(args):
     print(f"  LLM raw: {stats['llm_raw_dir']}/  (디버그용 — VLM 추출 JSON)")
 
 
+def cmd_capture_screens(args):
+    """AS-IS 화면 headless 렌더 → DOM 레이아웃 JSON (Figma 플러그인 입력).
+
+    Playwright 로 실제 렌더링된 화면을 직렬화 — Vision LLM 추측 없이
+    deterministic. 산출 JSON 은 figma_plugin/ 의 사내 플러그인으로
+    import (외부 SaaS 전송 없음).
+    """
+    from pathlib import Path as _Path
+
+    load_dotenv()
+    config = load_config(args.config) if os.path.exists(args.config) else {}
+
+    base_url = args.base_url or os.environ.get("FIGMA_CAPTURE_BASE_URL", "")
+    # patterns.yaml 로드 (있으면) — analyze-legacy 와 동일 경로
+    patterns: dict | None = None
+    if getattr(args, "patterns", None):
+        pp = _Path(args.patterns)
+        if not pp.is_file():
+            print(f"⚠ --patterns 파일 없음 (스킵): {pp}")
+        else:
+            patterns = yaml.safe_load(pp.read_text(encoding="utf-8"))
+
+    from oracle_embeddings.legacy_screen_capture import (
+        capture_screens, resolve_routes, is_dynamic_route,
+    )
+
+    routes = resolve_routes(
+        routes_file=getattr(args, "routes_file", None),
+        frontend_dir=getattr(args, "frontend_dir", None),
+        single_url=getattr(args, "url", None),
+        patterns=patterns,
+    )
+    if not routes:
+        print("Error: 캡처할 라우트 없음 — --routes-file / --frontend-dir / "
+              "--url 중 하나 필요")
+        return
+
+    # --param-fill key=value 파싱
+    param_fill: dict[str, str] = {}
+    for pf in getattr(args, "param_fill", None) or []:
+        if "=" in pf:
+            k, v = pf.split("=", 1)
+            param_fill[k.strip()] = v.strip()
+
+    if getattr(args, "list_only", False):
+        print(f"캡처 대상 라우트 {len(routes)}건 (dry-run):")
+        dyn = 0
+        for r in routes:
+            mark = ""
+            if is_dynamic_route(r):
+                dyn += 1
+                mark = "  [동적 — --param-fill 필요 또는 skip]"
+            print(f"  {r}{mark}")
+        if dyn:
+            print(f"동적 라우트 {dyn}건 — --param-fill key=value 로 치환 가능")
+        return
+
+    if not base_url:
+        print("Error: --base-url 또는 .env 의 FIGMA_CAPTURE_BASE_URL 필요")
+        return
+
+    # viewport 파싱 ("1920x1080")
+    vw, vh = 1920, 1080
+    if getattr(args, "viewport", None):
+        try:
+            vw, vh = (int(x) for x in args.viewport.lower().split("x"))
+        except ValueError:
+            print(f"⚠ --viewport 형식 오류 ({args.viewport}) — 1920x1080 사용")
+
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    if getattr(args, "output_dir", None):
+        out_dir = args.output_dir
+    else:
+        out_dir = _build_dated_output_dir(base_output, "figma_capture")
+
+    print(f"=== capture-screens: {len(routes)} 라우트 → {out_dir} ===")
+    print(f"  base_url: {base_url}, viewport: {vw}x{vh}")
+
+    summary = capture_screens(
+        base_url, routes, out_dir,
+        viewport=(vw, vh),
+        storage_state=getattr(args, "storage_state", None),
+        wait_selector=getattr(args, "wait_selector", None),
+        wait_ms=int(getattr(args, "wait_ms", 0) or 0),
+        max_image_kb=int(getattr(args, "max_image_kb", 500) or 500),
+        param_fill=param_fill or None,
+    )
+    print(f"\n✓ 캡처 완료: {summary.captured}/{summary.total}장 → {out_dir}/")
+    if summary.failed or summary.skipped:
+        print(f"  실패/스킵 상세: {out_dir}/_failed.md")
+    print("  다음 단계: Figma 데스크톱 → Plugins → Development → "
+          "Import plugin from manifest → figma_plugin/manifest.json → "
+          "JSON 파일 선택 → Import")
+
+
 def cmd_screen_spec(args):
     """AST 기반 화면 UI 정의서 추출 (LLM 0, deterministic).
 
@@ -2903,6 +2998,48 @@ def main():
                            help="출력 XLSX 경로 (기본: output/screen-spec/YYYYMMDD/"
                                 "screen_spec_HHMMSS.xlsx)")
 
+    # capture-screens command
+    cap_parser = subparsers.add_parser(
+        "capture-screens",
+        help="AS-IS 화면 headless 렌더 → DOM 레이아웃 JSON (Figma 플러그인 입력, Playwright)",
+    )
+    cap_parser.add_argument("--base-url",
+                            help="AS-IS 프론트 베이스 URL (예: http://localhost:3000). "
+                                 "미지정 시 .env 의 FIGMA_CAPTURE_BASE_URL")
+    cap_parser.add_argument("--routes-file",
+                            help="(우선순위 1) 캡처할 라우트 목록 텍스트 파일 — "
+                                 "한 줄 1라우트, # 주석 가능")
+    cap_parser.add_argument("--frontend-dir",
+                            help="(우선순위 2) React 소스 루트 — 라우트 자동 추출 "
+                                 "(legacy_react_router)")
+    cap_parser.add_argument("--url",
+                            help="(우선순위 3) 단일 라우트 지정 (예: /order/list)")
+    cap_parser.add_argument("--patterns",
+                            help="(선택) patterns.yaml — url.url_prefix_strip / "
+                                 "url.react_route_prefix 를 라우트 변환에 적용 "
+                                 "(analyze-legacy 와 동일)")
+    cap_parser.add_argument("--storage-state",
+                            help="(선택) Playwright storage_state JSON — 로그인 세션 "
+                                 "주입 (만드는 법: README capture-screens 섹션)")
+    cap_parser.add_argument("--wait-selector",
+                            help="(선택) 렌더 완료 대기 CSS selector. 미지정 시 "
+                                 "networkidle 대기")
+    cap_parser.add_argument("--wait-ms", type=int, default=0,
+                            help="(선택) 추가 고정 대기 밀리초 (기본 0)")
+    cap_parser.add_argument("--viewport", default="1920x1080",
+                            help="브라우저 viewport (기본 1920x1080)")
+    cap_parser.add_argument("--max-image-kb", type=int, default=500,
+                            help="이미지 base64 최대 크기 KB (기본 500). 초과 시 "
+                                 "회색 placeholder 로 대체")
+    cap_parser.add_argument("--param-fill", action="append",
+                            help="(선택, 반복 가능) 동적 세그먼트 치환 — key=value "
+                                 "(예: --param-fill id=42). 미치환 동적 라우트는 skip")
+    cap_parser.add_argument("--list-only", action="store_true",
+                            help="dry-run — 캡처 대상 라우트 목록만 출력하고 종료")
+    cap_parser.add_argument("--output-dir",
+                            help="JSON 출력 디렉토리 (기본: output/figma_capture/"
+                                 "YYYYMMDD/)")
+
     # migrate-sql command
     ms_parser = subparsers.add_parser(
         "migrate-sql",
@@ -3157,6 +3294,8 @@ def main():
         cmd_convert_mapping(args)
     elif args.command == "screen-converter":
         cmd_screen_converter(args)
+    elif args.command == "capture-screens":
+        cmd_capture_screens(args)
     elif args.command == "screen-spec":
         cmd_screen_spec(args)
     elif args.command == "migrate-sql":
