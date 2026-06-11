@@ -54,7 +54,7 @@ def _style_attrs(style: dict) -> str:
     return " ".join(out)
 
 
-def _render_node(node: dict, parts: list[str]) -> None:
+def _render_node(node: dict, parts: list[str], text_scale: float = 1.0) -> None:
     if not isinstance(node, dict):
         return
     kind = node.get("type")
@@ -72,18 +72,21 @@ def _render_node(node: dict, parts: list[str]) -> None:
             return
         font = ts.get("fontFamily") or "sans-serif"
         size = int(ts.get("fontSize") or 14)
+        # text_scale — Figma SVG import 가 <text> font-size 만 viewBox
+        # 비율과 다르게 해석해서 작아지는 케이스 보정 (default 1.0 = 캡처
+        # 값 그대로, 1.5~2.0 = Figma 가시성 보정).
+        if text_scale and text_scale != 1.0:
+            size = max(1, int(round(size * text_scale)))
         weight = int(ts.get("fontWeight") or 400)
         color = ts.get("color") or "#000000"
         align = ts.get("textAlign") or "left"
         anchor = _TEXT_ANCHOR.get(align, "start")
-        # text-anchor 에 맞춰 x 좌표 보정 (TEXT 노드의 rect 는 부모 영역)
         if anchor == "middle":
             tx = x + w // 2
         elif anchor == "end":
             tx = x + w
         else:
             tx = x
-        # SVG <text> y 는 baseline — fontSize 의 ~0.8 이 baseline 보정
         baseline = y + int(size * 0.85)
         parts.append(
             f'<text x="{tx}" y="{baseline}" '
@@ -104,7 +107,6 @@ def _render_node(node: dict, parts: list[str]) -> None:
             )
         return
 
-    # FRAME 또는 RECT — visible style 있으면 <rect>, 없으면 wrapper 만
     visible = bool(style.get("background") or
                    (style.get("borderColor") and style.get("borderWidth")))
     if visible:
@@ -116,15 +118,18 @@ def _render_node(node: dict, parts: list[str]) -> None:
             f'{attrs}/>'
         )
 
-    # 자식 재귀
     for child in node.get("children") or []:
-        _render_node(child, parts)
+        _render_node(child, parts, text_scale=text_scale)
 
 
-def render_svg_from_capture(doc: dict, output_path: Path) -> int:
+def render_svg_from_capture(doc: dict, output_path: Path,
+                             text_scale: float = 1.0) -> int:
     """capture-screens 산출 JSON (1 화면) → SVG 파일 저장.
 
-    Returns: SVG 요소 카운트 (디버그/회귀용 — `<rect>`/`<text>`/`<image>` 합).
+    text_scale: <text> font-size 보정 계수 (default 1.0). Figma 의 SVG
+    import 가 텍스트만 작게 해석하는 케이스에 1.5~2.0 권장.
+
+    Returns: SVG 요소 카운트 (`<rect>`/`<text>`/`<image>` 합).
     """
     meta = doc.get("meta") or {}
     root = doc.get("root") or {}
@@ -139,19 +144,18 @@ def render_svg_from_capture(doc: dict, output_path: Path) -> int:
         f'viewBox="0 0 {vw} {vh}" width="{vw}" height="{vh}">'
     )
     parts.append(f'<title>{_esc(title)}</title>')
-    # 캔버스 배경 — 흰색
     parts.append(
         f'<rect x="0" y="0" width="{vw}" height="{vh}" fill="#ffffff"/>'
     )
-    _render_node(root, parts)
+    _render_node(root, parts, text_scale=text_scale)
     parts.append("</svg>")
     svg = "\n".join(parts)
     output_path.write_text(svg, encoding="utf-8")
-    # 카운트 (디버그)
     return svg.count("<rect ") + svg.count("<text ") + svg.count("<image ")
 
 
-def convert_json_to_svg(json_path: Path, svg_path: Path | None = None) -> Path:
+def convert_json_to_svg(json_path: Path, svg_path: Path | None = None,
+                         text_scale: float = 1.0) -> Path:
     """capture-screens JSON 파일 경로 → SVG 파일 저장.
 
     svg_path 미지정 시 ``<stem>.svg`` 같은 디렉토리에 생성.
@@ -161,5 +165,5 @@ def convert_json_to_svg(json_path: Path, svg_path: Path | None = None) -> Path:
         svg_path = json_path.with_suffix(".svg")
     svg_path = Path(svg_path)
     doc = json.loads(json_path.read_text(encoding="utf-8"))
-    render_svg_from_capture(doc, svg_path)
+    render_svg_from_capture(doc, svg_path, text_scale=text_scale)
     return svg_path

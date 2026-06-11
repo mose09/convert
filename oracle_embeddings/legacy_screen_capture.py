@@ -166,6 +166,7 @@ def capture_screens(
     max_image_kb: int = 500,
     param_fill: dict[str, str] | None = None,
     export_svg: bool = False,
+    svg_text_scale: float = 1.0,
 ) -> CaptureSummary:
     """라우트 목록을 순회 캡처해 화면별 JSON 저장.
 
@@ -262,10 +263,13 @@ def capture_screens(
 
                 if export_svg:
                     # 같은 폴더에 <slug>.svg 도 같이 생성 — Figma 웹에
-                    # drag-drop 으로 import 가능 (데스크톱 앱 / 플러그인
-                    # 불필요).
+                    # drag-drop 으로 import 가능. svg_text_scale 로 Figma
+                    # SVG import 가 <text> 만 작게 해석하는 케이스 보정.
                     from .screen_capture_svg import render_svg_from_capture
-                    render_svg_from_capture(doc, out_path / f"{slug}.svg")
+                    render_svg_from_capture(
+                        doc, out_path / f"{slug}.svg",
+                        text_scale=svg_text_scale,
+                    )
             except Exception as e:  # noqa: BLE001 — 라우트 1건 실패가 전체 중단 금지
                 summary.failed += 1
                 reason = str(e).split("\n")[0][:200]
