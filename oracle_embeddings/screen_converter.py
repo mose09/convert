@@ -1383,6 +1383,318 @@ def render_pptx(layouts: list[tuple[str, dict]], output_path: Path,
         ) from e
 
 
+# ── SVG 렌더링 (Figma paste 친화 — deterministic 도형) ─────────────
+
+
+def _xml_escape_text(text: str) -> str:
+    """SVG text 노드 안전한 XML escape."""
+    return (text.replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;"))
+
+
+def render_svg(layouts: list[tuple[str, dict]], output_dir: Path,
+                style: dict | None = None,
+                canvas_width: int = 1440,
+                canvas_height: int = 900) -> None:
+    """layout 리스트 → 화면당 1 SVG 파일. Figma 에 paste / drag-drop 즉시
+    동작 (네이티브 SVG import 지원, 플러그인 불필요).
+
+    LLM 환각 위험 없음 — VLM 은 layout JSON (regions + 텍스트) 만 추출
+    하고 SVG 도형은 코드가 deterministic 하게 그림. 같은 layout JSON →
+    항상 같은 SVG.
+
+    SVG canvas: ``canvas_width`` × ``canvas_height`` 픽셀. layout 의
+    ``regions`` 좌표는 0~1 normalized → 픽셀로 변환.
+    """
+    style = _resolve_style(style)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    rendered = 0
+    for screen_name, layout in layouts:
+        svg = _build_svg(layout, style, canvas_width, canvas_height,
+                          screen_name)
+        out_path = output_dir / f"{screen_name}.svg"
+        out_path.write_text(svg, encoding="utf-8")
+        rendered += 1
+
+    # 인덱스 — 모든 SVG embed + Figma paste 안내
+    _write_svg_index(layouts, output_dir, canvas_width, canvas_height,
+                       rendered)
+
+
+def _build_svg(layout: dict, style: dict,
+                w: int, h: int, screen_name: str) -> str:
+    """layout dict → SVG XML 문자열.
+
+    렌더 영역:
+      - title (page_title)
+      - search_panel (search_fields)
+      - table (table_columns)
+      - buttons
+      - notes
+
+    각 영역의 좌표는 ``layout.regions.<영역>`` 의 normalized x/y/w/h.
+    region 미지정 시 fallback 으로 stacked 배치.
+    """
+    regions = layout.get("regions") or {}
+    parts: list[str] = []
+    parts.append(
+        f'<svg xmlns="http://www.w3.org/2000/svg" '
+        f'viewBox="0 0 {w} {h}" width="{w}" height="{h}">'
+    )
+    # 배경
+    parts.append(
+        f'<rect x="0" y="0" width="{w}" height="{h}" '
+        f'fill="#FFFFFF"/>'
+    )
+
+    cursor_y = 40  # fallback stacked 위치
+
+    # Title
+    title = (layout.get("page_title") or "").strip() or screen_name
+    parts.extend(_svg_title(title, regions.get("title"), style,
+                              w, h, cursor_y))
+    if not regions.get("title"):
+        cursor_y += 50
+
+    # Search panel
+    fields = layout.get("search_fields") or []
+    parts.extend(_svg_search(fields, regions.get("search_panel"), style,
+                               w, h, cursor_y))
+    if not regions.get("search_panel") and fields:
+        cursor_y += 40 + 50 * ((len(fields) + 3) // 4)
+
+    # Table
+    cols = layout.get("table_columns") or []
+    parts.extend(_svg_table(cols, regions.get("table"), style,
+                              w, h, cursor_y))
+    if not regions.get("table") and cols:
+        cursor_y += 50 + 36 * 4
+
+    # Buttons
+    buttons = layout.get("buttons") or []
+    parts.extend(_svg_buttons(buttons, regions.get("buttons"), style,
+                                w, h, cursor_y))
+    if not regions.get("buttons") and buttons:
+        cursor_y += 50
+
+    # Notes
+    notes = (layout.get("notes") or "").strip()
+    parts.extend(_svg_notes(notes, regions.get("notes"), style,
+                              w, h, cursor_y))
+
+    parts.append('</svg>')
+    return "\n".join(parts)
+
+
+def _abs_xywh(region: dict | None, w: int, h: int,
+                fallback: tuple[float, float, float, float]) -> tuple[int, int, int, int]:
+    """normalized region → 픽셀 (x, y, w, h)."""
+    if region:
+        rx = float(region.get("x", fallback[0]))
+        ry = float(region.get("y", fallback[1]))
+        rw = float(region.get("w", fallback[2]))
+        rh = float(region.get("h", fallback[3]))
+    else:
+        rx, ry, rw, rh = fallback
+    return (int(rx * w), int(ry * h), int(rw * w), int(rh * h))
+
+
+def _svg_title(title: str, region: dict | None, style: dict,
+                w: int, h: int, fallback_y: int) -> list[str]:
+    if not title:
+        return []
+    x, y, _rw, _rh = _abs_xywh(region, w, h,
+                                  fallback=(0.03, fallback_y / h, 0.6, 0.05))
+    return [
+        f'<text x="{x}" y="{y + 28}" '
+        f'font-family="{_xml_escape_text(style["font_family"])}" '
+        f'font-size="24" font-weight="bold" '
+        f'fill="{style["title_color"]}">{_xml_escape_text(title)}</text>'
+    ]
+
+
+def _svg_search(fields: list[dict], region: dict | None, style: dict,
+                  w: int, h: int, fallback_y: int) -> list[str]:
+    if not fields:
+        return []
+    cols = (region or {}).get("cols", 4) if region else 4
+    cols = max(1, int(cols))
+    rows = (len(fields) + cols - 1) // cols
+    fallback_h = 0.05 + 0.06 * rows
+    x, y, rw, rh = _abs_xywh(region, w, h,
+                                fallback=(0.03, fallback_y / h, 0.94, fallback_h))
+    out: list[str] = []
+    # 패널 배경
+    out.append(
+        f'<rect x="{x}" y="{y}" width="{rw}" height="{rh}" '
+        f'fill="{style["panel_bg"]}" stroke="{style["panel_border"]}" '
+        f'stroke-width="1"/>'
+    )
+    # 각 field — 라벨 + input 박스 2열 grid
+    pad = 12
+    col_w = (rw - pad * (cols + 1)) // cols
+    field_h = 32
+    row_pad = 14
+    for i, f in enumerate(fields):
+        r = i // cols
+        c = i % cols
+        fx = x + pad + c * (col_w + pad)
+        fy = y + 12 + r * (field_h + row_pad)
+        label = (f.get("label") or "").strip() if isinstance(f, dict) else str(f)
+        # 라벨
+        out.append(
+            f'<text x="{fx}" y="{fy + 14}" '
+            f'font-family="{_xml_escape_text(style["font_family"])}" '
+            f'font-size="12" fill="{style["field_label_color"]}">'
+            f'{_xml_escape_text(label)}</text>'
+        )
+        # input 박스
+        out.append(
+            f'<rect x="{fx}" y="{fy + 18}" width="{col_w}" '
+            f'height="{field_h}" rx="2" '
+            f'fill="{style["input_bg"]}" stroke="{style["input_border"]}" '
+            f'stroke-width="1"/>'
+        )
+    return out
+
+
+def _svg_table(cols: list, region: dict | None, style: dict,
+                 w: int, h: int, fallback_y: int) -> list[str]:
+    if not cols:
+        return []
+    x, y, rw, rh = _abs_xywh(region, w, h,
+                                fallback=(0.03, fallback_y / h, 0.94, 0.30))
+    out: list[str] = []
+    header_h = 36
+    body_y = y + header_h
+    body_h = max(0, rh - header_h)
+    # Header bg
+    out.append(
+        f'<rect x="{x}" y="{y}" width="{rw}" height="{header_h}" '
+        f'fill="{style["table_header_bg"]}"/>'
+    )
+    # 컬럼 텍스트 등간격
+    n = max(1, len(cols))
+    col_w = rw / n
+    for i, c in enumerate(cols):
+        text = str(c).strip() if not isinstance(c, dict) else (c.get("title") or c.get("name") or "")
+        cx = x + col_w * i + col_w / 2
+        out.append(
+            f'<text x="{cx:.0f}" y="{y + 23}" '
+            f'font-family="{_xml_escape_text(style["font_family"])}" '
+            f'font-size="13" font-weight="bold" '
+            f'fill="{style["table_header_text"]}" '
+            f'text-anchor="middle">{_xml_escape_text(text)}</text>'
+        )
+        # 컬럼 구분선
+        if i > 0:
+            sep_x = int(x + col_w * i)
+            out.append(
+                f'<line x1="{sep_x}" y1="{y}" x2="{sep_x}" y2="{y + header_h}" '
+                f'stroke="{style["table_row_bg"]}" stroke-opacity="0.3"/>'
+            )
+    # Body — 빈 3 row + 점선 그리드
+    row_count = 3
+    row_h = body_h / row_count if row_count else 0
+    for r in range(row_count):
+        ry = int(body_y + row_h * r)
+        out.append(
+            f'<rect x="{x}" y="{ry}" width="{rw}" height="{int(row_h)}" '
+            f'fill="{style["table_row_bg"]}" stroke="#E0E4EA" '
+            f'stroke-width="1"/>'
+        )
+    return out
+
+
+def _svg_buttons(buttons: list[str], region: dict | None, style: dict,
+                   w: int, h: int, fallback_y: int) -> list[str]:
+    if not buttons:
+        return []
+    x, y, rw, rh = _abs_xywh(region, w, h,
+                                fallback=(0.55, fallback_y / h, 0.42, 0.05))
+    out: list[str] = []
+    btn_w = 88
+    btn_h = 36
+    gap = 8
+    align = (region or {}).get("align", "right") if region else "right"
+    total_w = len(buttons) * btn_w + (len(buttons) - 1) * gap
+    if align == "right":
+        start_x = x + rw - total_w
+    elif align == "center":
+        start_x = x + (rw - total_w) // 2
+    else:
+        start_x = x
+    bg = style["button_bg"]
+    fg = style["button_text"]
+    radius = 4 if style.get("button_shape") == "rounded" else 0
+    for i, b in enumerate(buttons):
+        bx = start_x + i * (btn_w + gap)
+        out.append(
+            f'<rect x="{bx}" y="{y}" width="{btn_w}" height="{btn_h}" '
+            f'rx="{radius}" fill="{bg}"/>'
+        )
+        out.append(
+            f'<text x="{bx + btn_w // 2}" y="{y + btn_h // 2 + 5}" '
+            f'font-family="{_xml_escape_text(style["font_family"])}" '
+            f'font-size="13" font-weight="bold" '
+            f'fill="{fg}" text-anchor="middle">'
+            f'{_xml_escape_text(str(b))}</text>'
+        )
+    return out
+
+
+def _svg_notes(notes: str, region: dict | None, style: dict,
+                 w: int, h: int, fallback_y: int) -> list[str]:
+    if not notes:
+        return []
+    x, y, _rw, _rh = _abs_xywh(region, w, h,
+                                  fallback=(0.03, fallback_y / h, 0.94, 0.05))
+    return [
+        f'<text x="{x}" y="{y + 14}" '
+        f'font-family="{_xml_escape_text(style["font_family"])}" '
+        f'font-size="11" fill="{style["notes_color"]}">'
+        f'{_xml_escape_text(notes[:300])}</text>'
+    ]
+
+
+def _write_svg_index(layouts: list[tuple[str, dict]], output_dir: Path,
+                       w: int, h: int, rendered: int) -> None:
+    items = "\n".join(
+        f'  <li>'
+        f'<a href="{_html_escape(name)}.svg" target="_blank">'
+        f'{_html_escape(name)}</a>'
+        f'</li>'
+        for name, _ in layouts
+    )
+    hint = (
+        "<p style='max-width:780px;line-height:1.6'>"
+        "Figma 에 가져오기 — <b>방법 1</b>: SVG 파일을 직접 Figma "
+        "canvas 에 <b>drag-drop</b>. "
+        "<b>방법 2</b>: SVG 파일 열어 <kbd>Ctrl+A</kbd> / "
+        "<kbd>Ctrl+C</kbd> → Figma 에 <kbd>Ctrl+V</kbd>. "
+        "양쪽 모두 네이티브 SVG import — 플러그인 불필요, 외부 fetch 0."
+        "</p>"
+    )
+    index_html = (
+        "<!DOCTYPE html>\n"
+        "<html lang='ko'>\n"
+        "<head><meta charset='utf-8'>"
+        "<title>TO-BE 화면 SVG 인덱스</title>"
+        "<style>body{font-family:\"맑은 고딕\",sans-serif;padding:24px;}"
+        "ul{line-height:1.8;}kbd{background:#eee;padding:2px 6px;"
+        "border-radius:3px;font-family:monospace;}</style>"
+        "</head>\n"
+        f"<body><h1>TO-BE 화면 SVG 인덱스 ({rendered}장)</h1>\n"
+        f"{hint}\n"
+        "<ul>\n"
+        f"{items}\n"
+        "</ul></body></html>\n"
+    )
+    (output_dir / "index.html").write_text(index_html, encoding="utf-8")
+
+
 # ── 파이프라인 엔트리 ───────────────────────────────────────────────
 
 
@@ -1424,7 +1736,8 @@ def convert(captures_dir: Path, templates_dir: Path | None,
             source_mapping_path: Path | None = None,
             style_css_path: Path | None = None,
             export_html: bool = False,
-            html_vision_only: bool = False) -> dict[str, Any]:
+            html_vision_only: bool = False,
+            export_svg: bool = False) -> dict[str, Any]:
     asis_imgs = _list_images(captures_dir)
     tmpl_imgs = _list_images(templates_dir) if templates_dir else []
     if not asis_imgs:
@@ -1544,6 +1857,14 @@ def convert(captures_dir: Path, templates_dir: Path | None,
     render_pptx(layouts, output_pptx,
                 aspect_hint_image=tmpl_imgs[0] if tmpl_imgs else None,
                 style=style)
+
+    # --export-svg: 화면별 SVG 생성 (deterministic, Figma paste 친화)
+    if export_svg:
+        svg_dir = output_pptx.parent / "svg"
+        render_svg(layouts, svg_dir, style=style)
+        print(f"  SVG: {len(layouts)}장 → {svg_dir}/")
+        print(f"  SVG 인덱스: {svg_dir}/index.html "
+              f"(Figma drag-drop 또는 Ctrl+C/V)")
 
     # --export-html: 화면별 HTML 생성 (CSS 필수)
     html_stats: dict[str, Any] = {}

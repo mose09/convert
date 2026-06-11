@@ -1514,6 +1514,35 @@ python main.py screen-converter `
   → Figma frame 으로 자동 변환 → 디자이너가 색/폰트/spacing 정제.
 - `index.html` 에 인덱스 + 플러그인 안내 cheat-sheet 포함.
 
+**`--export-svg` 옵션 — Figma paste 가장 안정적인 경로** — HTML 의 LLM 환각
+(엉뚱한 화면 생성) 위험이 부담스러우면 SVG 가 더 안전:
+
+| 항목 | HTML | SVG |
+| --- | --- | --- |
+| LLM 역할 | layout JSON 추출 + **마크업 직접 생성** | layout JSON 추출 만 |
+| 도형 그림 | LLM 의 마크업/CSS 결과 | **코드가 deterministic 하게 rect/text** |
+| Figma 호환 | 플러그인 (html.to.design 등) 필요 | **네이티브 paste/drag-drop** (플러그인 X) |
+| 폐쇄망 호환 | △ (일부 플러그인 외부 fetch) | ✓ |
+| 환각 위험 | 큼 | **거의 없음** (layout 인식만) |
+
+```powershell
+python main.py screen-converter `
+  --captures-dir <캡처 폴더> `
+  --style-css <CSS> `
+  --export-svg
+# 출력: output\screen-converter\<일자>\svg\<화면>.svg
+```
+
+**Figma 가져오기 (가장 단순):**
+1. SVG 파일 → Figma canvas 에 **drag-drop**, 또는
+2. SVG 파일 열고 `Ctrl+A` / `Ctrl+C` → Figma 에 `Ctrl+V`
+
+→ 네이티브 SVG import 라 플러그인 불필요. 텍스트/색/도형 모두 Figma
+안에서 편집 가능. `index.html` 에 모든 SVG 인덱스 + paste 안내
+cheat-sheet 자동 포함.
+
+---
+
 **`--html-vision-only` 옵션** — `--frontend-dir` 와 같이 줬는데 HTML 결과가
 캡처와 다른 화면으로 변환되면 false-positive 소스 매칭 의심. 이 flag 를
 추가하면 HTML 만 source matching 비활성, **캡처 이미지만** VLM 에 넘김
