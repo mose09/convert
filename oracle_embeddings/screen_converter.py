@@ -884,57 +884,91 @@ def extract_html(asis_image: Path, template_images: list[Path],
 def render_html(screens: list[tuple[str, str]],
                 css_text: str,
                 output_dir: Path,
-                css_filename: str = "tobe_style.css") -> None:
+                css_filename: str = "tobe_style.css",
+                inline_css: bool = True,
+                canvas_width: int = 1440) -> None:
     """screens=[(stem, html_body), ...] → 화면별 html + index.html.
 
-    - 같은 폴더에 css 파일 복사 (`<link rel=stylesheet href=...>`)
-    - index.html: 모든 화면 링크 목록
-    - 각 화면 html: 단순 wrap (<!DOCTYPE> + <head> 링크 + body)
+    Figma 친화 출력 (default ``inline_css=True``):
+      * CSS 를 ``<style>`` 안 inline — single-file HTML 로 ``html.to.design``
+        / Anima / Builder.io 같은 Figma 플러그인이 한 파일만 입력으로 받고
+        외부 fetch 없이 변환 가능 (사내망 환경에도 안전).
+      * ``viewport`` meta + ``max-width: <canvas_width>px`` 로 frame 크기
+        명시 — Figma 가 정확한 dimension 으로 frame 생성.
+      * 한글 폰트 fallback (``"맑은 고딕", "Malgun Gothic", sans-serif``).
+      * ``font-display: swap`` / Web font 외부 URL X — 폐쇄망/사내망 OK.
+
+    ``inline_css=False`` 면 기존 동작 (외부 ``<link rel=stylesheet>``).
     """
     output_dir.mkdir(parents=True, exist_ok=True)
-    css_path = output_dir / css_filename
-    css_path.write_text(css_text, encoding="utf-8")
+
+    # 외부 모드일 때만 별도 CSS 파일 dump. inline 모드는 각 HTML 안.
+    if not inline_css:
+        css_path = output_dir / css_filename
+        css_path.write_text(css_text, encoding="utf-8")
+
+    _figma_base = (
+        "  body{margin:0;padding:0;font-family:\"맑은 고딕\","
+        "\"Malgun Gothic\",\"Apple SD Gothic Neo\","
+        "\"Noto Sans KR\",sans-serif;}\n"
+        f"  .figma-canvas{{max-width:{canvas_width}px;margin:0 auto;"
+        "padding:24px;box-sizing:border-box;background:#FFFFFF;}}\n"
+    )
+
+    def _head(title: str) -> str:
+        css_block = (
+            f"  <style>\n{_figma_base}{css_text}\n  </style>\n"
+            if inline_css
+            else f"  <link rel=\"stylesheet\" href=\"{css_filename}\">\n"
+        )
+        return (
+            "<!DOCTYPE html>\n"
+            "<html lang=\"ko\">\n"
+            "<head>\n"
+            "  <meta charset=\"utf-8\">\n"
+            "  <meta name=\"viewport\" "
+            f"content=\"width={canvas_width}\">\n"
+            f"  <title>{_html_escape(title)}</title>\n"
+            f"{css_block}"
+            "</head>\n"
+        )
 
     rendered = 0
     for stem, body in screens:
         if not body:
             continue
         page = (
-            "<!DOCTYPE html>\n"
-            "<html lang=\"ko\">\n"
-            "<head>\n"
-            "  <meta charset=\"utf-8\">\n"
-            f"  <title>{_html_escape(stem)}</title>\n"
-            f"  <link rel=\"stylesheet\" href=\"{css_filename}\">\n"
-            "</head>\n"
+            f"{_head(stem)}"
             "<body>\n"
-            f"{body}\n"
+            f"  <div class=\"figma-canvas\">\n{body}\n  </div>\n"
             "</body>\n"
             "</html>\n"
         )
         (output_dir / f"{stem}.html").write_text(page, encoding="utf-8")
         rendered += 1
 
-    # index
+    # Index — 모든 화면 링크 + Figma 플러그인 사용 안내.
     items = "\n".join(
         f"  <li><a href=\"{_html_escape(stem)}.html\">{_html_escape(stem)}</a></li>"
         for stem, body in screens if body
     )
+    figma_hint = (
+        "<p style=\"max-width:780px;line-height:1.6\">"
+        "Figma 에 가져오려면 추천 플러그인:<br>"
+        "<b>html.to.design</b> (Figma Community) → 각 화면 HTML 파일 import. "
+        "또는 <b>Anima</b> / <b>Builder.io Visual Copilot</b> 도 호환. "
+        "single-file inline CSS 라 외부 fetch 없이 변환됩니다.</p>"
+    )
     index = (
-        "<!DOCTYPE html>\n"
-        "<html lang=\"ko\">\n"
-        "<head>\n"
-        "  <meta charset=\"utf-8\">\n"
-        "  <title>TO-BE 화면 인덱스</title>\n"
-        f"  <link rel=\"stylesheet\" href=\"{css_filename}\">\n"
-        "  <style>body{font-family:sans-serif;padding:24px}"
-        "ul{line-height:1.8}</style>\n"
-        "</head>\n"
+        f"{_head('TO-BE 화면 인덱스')}"
         "<body>\n"
-        f"  <h1>TO-BE 화면 인덱스 ({rendered}장)</h1>\n"
-        "  <ul>\n"
+        "  <div class=\"figma-canvas\">\n"
+        f"    <h1>TO-BE 화면 인덱스 ({rendered}장)</h1>\n"
+        f"    {figma_hint}\n"
+        "    <ul>\n"
         f"{items}\n"
-        "  </ul>\n"
+        "    </ul>\n"
+        "  </div>\n"
         "</body>\n"
         "</html>\n"
     )

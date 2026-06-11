@@ -1500,6 +1500,20 @@ python main.py screen-converter `
     정의서는 `screen-spec` 의 xlsx 가 담당).
   - 출력: `output/screen-converter/<날짜>/html/`.
 
+**Figma 친화 출력 (`--export-html` 의 권장 워크플로우)** — PPTX 도형이
+복잡한 레이아웃 표현 한계가 있어서, **HTML → Figma 플러그인**으로 옮겨
+디자이너가 정제하는 흐름을 권장:
+- 각 `<화면>.html` 은 **single-file inline CSS + viewport 1440px + 한글
+  폰트 fallback**. 외부 fetch 없이 한 파일만 import 하면 됨 (사내 망
+  안전).
+- Figma 의 다음 플러그인 중 하나로 import (Figma Community 검색):
+  1. **html.to.design** — 가장 인기, single-file 정확도 좋음.
+  2. **Anima** — 가져온 뒤 component / Auto-layout 자동 변환 지원.
+  3. **Builder.io Visual Copilot** — AI 기반 변환.
+- 사용 흐름: 플러그인 실행 → "Import from file" → `<화면>.html` 선택
+  → Figma frame 으로 자동 변환 → 디자이너가 색/폰트/spacing 정제.
+- `index.html` 에 인덱스 + 플러그인 안내 cheat-sheet 포함.
+
 **소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
 - 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과
   소스 파일 경로/basename 토큰의 교집합으로 점수화.
