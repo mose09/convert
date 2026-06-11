@@ -1514,6 +1514,30 @@ python main.py screen-converter `
   → Figma frame 으로 자동 변환 → 디자이너가 색/폰트/spacing 정제.
 - `index.html` 에 인덱스 + 플러그인 안내 cheat-sheet 포함.
 
+**`--html-vision-only` 옵션** — `--frontend-dir` 와 같이 줬는데 HTML 결과가
+캡처와 다른 화면으로 변환되면 false-positive 소스 매칭 의심. 이 flag 를
+추가하면 HTML 만 source matching 비활성, **캡처 이미지만** VLM 에 넘김
+(PPTX 와 같은 입력 — 캡처가 ground truth). PPTX 정상이고 HTML 만 엉뚱
+하면 이 옵션 권장:
+
+```powershell
+python main.py screen-converter `
+  --captures-dir <캡처 폴더> `
+  --style-css <CSS> `
+  --frontend-dir <React root> `
+  --export-html `
+  --html-vision-only
+```
+
+콘솔에 매칭된 React 소스 경로가 한 줄씩 표시되어 false-positive 즉시
+확인 가능:
+```
+→ MaterialMaster.png  (source (src/pages/material/MaterialMaster/index.jsx, 5234 chars))
+→ OrderList.png       (vision (소스 매칭 실패 또는 비활성))
+```
+캡처와 다른 컴포넌트로 매칭됐다 싶으면 `--source-mapping` 으로 수동 지정
+또는 `--html-vision-only` 로 전체 비활성.
+
 **소스 매칭 휴리스틱** (`--frontend-dir` 사용 시):
 - 캡처 파일명 토큰 (예: `M_ORDER_LIST.png` → `m`/`order`/`list`) 과
   소스 파일 경로/basename 토큰의 교집합으로 점수화.
