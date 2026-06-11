@@ -1133,6 +1133,31 @@ def cmd_capture_screens(args):
         capture_screens, resolve_routes, is_dynamic_route,
     )
 
+    # --rebuild-svg-only: 캡처 건너뛰고 기존 JSON → SVG 재생성만
+    rebuild = getattr(args, "rebuild_svg_only", None)
+    if rebuild:
+        from oracle_embeddings.screen_capture_svg import convert_json_to_svg
+        from pathlib import Path as _P
+        target = _P(rebuild)
+        if not target.is_dir():
+            print(f"Error: 폴더 없음: {target}")
+            return
+        scale = float(getattr(args, "svg_text_scale", 1.0) or 1.0)
+        jsons = sorted(target.glob("*.json"))
+        if not jsons:
+            print(f"Error: {target} 에 JSON 파일 없음")
+            return
+        for jp in jsons:
+            # _failed.md 등 도 .json 으로 끝날 일은 없지만 일단 안전 체크
+            try:
+                svg_path = convert_json_to_svg(jp, text_scale=scale)
+                print(f"  → {svg_path.name}")
+            except Exception as e:
+                print(f"  ✗ {jp.name}: {e}")
+        print(f"\n✓ SVG 재생성 완료: {len(jsons)}장 "
+              f"(text-scale={scale}) → {target}/")
+        return
+
     routes = resolve_routes(
         routes_file=getattr(args, "routes_file", None),
         frontend_dir=getattr(args, "frontend_dir", None),
@@ -1186,6 +1211,7 @@ def cmd_capture_screens(args):
     print(f"  base_url: {base_url}, viewport: {vw}x{vh}")
 
     export_svg = bool(getattr(args, "export_svg", False))
+    svg_text_scale = float(getattr(args, "svg_text_scale", 1.0) or 1.0)
     summary = capture_screens(
         base_url, routes, out_dir,
         viewport=(vw, vh),
@@ -1195,6 +1221,7 @@ def cmd_capture_screens(args):
         max_image_kb=int(getattr(args, "max_image_kb", 500) or 500),
         param_fill=param_fill or None,
         export_svg=export_svg,
+        svg_text_scale=svg_text_scale,
     )
     print(f"\n✓ 캡처 완료: {summary.captured}/{summary.total}장 → {out_dir}/")
     if summary.failed or summary.skipped:
@@ -3053,6 +3080,18 @@ def main():
                                  "(데스크톱 앱 + 플러그인 불필요). 캡처 DOM 그대로 "
                                  "rect/text/image SVG 요소로 변환 — VLM 추측 0, "
                                  "충실도 높음.")
+    cap_parser.add_argument("--svg-text-scale", type=float, default=1.0,
+                            help="(선택, --export-svg 일 때만) SVG <text> 의 "
+                                 "font-size 보정 계수 (기본 1.0). Figma 의 SVG "
+                                 "import 가 텍스트만 작게 해석하는 케이스 보정 — "
+                                 "글자가 다른 객체 대비 절반 정도로 작아 보이면 "
+                                 "1.5~2.0 권장. JSON 은 그대로, SVG 만 영향.")
+    cap_parser.add_argument("--rebuild-svg-only",
+                            help="(선택) 캡처 건너뛰고 기존 JSON 폴더의 SVG 만 "
+                                 "재생성. 인자: JSON 폴더 경로 (예: output\\figma_capture"
+                                 "\\20260612). --svg-text-scale 등 SVG 옵션만 "
+                                 "바꿔서 빠르게 재시도하는 용도. 다른 캡처 옵션 "
+                                 "(--base-url 등) 무시.")
 
     # migrate-sql command
     ms_parser = subparsers.add_parser(

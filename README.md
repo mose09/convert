@@ -1939,6 +1939,18 @@ deterministic). 텍스트는 편집 가능한 텍스트 레이어, rect 는 색/
 편집 가능. 한글 폰트는 SVG `font-family` 속성에 그대로 전달되어 Figma
 가 알아서 fallback.
 
+**텍스트가 다른 객체 대비 작아 보이면** `--svg-text-scale 1.5` (또는 2.0)
+추가: Figma 의 SVG import 가 `<text>` 의 `font-size` 만 viewBox 비율과
+다르게 해석하는 케이스 보정 (rect/image 좌표는 무영향).
+
+```powershell
+# 캡처 + SVG (text-scale 보정)
+python main.py capture-screens --url /order/list --export-svg --svg-text-scale 1.5
+
+# 캡처 이미 했고 SVG 만 다른 scale 로 빠르게 재시도
+python main.py capture-screens --rebuild-svg-only output\figma_capture\<일자> --svg-text-scale 2.0
+```
+
 **검증**: `python verify_capture.py` — mock 2장 캡처 후 노드 수 assert.
 
 > 1차 비범위: Auto Layout 자동 추론 / Figma Component 생성 / Polymer
