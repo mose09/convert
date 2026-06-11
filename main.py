@@ -2856,9 +2856,12 @@ def main():
     sc_parser.add_argument("--export-html", action="store_true",
                            help="(선택) PPTX 외에 HTML 도 추가 생성. --style-css 의 CSS 와 "
                                 "AS-IS 캡처 + (있으면) React 소스를 VLM 에 넘겨 "
-                                "TO-BE HTML body 를 생성. 결과를 <link rel=stylesheet> 로 "
-                                "CSS 와 묶어 브라우저에서 TO-BE 디자인 그대로 확인 가능. "
-                                "(주의: VLM 출력이라 매 실행 변동성 존재 — 시각 검토용)")
+                                "TO-BE HTML body 를 생성. 출력은 **Figma 친화 single-file "
+                                "HTML** (CSS inline + canvas 1440px + 한글 폰트 fallback) — "
+                                "Figma 의 html.to.design / Anima / Builder.io Visual Copilot "
+                                "플러그인으로 import 시 외부 fetch 없이 변환. PPTX 도형 "
+                                "출력 한계 우회용 권장 워크플로우. (주의: VLM 출력이라 "
+                                "매 실행 변동성 존재 — 시각 검토 + Figma 에서 finetune.)")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
