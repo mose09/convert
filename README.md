@@ -1926,6 +1926,19 @@ python -c "from playwright.sync_api import sync_playwright; p = sync_playwright(
    한글 폰트는 `FONT_MAP` (맑은 고딕 → Noto Sans KR) 매핑, 미존재 시
    Inter 폴백 + 카운트 표시
 
+**Figma 웹만 가능한 경우 — `--export-svg`** (데스크톱 앱 / 플러그인 불필요):
+
+```powershell
+python main.py capture-screens --url /order/list --export-svg
+# 출력: output\figma_capture\<일자>\order_list.json + order_list.svg
+```
+
+→ SVG 파일을 **Figma 캔버스에 drag-drop** 또는 **SVG 열고 Ctrl+A/Ctrl+C → Figma 에 Ctrl+V**.
+실제 렌더된 DOM 을 rect/text/image SVG 요소로 1:1 변환 (VLM 추측 0 —
+deterministic). 텍스트는 편집 가능한 텍스트 레이어, rect 는 색/border
+편집 가능. 한글 폰트는 SVG `font-family` 속성에 그대로 전달되어 Figma
+가 알아서 fallback.
+
 **검증**: `python verify_capture.py` — mock 2장 캡처 후 노드 수 assert.
 
 > 1차 비범위: Auto Layout 자동 추론 / Figma Component 생성 / Polymer

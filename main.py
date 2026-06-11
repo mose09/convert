@@ -1185,6 +1185,7 @@ def cmd_capture_screens(args):
     print(f"=== capture-screens: {len(routes)} 라우트 → {out_dir} ===")
     print(f"  base_url: {base_url}, viewport: {vw}x{vh}")
 
+    export_svg = bool(getattr(args, "export_svg", False))
     summary = capture_screens(
         base_url, routes, out_dir,
         viewport=(vw, vh),
@@ -1193,13 +1194,20 @@ def cmd_capture_screens(args):
         wait_ms=int(getattr(args, "wait_ms", 0) or 0),
         max_image_kb=int(getattr(args, "max_image_kb", 500) or 500),
         param_fill=param_fill or None,
+        export_svg=export_svg,
     )
     print(f"\n✓ 캡처 완료: {summary.captured}/{summary.total}장 → {out_dir}/")
     if summary.failed or summary.skipped:
         print(f"  실패/스킵 상세: {out_dir}/_failed.md")
-    print("  다음 단계: Figma 데스크톱 → Plugins → Development → "
-          "Import plugin from manifest → figma_plugin/manifest.json → "
-          "JSON 파일 선택 → Import")
+    if export_svg:
+        print("  다음 단계 (Figma 웹 / 데스크톱 모두): "
+              f"{out_dir}/<화면>.svg 를 Figma 캔버스에 drag-drop "
+              "또는 SVG 파일 열고 Ctrl+A/Ctrl+C → Figma 에 Ctrl+V "
+              "(플러그인 불필요)")
+    else:
+        print("  다음 단계: Figma 데스크톱 → Plugins → Development → "
+              "Import plugin from manifest → figma_plugin/manifest.json → "
+              "JSON 파일 선택 → Import")
 
 
 def cmd_screen_spec(args):
@@ -3039,6 +3047,12 @@ def main():
     cap_parser.add_argument("--output-dir",
                             help="JSON 출력 디렉토리 (기본: output/figma_capture/"
                                  "YYYYMMDD/)")
+    cap_parser.add_argument("--export-svg", action="store_true",
+                            help="(선택) JSON 과 같은 폴더에 화면별 SVG 도 생성. "
+                                 "Figma 웹에 drag-drop / Ctrl+V 만으로 import 가능 "
+                                 "(데스크톱 앱 + 플러그인 불필요). 캡처 DOM 그대로 "
+                                 "rect/text/image SVG 요소로 변환 — VLM 추측 0, "
+                                 "충실도 높음.")
 
     # migrate-sql command
     ms_parser = subparsers.add_parser(
