@@ -1423,7 +1423,8 @@ def convert(captures_dir: Path, templates_dir: Path | None,
             frontend_dir: Path | None = None,
             source_mapping_path: Path | None = None,
             style_css_path: Path | None = None,
-            export_html: bool = False) -> dict[str, Any]:
+            export_html: bool = False,
+            html_vision_only: bool = False) -> dict[str, Any]:
     asis_imgs = _list_images(captures_dir)
     tmpl_imgs = _list_images(templates_dir) if templates_dir else []
     if not asis_imgs:
@@ -1550,9 +1551,19 @@ def convert(captures_dir: Path, templates_dir: Path | None,
         if not style_css_path or not Path(style_css_path).is_file():
             print("  ⚠ --export-html 지정됐으나 TO-BE CSS 가 없음 — HTML 스킵")
         else:
+            # --html-vision-only 면 source matching 비활성. 캡처 이미지만 LLM
+            # 에 넘김 (PPTX 와 같은 입력). false-positive 소스 매칭으로 엉뚱한
+            # 화면으로 변환되던 사용자 보고 fix.
+            html_source_index = [] if html_vision_only else source_index
+            html_mapping = {} if html_vision_only else mapping
+            html_frontend_dir = None if html_vision_only else frontend_dir
+            if html_vision_only:
+                print("  HTML: --html-vision-only — source matching 비활성, "
+                      "캡처 이미지로만 변환")
             html_stats = _generate_html_per_screen(
-                asis_imgs, tmpl_imgs, style_css_path, source_index,
-                mapping, frontend_dir, config, output_pptx.parent / "html",
+                asis_imgs, tmpl_imgs, style_css_path, html_source_index,
+                html_mapping, html_frontend_dir, config,
+                output_pptx.parent / "html",
             )
 
     return {
@@ -1606,8 +1617,18 @@ def _generate_html_per_screen(asis_imgs: list[Path],
                 source_text = _read_source_snippet(source_path)
         body, mode = extract_html(img, tmpl_imgs, css_text,
                                   source_text or None, config)
-        kind_hint = (f"source {len(source_text)} chars"
-                     if mode == "source" else "vision (소스 매칭 실패)")
+        # 매칭된 React 소스 명시 — false-positive 즉시 확인 가능 (사용자
+        # 보고: HTML 이 캡처와 다른 화면으로 변환되던 케이스 진단용).
+        if mode == "source" and source_path is not None:
+            try:
+                _src_rel = source_path.relative_to(frontend_dir)
+            except (ValueError, AttributeError):
+                _src_rel = source_path
+            kind_hint = f"source ({_src_rel}, {len(source_text)} chars)"
+        elif mode == "source":
+            kind_hint = f"source ({len(source_text)} chars)"
+        else:
+            kind_hint = "vision (소스 매칭 실패 또는 비활성)"
         print(f"    → {img.name}  ({kind_hint})")
         if body:
             generated += 1

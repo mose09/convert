@@ -1067,7 +1067,8 @@ def cmd_screen_converter(args):
                     frontend_dir=frontend_dir,
                     source_mapping_path=source_mapping_path,
                     style_css_path=style_css_path,
-                    export_html=bool(getattr(args, "export_html", False)))
+                    export_html=bool(getattr(args, "export_html", False)),
+                    html_vision_only=bool(getattr(args, "html_vision_only", False)))
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
@@ -2862,6 +2863,14 @@ def main():
                                 "플러그인으로 import 시 외부 fetch 없이 변환. PPTX 도형 "
                                 "출력 한계 우회용 권장 워크플로우. (주의: VLM 출력이라 "
                                 "매 실행 변동성 존재 — 시각 검토 + Figma 에서 finetune.)")
+    sc_parser.add_argument("--html-vision-only", action="store_true",
+                           help="(선택, --export-html 일 때만 의미 있음) HTML 생성 시 "
+                                "React 소스 매칭 비활성, 캡처 이미지만 VLM 에 넘김. "
+                                "PPTX 와 동일한 입력 — 캡처가 ground truth. "
+                                "--frontend-dir 매칭이 false-positive 로 엉뚱한 컴포넌트 "
+                                "찾아 가는 케이스 우회. 기본 동작은 --frontend-dir 가 있으면 "
+                                "소스 매칭 시도 (text-only LLM, 안정적이지만 매칭 정확도 "
+                                "의존).")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
