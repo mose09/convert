@@ -1068,7 +1068,8 @@ def cmd_screen_converter(args):
                     source_mapping_path=source_mapping_path,
                     style_css_path=style_css_path,
                     export_html=bool(getattr(args, "export_html", False)),
-                    html_vision_only=bool(getattr(args, "html_vision_only", False)))
+                    html_vision_only=bool(getattr(args, "html_vision_only", False)),
+                    export_svg=bool(getattr(args, "export_svg", False)))
     print(
         f"\n✓ 화면변환 완료: {stats['total']}장 변환 "
         f"(템플릿 {stats['templates']}장 참조, 실패 {stats['fail']}장)"
@@ -2871,6 +2872,15 @@ def main():
                                 "찾아 가는 케이스 우회. 기본 동작은 --frontend-dir 가 있으면 "
                                 "소스 매칭 시도 (text-only LLM, 안정적이지만 매칭 정확도 "
                                 "의존).")
+    sc_parser.add_argument("--export-svg", action="store_true",
+                           help="(선택) PPTX 외에 화면별 SVG 도 추가 생성. "
+                                "VLM 이 캡처 이미지에서 추출한 layout JSON 을 "
+                                "deterministic 하게 SVG 도형 (rect/text) 으로 렌더. "
+                                "LLM 환각 위험 없음 (마크업 생성 X — layout 만 LLM, "
+                                "도형은 코드). Figma 에 drag-drop 또는 paste 즉시 동작 "
+                                "(네이티브 SVG import, 플러그인 불필요). PPTX 도형이 "
+                                "잘 안 그려지거나 HTML 결과가 엉뚱하게 나오는 케이스 "
+                                "대안. 출력: output/screen-converter/<일자>/svg/")
     sc_parser.add_argument("--output",
                            help="출력 PPTX 경로 (기본: output/screen-converter/YYYYMMDD/screens.pptx)")
 
