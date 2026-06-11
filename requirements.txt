@@ -32,3 +32,17 @@ tree-sitter-typescript>=0.21
 #     python -m pip install --no-index --find-links=.\wheels python-pptx
 # (사용자 환경: `pip` 직접 실행 안 됨 → 항상 `python -m pip` 또는 `py -m pip`)
 python-pptx>=0.6.23
+
+# Playwright: capture-screens (AS-IS 화면 headless 렌더 → DOM JSON →
+# Figma 플러그인). 폐쇄망: wheel (win_amd64/py311) + Chromium 브라우저
+# 번들을 사전 반입해야 함:
+#   인터넷 PC:
+#     python -m pip download playwright -d .\wheels ^
+#       --platform win_amd64 --python-version 311 --only-binary=:all:
+#     python -m playwright install chromium   # 후 브라우저 폴더 복사
+#       (기본 위치: %USERPROFILE%\AppData\Local\ms-playwright)
+#   폐쇄망 PC:
+#     python -m pip install --no-index --find-links=.\wheels playwright
+#     set PLAYWRIGHT_BROWSERS_PATH=C:\tools\ms-playwright  (반입한 번들 경로)
+# 미설치여도 capture-screens 외 커맨드는 영향 없음 (import 가드).
+playwright>=1.40
