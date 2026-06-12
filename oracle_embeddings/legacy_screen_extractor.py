@@ -1316,6 +1316,97 @@ def _group_handlers_by_file(handlers_by_url: Dict[str, List[Dict[str, Any]]]
     return out
 
 
+# handle* / on* prefix 단어 존재 — 진짜 main 의 callback handler 정의 단서.
+# wrapper / lazy-loader (단순 re-export / React.lazy) 는 보통 안 가짐.
+_HANDLER_DEF_RE = re.compile(r"\b(?:handle|on)[A-Z_]\w*")
+
+_REACT_INDEX_EXTS = (".js", ".jsx", ".ts", ".tsx")
+
+
+def _is_real_main_candidate(abs_path: str) -> bool:
+    """index 파일이 진짜 main 인지 — callback handler 정의 단서로 판별.
+
+    wrapper / lazy-loader index (handle/on 식별자 없음) 는 False. 사용자
+    케이스: hypm_materialMaster/index.js (wrapper) 가 main 으로 추가되어
+    같은 화면이 둘로 갈리던 문제 방지.
+    """
+    try:
+        with open(abs_path, encoding="utf-8", errors="ignore") as fh:
+            return bool(_HANDLER_DEF_RE.search(fh.read(40000)))
+    except Exception:
+        return False
+
+
+def _force_enumerate_main_entries(by_file: Dict[str, Dict],
+                                  frontend_dir: str) -> tuple[int, list]:
+    """handlers_by_url 에 안 잡힌 main entry 를 by_file 에 강제 추가.
+
+    main 이 backend URL 호출 없이 prop 전달용으로만 동작하면
+    handlers_by_url 에 entry 가 없어 화면 enumeration 에서 누락 — 추가해
+    두면 sub events 흡수 로직이 SEARCH 등을 main events 시트에 emit.
+
+    2 단계:
+      1. ``_collect_main_entries`` (apps/<...>/index 레이아웃) 결과 추가
+      2. fallback — 1 이 0 건이면 by_file 의 각 sub file 의 parent /
+         grandparent 폴더 index.* 를 main 후보로. grandparent 는
+         ``_is_real_main_candidate`` 가드 (wrapper 회피).
+
+    Returns: (추가된 main 수, 추가된 rel path 목록). ``by_file`` 은
+    in-place 수정.
+    """
+    added = 0
+    added_files: list = []
+    try:
+        from .legacy_react_api_scanner import _scan_dir, _collect_main_entries
+        all_files = _scan_dir(frontend_dir)
+        for main_rel in _collect_main_entries(all_files, frontend_dir):
+            if main_rel not in by_file:
+                by_file[main_rel] = {}
+                added += 1
+                added_files.append(main_rel)
+    except Exception as e:
+        print(f"  screen layout: main entry 강제추가 실패 — {e}")
+
+    if added == 0:
+        # 단일 repo 임의 폴더 구조 fallback — sub file 의 parent /
+        # grandparent index.* 시도
+        sibling_mains = set()
+        for sub_rel in list(by_file.keys()):
+            parent = os.path.dirname(sub_rel).replace(os.sep, "/")
+            if not parent:
+                continue
+            parent_found = False
+            for ext in _REACT_INDEX_EXTS:
+                cand = f"{parent}/index{ext}"
+                if (cand != sub_rel and cand not in by_file
+                        and os.path.isfile(os.path.join(frontend_dir, cand))):
+                    sibling_mains.add(cand)
+                    parent_found = True
+                    break
+            if parent_found:
+                continue
+            grand = os.path.dirname(parent).replace(os.sep, "/")
+            if not grand:
+                continue
+            for ext in _REACT_INDEX_EXTS:
+                cand = f"{grand}/index{ext}"
+                abs_cand = os.path.join(frontend_dir, cand)
+                if (cand != sub_rel and cand not in by_file
+                        and os.path.isfile(abs_cand)
+                        and _is_real_main_candidate(abs_cand)):
+                    sibling_mains.add(cand)
+                    break
+        for main_rel in sibling_mains:
+            by_file[main_rel] = {}
+            added += 1
+            added_files.append(main_rel)
+
+    if added:
+        print(f"  screen layout: +{added} main entry 강제 추가 "
+              f"(handlers_by_url 미등록)")
+    return added, added_files
+
+
 def extract_screen_layouts(
     frontend_dir: str,
     handlers_by_url: Dict[str, List[Dict[str, Any]]],
@@ -1342,111 +1433,8 @@ def extract_screen_layouts(
     max_screens = max(1, min(max_screens, int(cfg.get("max_screens", 200))))
 
     by_file = _group_handlers_by_file(handlers_by_url)
-
-    # 강제 enumerate — main entries 중 handlers_by_url 에 안 잡힌 것도
-    # 화면 큐에 추가. main 자체가 backend URL 호출 없이 prop 전달용으로만
-    # 동작하면 handlers_by_url 에 entry 가 없어서 main 화면 자체가
-    # enumerate 누락. 한국 SI 흔: main 은 search/grid 분리 import + prop
-    # 전달만, 실제 API 호출은 sub 컴포넌트의 handler 안에 있음. main 을
-    # 큐에 추가하면 PR #293+ 의 sub events 흡수 로직이 SEARCH 등을 main
-    # 화면 events 시트에 emit.
-    main_added_force = 0
-    _diag_n_all = 0
-    _diag_n_index = 0
-    _diag_n_main_entries = 0
-    _diag_main_force_files: list = []  # 강제 추가된 main rel paths
-    try:
-        from .legacy_react_api_scanner import _scan_dir, _collect_main_entries
-        all_files = _scan_dir(frontend_dir)
-        _diag_n_all = len(all_files)
-        _diag_n_index = sum(
-            1 for f in all_files
-            if os.path.basename(f).rsplit(".", 1)[0].lower() == "index"
-        )
-        main_entries = _collect_main_entries(all_files, frontend_dir)
-        _diag_n_main_entries = len(main_entries)
-        for main_rel in main_entries:
-            if main_rel not in by_file:
-                by_file[main_rel] = {}
-                main_added_force += 1
-                _diag_main_force_files.append(main_rel)
-    except Exception as _e:
-        print(f"  screen layout: main entry 강제추가 실패 — {_e}")
-
-    # Fallback — _collect_main_entries 가 0 이거나 모두 by_file 에 있는
-    # 경우: handlers_by_url 에 등록된 sub file 의 parent / grandparent
-    # 폴더 안 index.* 도 main 후보로 추가. apps/ 외 단일 repo 의 임의
-    # 폴더 구조 (예: src/MaterialMaster/index.js + src/MaterialMaster/
-    # Search/index.js) 에서 _collect_main_entries 가 못 잡는 경우 cover.
-    #
-    # wrapper 회피 가드:
-    # - parent index = sub_rel 자기 자신이면 skip (cand != sub_rel)
-    # - grandparent index 는 callback handler 정의 (handleX / onX) 가
-    #   있어야 main 으로 인정 — wrapper / lazy-loader index.js (정의 없음)
-    #   는 제외. 사용자 보고: hypm_materialMaster/index.js (wrapper) +
-    #   hypm_materialMaster/MaterialMaster/index.js (진짜 main) 같은
-    #   nested 폴더에서 wrapper 가 main 으로 추가되어 SEARCH URL 흡수
-    #   실패하던 케이스 fix.
-    # handle* / on* prefix 단어 존재 — 진짜 main 의 callback handler 정의
-    # 단서. wrapper / lazy-loader (단순 re-export 또는 React.lazy) 는 보통
-    # handle/on prefix 안 가짐. regex 단순화로 다양한 정의 형태 (arrow /
-    # function decl / class method / 객체 property) 모두 cover + import 만
-    # 있는 wrapper 는 capitalized handle/on identifier 없어서 자동 제외.
-    _HANDLER_DEF_RE = re.compile(r"\b(?:handle|on)[A-Z_]\w*")
-
-    def _is_real_main_candidate(abs_path: str) -> bool:
-        try:
-            with open(abs_path, encoding="utf-8", errors="ignore") as fh:
-                cand_content = fh.read(40000)
-            return bool(_HANDLER_DEF_RE.search(cand_content))
-        except Exception:
-            return False
-
-    if main_added_force == 0:
-        sibling_mains = set()
-        for sub_rel in list(by_file.keys()):
-            parent = os.path.dirname(sub_rel).replace(os.sep, "/")
-            if not parent:
-                continue
-            # 1) parent index 시도 — sub_rel 자기 자신 제외
-            parent_found = False
-            for ext in (".js", ".jsx", ".ts", ".tsx"):
-                cand = f"{parent}/index{ext}"
-                abs_cand = os.path.join(frontend_dir, cand)
-                if (cand != sub_rel
-                        and os.path.isfile(abs_cand)
-                        and cand not in by_file):
-                    sibling_mains.add(cand)
-                    parent_found = True
-                    break
-            if parent_found:
-                continue
-            # 2) grandparent index 시도 — callback handler 정의 가드
-            grand = os.path.dirname(parent).replace(os.sep, "/")
-            if not grand:
-                continue
-            for ext in (".js", ".jsx", ".ts", ".tsx"):
-                cand = f"{grand}/index{ext}"
-                abs_cand = os.path.join(frontend_dir, cand)
-                if (cand != sub_rel
-                        and os.path.isfile(abs_cand)
-                        and cand not in by_file
-                        and _is_real_main_candidate(abs_cand)):
-                    sibling_mains.add(cand)
-                    break
-        for main_rel in sibling_mains:
-            by_file[main_rel] = {}
-            main_added_force += 1
-            _diag_main_force_files.append(main_rel)
-
-    if main_added_force:
-        print(f"  screen layout: +{main_added_force} main entry 강제 추가 "
-              f"(handlers_by_url 미등록)")
-    else:
-        # 0 일 때 진단 한 줄 — 어디서 막혔는지 사용자가 알려줄 수 있게
-        print(f"  screen layout: main entry 강제추가 0건 진단 — "
-              f"all_files={_diag_n_all}, index.*={_diag_n_index}, "
-              f"main_entries={_diag_n_main_entries}, by_file={len(by_file)}")
+    main_added_force, _diag_main_force_files = _force_enumerate_main_entries(
+        by_file, frontend_dir)
 
     if not by_file:
         print("  screen layout: handler 컨텍스트 0건 — skip")
@@ -1697,24 +1685,13 @@ def extract_screen_layouts(
         f", sub_absorbed={sub_events_absorbed}(url_resolved={sub_urls_resolved})"
         if sub_events_absorbed else ""
     )
-    # main 강제추가 진단 — 항상 표시 (0 이어도). 단방향 환경에서 진단
-    # 메시지가 LLM 출력 사이에 묻혀서 사용자가 못 보던 문제 fix.
     main_force_stats = (
-        f", main_force={main_added_force}"
-        f"(scan={_diag_n_all},idx={_diag_n_index},entries={_diag_n_main_entries},"
-        f"by_file={len(by_file)})"
+        f", main_force={main_added_force}" if main_added_force else ""
     )
     print(f"  screen layout: cache_hits={cache_hits}, llm={llm_calls}, "
           f"fallback={fallback_calls}, total={len(out)}"
           f"{closure_stats}{parser_stats}{empty_stats}{popup_stats}"
           f"{absorb_stats}{main_force_stats}")
-    # 추가 진단 — main_added_force > 0 인데 url_resolved=0 인 케이스
-    # 디버깅용 (별도 줄로 출력해서 묻힘 방지).
-    if _diag_main_force_files:
-        sample = _diag_main_force_files[:3]
-        print(f"  screen layout: main_force_files={sample}"
-              + (f" (+{len(_diag_main_force_files)-3})"
-                 if len(_diag_main_force_files) > 3 else ""))
     return out
 
 
