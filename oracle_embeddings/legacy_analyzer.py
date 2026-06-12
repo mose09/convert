@@ -1725,6 +1725,54 @@ def _attach_xml_daemons(xml_jobs: list[dict], indexes: dict,
     return attached
 
 
+def _collect_daemon_rows(indexes: dict, mybatis_idx: dict, base_dirs: dict,
+                         backend_dir: str, rfc_depth: int) -> list[dict]:
+    """daemons_by_fqcn 인덱스 순회 → 데몬 시트 row 목록.
+
+    - 데몬폴더 컬럼 = backend_dir 의 basename (backends-root 멀티 시
+      각 sub-repo 이름)
+    - safety-net dedupe — (class_fqcn, daemon_kind, method_name) 같은
+      row 한 번만 emit. _attach_xml_daemons 의 가드와 중복이지만 다른
+      path (Java code 가 중복 entry 만든 케이스) 도 cover.
+    """
+    backend_repo_basename = os.path.basename(
+        (backend_dir or "").rstrip(os.sep) or "backend"
+    ) or "backend"
+    daemons_idx = indexes.get("daemons_by_fqcn") or {}
+
+    kind_counts: dict[str, int] = {}
+    for dc in daemons_idx.values():
+        for de in dc.get("daemon_entries") or []:
+            kind = de.get("daemon_kind", "?")
+            kind_counts[kind] = kind_counts.get(kind, 0) + 1
+    print(f"  daemons: daemons_by_fqcn={len(daemons_idx)} classes, "
+          f"entries by kind={dict(sorted(kind_counts.items()))}")
+
+    daemon_rows: list[dict] = []
+    seen: set = set()
+    for daemon_class in daemons_idx.values():
+        if daemon_class.get("abstract"):
+            continue
+        for de in daemon_class.get("daemon_entries") or []:
+            key = (
+                daemon_class.get("fqcn", ""),
+                de.get("daemon_kind", ""),
+                de.get("method_name", ""),
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            daemon_rows.append(_build_daemon_row(
+                de, daemon_class, indexes, mybatis_idx, base_dirs,
+                backend_repo=backend_repo_basename,
+                rfc_depth=rfc_depth,
+            ))
+    if daemon_rows:
+        print(f"  daemons: {len(daemon_rows)} batch entries 추출 "
+              f"(Spring Batch / Quartz)")
+    return daemon_rows
+
+
 def _build_daemon_row(daemon: dict, controller: dict, indexes: dict,
                       mybatis_idx: dict, base_dirs: dict,
                       backend_repo: str = "",
@@ -1974,22 +2022,6 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
               f"{len(patterns.get('sql_receivers', []))} sql receivers)")
 
     classes = parse_all_java(backend_dir)
-
-    # 진단 — parse_all_java 결과 중 daemon_entries 가진 클래스 카운트
-    # + 첫 5개 sample. parse 단계에서 인식 / _build_indexes 등록 단계
-    # 사이 누락 확정용.
-    _daemon_classes = [c for c in classes if c.get("daemon_entries")]
-    if _daemon_classes or analyze_daemons:
-        kind_counts: dict[str, int] = {}
-        for c in _daemon_classes:
-            for de in c.get("daemon_entries") or []:
-                k = de.get("daemon_kind", "?")
-                kind_counts[k] = kind_counts.get(k, 0) + 1
-        samples = [c.get("fqcn", "") for c in _daemon_classes[:5]]
-        print(f"  [parse] daemon classes in '{os.path.basename(backend_dir)}': "
-              f"{len(_daemon_classes)}, by kind={dict(sorted(kind_counts.items()))}")
-        if samples:
-            print(f"  [parse] daemon samples: {samples}")
 
     # Library repos (``--library-dir``): scanned for .java + MyBatis XMLs
     # but their classes are flagged ``is_library=True`` so ``_build_indexes``
@@ -2529,52 +2561,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if not row["matched"]:
                 unmatched.append(row)
 
-    # Daemon (배치) entries — Spring Batch / Quartz. 옵트인 (analyze_daemons).
-    # daemons_by_fqcn 인덱스에서 iterate. backend_repo basename 을 데몬폴더
-    # 컬럼으로.
     daemon_rows: list[dict] = []
     if analyze_daemons:
-        try:
-            backend_repo_basename = os.path.basename(
-                (backend_dir or "").rstrip(os.sep) or "backend"
-            ) or "backend"
-        except Exception:
-            backend_repo_basename = "backend"
-        daemons_idx = indexes.get("daemons_by_fqcn") or {}
-        # 진단 — daemons_by_fqcn 카운트 + 종류별 breakdown
-        kind_counts: dict[str, int] = {}
-        for dc in daemons_idx.values():
-            for de in dc.get("daemon_entries") or []:
-                kind = de.get("daemon_kind", "?")
-                kind_counts[kind] = kind_counts.get(kind, 0) + 1
-        print(f"  daemons: daemons_by_fqcn={len(daemons_idx)} classes, "
-              f"entries by kind={dict(sorted(kind_counts.items()))}")
-        seen_daemon_keys: set = set()
-        for daemon_class in daemons_idx.values():
-            if daemon_class.get("abstract"):
-                continue
-            for de in daemon_class.get("daemon_entries") or []:
-                # Safety-net dedupe — (class_fqcn, daemon_kind, method_name)
-                # 같은 row 가 이미 emit 됐으면 skip. _attach_xml_daemons
-                # 의 가드와 중복이지만 다른 path (Java code 가 중복 entry
-                # 만든 케이스 등) 도 cover.
-                key = (
-                    daemon_class.get("fqcn", ""),
-                    de.get("daemon_kind", ""),
-                    de.get("method_name", ""),
-                )
-                if key in seen_daemon_keys:
-                    continue
-                seen_daemon_keys.add(key)
-                drow = _build_daemon_row(
-                    de, daemon_class, indexes, mybatis_idx, base_dirs,
-                    backend_repo=backend_repo_basename,
-                    rfc_depth=rfc_depth,
-                )
-                daemon_rows.append(drow)
-        if daemon_rows:
-            print(f"  daemons: {len(daemon_rows)} batch entries 추출 "
-                  f"(Spring Batch / Quartz)")
+        daemon_rows = _collect_daemon_rows(
+            indexes, mybatis_idx, base_dirs, backend_dir, rfc_depth)
 
     if skipped_no_menu:
         print(f"  menu-only: skipped {skipped_no_menu} non-matching endpoints "
@@ -3054,18 +3044,13 @@ def analyze_legacy_batch(backends_root: str,
         if sub_spec:
             all_endpoint_spec_map.update(sub_spec)
 
-    # batch 진단 — daemon_rows aggregation 결과 1줄 (사용자 환경에서
-    # 서브 백엔드별 daemon 인식은 잘 됐는데 머지 누락되는지 확인용).
     if all_daemon_rows:
         kind_counts: dict[str, int] = {}
         for d in all_daemon_rows:
             k = d.get("daemon_kind", "?")
             kind_counts[k] = kind_counts.get(k, 0) + 1
-        print(f"\n  daemons (batch): {len(all_daemon_rows)} rows aggregated "
-              f"across {len(projects)} backends, by kind={dict(sorted(kind_counts.items()))}")
-    else:
-        print(f"\n  daemons (batch): 0 rows aggregated across {len(projects)} "
-              f"backends (analyze_daemons={analyze_daemons})")
+        print(f"\n  daemons (batch): {len(all_daemon_rows)} rows "
+              f"({dict(sorted(kind_counts.items()))})")
 
     # Aggregate stats across projects
     def _sum(key):

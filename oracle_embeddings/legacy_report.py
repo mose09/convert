@@ -41,6 +41,58 @@ def _bare_table_name(cell: str) -> str:
     return _CRUD_SUFFIX_RE.sub("", cell).strip()
 
 
+# ── Excel 셀 쓰기 공용 헬퍼 ──────────────────────────────────────────
+# save_legacy_excel / save_legacy_batch_excel 양쪽의 로컬 중첩 함수가
+# 동일 구현으로 중복돼 있던 것 통합. 로컬 이름 (_write_header 등) 은
+# 두 함수 안에서 이 module-level 구현으로 위임.
+
+def _xl_styles():
+    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    return {
+        "header_font": Font(bold=True, color="FFFFFF", size=11),
+        "header_fill": PatternFill(start_color="0F3460", end_color="0F3460",
+                                   fill_type="solid"),
+        "header_align": Alignment(horizontal="center", vertical="center"),
+        "thin_border": Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin"),
+        ),
+        # Wrap text on data cells so multi-item columns (``,\n`` / ``;\n``)
+        # render one item per visible line in a single Excel cell.
+        "data_align": Alignment(vertical="top", wrap_text=True),
+    }
+
+
+def _xl_write_header(ws, headers):
+    s = _xl_styles()
+    for col, h in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=h)
+        cell.font = s["header_font"]
+        cell.fill = s["header_fill"]
+        cell.alignment = s["header_align"]
+        cell.border = s["thin_border"]
+
+
+def _xl_write_row(ws, row_num, values, fill=None):
+    s = _xl_styles()
+    for col, v in enumerate(values, 1):
+        cell = ws.cell(row=row_num, column=col, value=v)
+        cell.border = s["thin_border"]
+        cell.alignment = s["data_align"]
+        if fill is not None:
+            cell.fill = fill
+
+
+def _xl_auto_width(ws, max_width: int = 50):
+    for col in ws.columns:
+        max_len = 0
+        col_letter = col[0].column_letter
+        for cell in col:
+            if cell.value is not None:
+                max_len = max(max_len, len(str(cell.value)))
+        ws.column_dimensions[col_letter].width = min(max_len + 4, max_width)
+
+
 def _legacy_subdir_with_date() -> str:
     """Return ``legacy_analysis/<YYYYMMDD>`` per shared output convention.
 
@@ -449,6 +501,39 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
     return filepath
 
 
+# 데몬 시트 컬럼 ↔ daemon_row dict 키 (순서 보존)
+_DAEMON_SHEET_COLUMNS = [
+    ("데몬폴더", "daemon_folder"),
+    ("클래스", "class_fqcn"),
+    ("데몬종류", "daemon_kind"),
+    ("메소드", "daemon_method"),
+    ("서비스", "service"),
+    ("서비스메소드", "service_methods"),
+    ("DAO", "dao"),
+    ("XML", "xml"),
+    ("XML메서드", "xml_method"),
+    ("테이블(CRUD)", "tables"),
+    ("RFC", "rfc"),
+    ("파일", "filepath"),
+]
+
+
+def _write_daemon_sheet(wb, daemon_rows: list[dict]) -> None:
+    """"데몬" 시트 emit — Spring Batch / Quartz 배치 entry chain.
+
+    single / batch 리포트 공용. ``daemon_rows`` 빈 list 면 시트 자체를
+    만들지 않아 기존 리포트와 byte-identical (analyze-daemons 미사용 시
+    회귀 0).
+    """
+    if not daemon_rows:
+        return
+    ws = wb.create_sheet("데몬")
+    _xl_write_header(ws, [h for h, _ in _DAEMON_SHEET_COLUMNS])
+    for i, d in enumerate(daemon_rows, start=2):
+        _xl_write_row(ws, i, [d.get(key, "") for _, key in _DAEMON_SHEET_COLUMNS])
+    _xl_auto_width(ws)
+
+
 def _write_biz_logic_sheet(wb, biz_map: dict, rows: list[dict]) -> None:
     """Common helper — both single + batch modes emit the same layout.
 
@@ -703,7 +788,7 @@ def _write_sequence_diagram_sheet(wb, rows: list[dict]) -> None:
 def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render the analysis result as a multi-sheet Excel workbook."""
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.styles import PatternFill
 
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -716,44 +801,13 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
 
     wb = Workbook()
 
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill(start_color="0F3460", end_color="0F3460", fill_type="solid")
-    header_align = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin"),
-    )
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     gray_fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
-    # Wrap text on data cells so Tables / RFC / Service / Query XML / SQL
-    # ids — which now pack multiple items as ``,\n`` or ``;\n`` — render
-    # with one item per visible line inside a single Excel cell.
-    data_align = Alignment(vertical="top", wrap_text=True)
 
-    def _write_header(ws, headers):
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col, value=h)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-
-    def _write_row(ws, row_num, values, fill=None):
-        for col, v in enumerate(values, 1):
-            cell = ws.cell(row=row_num, column=col, value=v)
-            cell.border = thin_border
-            cell.alignment = data_align
-            if fill is not None:
-                cell.fill = fill
-
-    def _auto_width(ws):
-        for col in ws.columns:
-            max_len = 0
-            col_letter = col[0].column_letter
-            for cell in col:
-                if cell.value is not None:
-                    max_len = max(max_len, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = min(max_len + 4, 50)
+    # 공용 module-level 헬퍼로 위임 (batch 리포트와 구현 통합)
+    _write_header = _xl_write_header
+    _write_row = _xl_write_row
+    _auto_width = _xl_auto_width
 
     # Sheet 1: Summary
     ws = wb.active
@@ -892,32 +946,7 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
     # 데몬 시트 — Spring Batch / Quartz 배치 entry chain. analyze_legacy 가
     # --analyze-daemons 옵트인 시 result["daemon_rows"] 채움. 사용자 명시
     # 8컬럼 + 보조 메타 (클래스 / 데몬종류).
-    daemon_rows = result.get("daemon_rows") or []
-    print(f"  [report] daemon_rows in result: {len(daemon_rows)}")
-    if daemon_rows:
-        ws = wb.create_sheet("데몬")
-        _write_header(ws, [
-            "데몬폴더", "클래스", "데몬종류", "메소드",
-            "서비스", "서비스메소드", "DAO",
-            "XML", "XML메서드", "테이블(CRUD)", "RFC",
-            "파일",
-        ])
-        for i, d in enumerate(daemon_rows, start=2):
-            _write_row(ws, i, [
-                d.get("daemon_folder", ""),
-                d.get("class_fqcn", ""),
-                d.get("daemon_kind", ""),
-                d.get("daemon_method", ""),
-                d.get("service", ""),
-                d.get("service_methods", ""),
-                d.get("dao", ""),
-                d.get("xml", ""),
-                d.get("xml_method", ""),
-                d.get("tables", ""),
-                d.get("rfc", ""),
-                d.get("filepath", ""),
-            ])
-        _auto_width(ws)
+    _write_daemon_sheet(wb, result.get("daemon_rows") or [])
 
     # Sheet 8: Business Logic (Phase A — opt-in via --extract-biz-logic).
     # biz_map 이 비어있으면 시트 자체를 만들지 않아 기존 리포트와 동일.
@@ -1172,7 +1201,7 @@ def save_legacy_batch_markdown(result: dict, output_dir: str, menu_only: bool = 
 def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = False) -> str:
     """Render a batch (multi-project) analysis result as a multi-sheet workbook."""
     from openpyxl import Workbook
-    from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+    from openpyxl.styles import PatternFill
 
     os.makedirs(output_dir, exist_ok=True)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1186,44 +1215,16 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
 
     wb = Workbook()
 
-    header_font = Font(bold=True, color="FFFFFF", size=11)
-    header_fill = PatternFill(start_color="0F3460", end_color="0F3460", fill_type="solid")
-    header_align = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin"),
-    )
     yellow_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")
     gray_fill = PatternFill(start_color="EEEEEE", end_color="EEEEEE", fill_type="solid")
-    # Wrap text on data cells so Tables / RFC / Service / Query XML / SQL
-    # ids — which now pack multiple items as ``,\n`` or ``;\n`` — render
-    # with one item per visible line inside a single Excel cell.
-    data_align = Alignment(vertical="top", wrap_text=True)
 
-    def _write_header(ws, headers):
-        for col, h in enumerate(headers, 1):
-            cell = ws.cell(row=1, column=col, value=h)
-            cell.font = header_font
-            cell.fill = header_fill
-            cell.alignment = header_align
-            cell.border = thin_border
-
-    def _write_row(ws, row_num, values, fill=None):
-        for col, v in enumerate(values, 1):
-            cell = ws.cell(row=row_num, column=col, value=v)
-            cell.border = thin_border
-            cell.alignment = data_align
-            if fill is not None:
-                cell.fill = fill
+    # 공용 module-level 헬퍼로 위임 (single 리포트와 구현 통합).
+    # auto_width 상한만 60 (batch 는 프로젝트명 등 셀이 더 길어서).
+    _write_header = _xl_write_header
+    _write_row = _xl_write_row
 
     def _auto_width(ws):
-        for col in ws.columns:
-            max_len = 0
-            col_letter = col[0].column_letter
-            for cell in col:
-                if cell.value is not None:
-                    max_len = max(max_len, len(str(cell.value)))
-            ws.column_dimensions[col_letter].width = min(max_len + 4, 60)
+        _xl_auto_width(ws, max_width=60)
 
     # Sheet 1: Summary (aggregate + per-project breakdown)
     ws = wb.active
@@ -1356,33 +1357,7 @@ def save_legacy_batch_excel(result: dict, output_dir: str, menu_only: bool = Fal
         ])
     _auto_width(ws)
 
-    # 데몬 시트 — Spring Batch / Quartz batch entry chain (batch 통합).
-    daemon_rows = result.get("daemon_rows") or []
-    print(f"  [report] daemon_rows in batch result: {len(daemon_rows)}")
-    if daemon_rows:
-        ws = wb.create_sheet("데몬")
-        _write_header(ws, [
-            "데몬폴더", "클래스", "데몬종류", "메소드",
-            "서비스", "서비스메소드", "DAO",
-            "XML", "XML메서드", "테이블(CRUD)", "RFC",
-            "파일",
-        ])
-        for i, d in enumerate(daemon_rows, start=2):
-            _write_row(ws, i, [
-                d.get("daemon_folder", ""),
-                d.get("class_fqcn", ""),
-                d.get("daemon_kind", ""),
-                d.get("daemon_method", ""),
-                d.get("service", ""),
-                d.get("service_methods", ""),
-                d.get("dao", ""),
-                d.get("xml", ""),
-                d.get("xml_method", ""),
-                d.get("tables", ""),
-                d.get("rfc", ""),
-                d.get("filepath", ""),
-            ])
-        _auto_width(ws)
+    _write_daemon_sheet(wb, result.get("daemon_rows") or [])
 
     # Sheet 7: Business Logic (Phase A — opt-in).
     biz_map = result.get("biz_map") or {}
