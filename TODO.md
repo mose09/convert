@@ -107,7 +107,18 @@ _진행 중 없음_
 
 ## 4. ERD 생성 — `erd` / `erd-md` / `erd-group` / `erd-rag`
 
-_진행 중 없음_
+### 진행 중: 인터랙티브 ERD 검색 다음다음/이전이전 이동
+
+기존 검색은 Enter 한 번에 첫 매치 1건만 보여주고 끝 — LIKE 로 여러 개
+잡히는 케이스에서 두 번째 이후 매치는 볼 수 없었음.
+
+- [x] 검색 매치 리스트 + 현재 인덱스 state (`searchMatches` / `searchIndex`)
+- [x] 입력 (`input` 이벤트) → 매치 실시간 재계산 + 첫 번째 매치로 점프
+- [x] Enter / ▶ → 다음, Shift+Enter / ◀ / ↑ → 이전 (% len wrap-around)
+- [x] Esc → 검색 클리어
+- [x] 카운터 표시 (`3 / 12` / `0 / 0` 색상 분리)
+- [x] prev/next 버튼 + disabled 상태 (매치 0 또는 1)
+- [x] 회귀: Python 마크업 6가지 + Node JS 로직 5가지 시나리오
 
 ---
 
