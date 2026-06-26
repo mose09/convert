@@ -193,6 +193,16 @@ python main.py query `
 - `table_usage` 도 합산 (as_main / as_join count + sources)
 - statements 각각에 `source_dir` 필드 — 어느 backend mapper 인지 추적
 
+**SET operator (MINUS / INTERSECT) → 관계 자동 인식**:
+- `SELECT a, b, c FROM TBL_X MINUS SELECT a, b, c FROM TBL_Y` 같은
+  패턴은 두 SELECT 의 같은 위치 컬럼이 키로 비교되는 강한 관계 단서 →
+  ERD 에 자동 관계 표시 (`join_type = MINUS` / `INTERSECT`)
+- 양쪽 select-list 컬럼 페어를 위치 매칭으로 모두 emit (3 컬럼이면 3
+  페어). `SELECT *` 면 `*` placeholder 1 페어로 관계만 표시
+- `UNION` / `UNION ALL` 은 단순 결과 합치기 (키 비교 의미 아님) →
+  위양성 회피로 skip
+- 일반 JOIN 추출 결과와 동일 dedupe / sources 누적 적용
+
 ### 3. 스키마 코멘트 보강 (LLM)
 
 빈 테이블/컬럼 코멘트를 LLM이 약어를 해석하여 자동 추천합니다.
