@@ -84,18 +84,7 @@ _진행 중 없음_
 
 ## 2. query — MyBatis 쿼리 분석
 
-### 진행 중: SET operator (MINUS / INTERSECT) → ERD 관계
-
-- [x] `_parse_set_op_relations()` — MINUS / INTERSECT 양쪽 SELECT 의
-      FROM 테이블 + select-list 같은 위치 컬럼을 페어로 emit
-- [x] `_parse_joins_from_sql` 통합 — 일반 JOIN + set op 결과 합쳐서
-      반환 (extract_joins dedupe / sources 누적 그대로 작동)
-- [x] UNION / UNION ALL 은 skip (의미상 키 비교 아님 → 위양성 회피)
-- [x] 회귀 9 케이스 (사용자 예시 / INTERSECT / UNION skip / DISTINCT+
-      NVL / owner-qualified / SELECT * / JOIN+MINUS 공존 / dedupe /
-      chain) 통과
-- [x] README §2 query 섹션에 MINUS / INTERSECT 인식 명시
-- [x] `python main.py docs` 재빌드 — `user_manual.html` 갱신
+_진행 중 없음_
 
 ---
 
@@ -107,18 +96,7 @@ _진행 중 없음_
 
 ## 4. ERD 생성 — `erd` / `erd-md` / `erd-group` / `erd-rag`
 
-### 진행 중: 인터랙티브 ERD 검색 다음다음/이전이전 이동
-
-기존 검색은 Enter 한 번에 첫 매치 1건만 보여주고 끝 — LIKE 로 여러 개
-잡히는 케이스에서 두 번째 이후 매치는 볼 수 없었음.
-
-- [x] 검색 매치 리스트 + 현재 인덱스 state (`searchMatches` / `searchIndex`)
-- [x] 입력 (`input` 이벤트) → 매치 실시간 재계산 + 첫 번째 매치로 점프
-- [x] Enter / ▶ → 다음, Shift+Enter / ◀ / ↑ → 이전 (% len wrap-around)
-- [x] Esc → 검색 클리어
-- [x] 카운터 표시 (`3 / 12` / `0 / 0` 색상 분리)
-- [x] prev/next 버튼 + disabled 상태 (매치 0 또는 1)
-- [x] 회귀: Python 마크업 6가지 + Node JS 로직 5가지 시나리오
+_진행 중 없음_
 
 ---
 
