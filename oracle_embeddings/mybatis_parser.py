@@ -768,6 +768,102 @@ SQL_KEYWORDS = {
 }
 
 
+def _parse_set_op_relations(sql: str) -> list[dict]:
+    """SET operator (``MINUS`` / ``INTERSECT``) 기반 테이블 관계 추출.
+
+    ``SELECT cols FROM A ... MINUS SELECT cols FROM B ...`` 패턴에서
+    두 SELECT 의 FROM 테이블과 select-list 같은 위치 컬럼을 페어로 emit.
+    의미상 양쪽 select-list 의 같은 위치 컬럼은 같은 키로 비교됨 — JOIN
+    만큼 강한 관계 단서.
+
+    ``UNION`` / ``UNION ALL`` 은 키 비교 의미가 없으므로 (단순 결과
+    합치기) skip — 위양성 회피.
+
+    Returns: ``[{"table1", "column1", "table2", "column2",
+    "join_type": "MINUS"|"INTERSECT"}, ...]``
+    """
+    results: list[dict] = []
+    # MINUS / INTERSECT 로 split — 보존 split 으로 양쪽 SELECT 부분 추출
+    parts = re.split(r'\b(MINUS|INTERSECT)\b', sql)
+    if len(parts) < 3:
+        return results
+
+    def _select_columns(part: str) -> list[str]:
+        m = re.search(r'\bSELECT\s+(?:DISTINCT\s+)?(.+?)\bFROM\b',
+                       part, re.DOTALL)
+        if not m:
+            return []
+        cols_str = m.group(1).strip()
+        if not cols_str or cols_str == "*":
+            return []
+        cols: list[str] = []
+        # comma split — 함수 인자의 콤마는 (...) 안이라 정밀 분리 어려움.
+        # 단순화: paren depth 추적해서 top-level 콤마만 split.
+        depth = 0
+        cur = []
+        pieces: list[str] = []
+        for ch in cols_str:
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth = max(0, depth - 1)
+            if ch == "," and depth == 0:
+                pieces.append("".join(cur)); cur = []
+            else:
+                cur.append(ch)
+        if cur:
+            pieces.append("".join(cur))
+        for piece in pieces:
+            toks = re.findall(r'[A-Z_][A-Z0-9_]*', piece)
+            # alias 처리 — "col AS X" / "col X" 면 마지막 토큰이 alias.
+            # 컬럼명은 첫 비-키워드 토큰 (또는 함수면 함수 안 첫 토큰).
+            for t in toks:
+                if t not in SQL_KEYWORDS:
+                    cols.append(t)
+                    break
+            else:
+                cols.append("")  # 못 잡으면 자리만 (positional 매핑 유지)
+        return cols
+
+    def _from_first_table(part: str) -> str:
+        # SELECT ... FROM <테이블> ... 의 첫 테이블만 (set op 의 양쪽은
+        # 단일 테이블 case 가 대부분). 다중 join 은 우선 첫 테이블로.
+        m = re.search(r'\bFROM\s+(?:\w+\.)*(\w+)', part)
+        if not m:
+            return ""
+        t = m.group(1).upper()
+        return t if t not in SQL_KEYWORDS else ""
+
+    for i in range(0, len(parts) - 2, 2):
+        left = parts[i]
+        op = parts[i + 1].upper()
+        right = parts[i + 2]
+        t1 = _from_first_table(left)
+        t2 = _from_first_table(right)
+        if not t1 or not t2:
+            continue
+        cols_l = _select_columns(left)
+        cols_r = _select_columns(right)
+        n = min(len(cols_l), len(cols_r))
+        if n == 0:
+            # 컬럼 못 잡으면 자리 표시자 1 페어로 관계만 emit
+            results.append({
+                "table1": t1, "column1": "*",
+                "table2": t2, "column2": "*",
+                "join_type": op,
+            })
+            continue
+        for k in range(n):
+            c1 = cols_l[k] or "*"
+            c2 = cols_r[k] or "*"
+            results.append({
+                "table1": t1, "column1": c1,
+                "table2": t2, "column2": c2,
+                "join_type": op,
+            })
+    return results
+
+
 def _parse_joins_from_sql(sql: str) -> list[dict]:
     """Parse JOIN conditions from SQL to extract table relationships."""
     results = []
@@ -893,6 +989,9 @@ def _parse_joins_from_sql(sql: str) -> list[dict]:
             "column2": col2.upper(),
             "join_type": join_type,
         })
+
+    # SET operator (MINUS / INTERSECT) — JOIN 만큼 강한 키 비교 관계
+    results.extend(_parse_set_op_relations(sql))
 
     return results
 

@@ -84,7 +84,18 @@ _진행 중 없음_
 
 ## 2. query — MyBatis 쿼리 분석
 
-_진행 중 없음_
+### 진행 중: SET operator (MINUS / INTERSECT) → ERD 관계
+
+- [x] `_parse_set_op_relations()` — MINUS / INTERSECT 양쪽 SELECT 의
+      FROM 테이블 + select-list 같은 위치 컬럼을 페어로 emit
+- [x] `_parse_joins_from_sql` 통합 — 일반 JOIN + set op 결과 합쳐서
+      반환 (extract_joins dedupe / sources 누적 그대로 작동)
+- [x] UNION / UNION ALL 은 skip (의미상 키 비교 아님 → 위양성 회피)
+- [x] 회귀 9 케이스 (사용자 예시 / INTERSECT / UNION skip / DISTINCT+
+      NVL / owner-qualified / SELECT * / JOIN+MINUS 공존 / dedupe /
+      chain) 통과
+- [x] README §2 query 섹션에 MINUS / INTERSECT 인식 명시
+- [x] `python main.py docs` 재빌드 — `user_manual.html` 갱신
 
 ---
 
