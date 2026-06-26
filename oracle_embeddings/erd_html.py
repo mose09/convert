@@ -127,6 +127,19 @@ body {{ font-family: 'Segoe UI', Tahoma, sans-serif; background: #1a1a2e; color:
     background: #0f3460; color: #eee; cursor: pointer; font-size: 13px;
 }}
 #toolbar button:hover {{ background: #533483; }}
+#toolbar button:disabled {{
+    opacity: 0.4; cursor: not-allowed; background: #1a1a2e;
+}}
+#toolbar button:disabled:hover {{ background: #1a1a2e; }}
+#toolbar #match-count {{
+    color: #888; font-size: 12px; min-width: 56px; text-align: center;
+    font-variant-numeric: tabular-nums;
+}}
+#toolbar #match-count.has-matches {{ color: #4ecdc4; }}
+#toolbar #match-count.no-matches {{ color: #e94560; }}
+#toolbar .nav-btn {{
+    padding: 4px 10px; min-width: 30px;
+}}
 
 #detail-panel {{
     position: fixed; right: -400px; top: 45px; bottom: 0; width: 380px;
@@ -187,7 +200,12 @@ svg {{ display: block; }}
 <body>
 
 <div id="toolbar">
-    <input type="text" id="search" placeholder="Search table... (Enter)" autocomplete="off">
+    <input type="text" id="search"
+        placeholder="Search table (LIKE) — Enter / Shift+Enter / ↑↓"
+        autocomplete="off">
+    <button id="btn-search-prev" class="nav-btn" title="이전 매치 (Shift+Enter / ↑)" disabled>◀</button>
+    <span id="match-count" title="현재 매치 / 전체 매치"></span>
+    <button id="btn-search-next" class="nav-btn" title="다음 매치 (Enter / ↓)" disabled>▶</button>
     <button id="btn-reset">Reset View</button>
     <button id="btn-fit">Fit All</button>
     <span class="stats" id="stats"></span>
@@ -418,22 +436,104 @@ function clearHighlight() {{
     linkLabel.classed('visible', false);
 }}
 
-// Search
+// Search — LIKE substring match with prev/next navigation
 const searchInput = document.getElementById('search');
+const searchPrev = document.getElementById('btn-search-prev');
+const searchNext = document.getElementById('btn-search-next');
+const matchCount = document.getElementById('match-count');
+let searchMatches = [];
+let searchIndex = -1;
+let searchQuery = '';
+
+function _matchesFor(q) {{
+    if (!q) return [];
+    // id 우선 정렬 (사전순) — 같은 쿼리 → 항상 같은 순서로 cycle
+    return data.nodes
+        .filter(n => n.id.toUpperCase().includes(q))
+        .sort((a, b) => a.id.localeCompare(b.id));
+}}
+
+function _renderMatchCount() {{
+    matchCount.classList.remove('has-matches', 'no-matches');
+    if (!searchQuery) {{
+        matchCount.textContent = '';
+        searchPrev.disabled = true;
+        searchNext.disabled = true;
+        return;
+    }}
+    if (searchMatches.length === 0) {{
+        matchCount.textContent = '0 / 0';
+        matchCount.classList.add('no-matches');
+        searchPrev.disabled = true;
+        searchNext.disabled = true;
+        return;
+    }}
+    matchCount.textContent = `${{searchIndex + 1}} / ${{searchMatches.length}}`;
+    matchCount.classList.add('has-matches');
+    searchPrev.disabled = searchMatches.length < 2;
+    searchNext.disabled = searchMatches.length < 2;
+}}
+
+function _focusCurrentMatch() {{
+    if (searchIndex < 0 || searchIndex >= searchMatches.length) return;
+    const found = searchMatches[searchIndex];
+    showDetail(found);
+    highlightRelated(found);
+    const t = d3.zoomIdentity.translate(width/2 - found.x, height/2 - found.y);
+    svg.transition().duration(500).call(zoom.transform, t);
+}}
+
+function _recomputeMatches() {{
+    searchQuery = searchInput.value.trim().toUpperCase();
+    if (!searchQuery) {{
+        searchMatches = [];
+        searchIndex = -1;
+        clearHighlight();
+        closeDetail();
+        _renderMatchCount();
+        return;
+    }}
+    // 쿼리가 변하면 매치 리스트 새로 계산 + 1번째 매치로 점프.
+    // 그러면 사용자가 한 글자 더 치면 바로 첫 매치가 보이고, Enter/▶
+    // 로 다음다음 으로 cycle 가능.
+    searchMatches = _matchesFor(searchQuery);
+    searchIndex = searchMatches.length > 0 ? 0 : -1;
+    _renderMatchCount();
+    if (searchIndex >= 0) {{
+        _focusCurrentMatch();
+    }} else {{
+        clearHighlight();
+        closeDetail();
+    }}
+}}
+
+function _step(delta) {{
+    if (searchMatches.length === 0) return;
+    searchIndex = (searchIndex + delta + searchMatches.length)
+        % searchMatches.length;
+    _renderMatchCount();
+    _focusCurrentMatch();
+}}
+
+searchInput.addEventListener('input', _recomputeMatches);
 searchInput.addEventListener('keydown', (e) => {{
     if (e.key === 'Enter') {{
-        const q = searchInput.value.trim().toUpperCase();
-        if (!q) {{ clearHighlight(); return; }}
-        const found = data.nodes.find(n => n.id.includes(q));
-        if (found) {{
-            showDetail(found);
-            highlightRelated(found);
-            // Center on found node
-            const t = d3.zoomIdentity.translate(width/2 - found.x, height/2 - found.y);
-            svg.transition().duration(500).call(zoom.transform, t);
-        }}
+        e.preventDefault();
+        _step(e.shiftKey ? -1 : 1);
+    }} else if (e.key === 'ArrowDown') {{
+        e.preventDefault();
+        _step(1);
+    }} else if (e.key === 'ArrowUp') {{
+        e.preventDefault();
+        _step(-1);
+    }} else if (e.key === 'Escape') {{
+        searchInput.value = '';
+        _recomputeMatches();
+        searchInput.blur();
     }}
 }});
+searchPrev.addEventListener('click', () => _step(-1));
+searchNext.addEventListener('click', () => _step(1));
 
 // Reset
 document.getElementById('btn-reset').addEventListener('click', () => {{
