@@ -1223,3 +1223,79 @@ def parse_all_mappers(base_dir: str) -> dict:
         "joins": joins,
         "table_usage": table_usage,
     }
+
+
+def parse_all_mappers_multi(base_dirs: list[str]) -> dict:
+    """여러 mapper 디렉토리를 한 번에 분석 → 통합 결과 1개.
+
+    각 dir 의 parse_all_mappers 결과를 머지:
+    - statements: 단순 concat (namespace+id 가 unique 식별자)
+    - joins: (table1, table2) 페어 기준 dedupe + source dirs 기록
+    - table_usage: 테이블별 as_main_count / as_join_count 합산
+
+    base_dir 필드는 모든 입력 dir 목록 ("; " 구분) 으로 emit.
+    """
+    if len(base_dirs) == 1:
+        # 단일이면 기존 함수와 동일 — 회귀 0
+        return parse_all_mappers(base_dirs[0])
+
+    print(f"  multi-dir mode: {len(base_dirs)} mapper 폴더 통합 분석")
+    all_statements: list = []
+    join_key_to_entry: dict = {}  # (t1, t2) → join dict (sources 누적)
+    table_usage_merged: dict = {}
+    mapper_total = 0
+
+    for base_dir in base_dirs:
+        print(f"\n  [{os.path.basename(base_dir.rstrip(os.sep)) or base_dir}] {base_dir}")
+        sub = parse_all_mappers(base_dir)
+        mapper_total += sub.get("mapper_count", 0)
+        # statements 에 source 표시 (디버그 / dedupe 추적용)
+        src_label = os.path.basename(base_dir.rstrip(os.sep)) or base_dir
+        for st in sub.get("statements") or []:
+            st.setdefault("source_dir", src_label)
+            all_statements.append(st)
+        # joins dedupe — (table1, table2) 페어
+        for j in sub.get("joins") or []:
+            key = (j.get("table1"), j.get("table2"))
+            if key in join_key_to_entry:
+                # 같은 join — count 합산 + source 누적
+                entry = join_key_to_entry[key]
+                entry["count"] = int(entry.get("count", 0)) + int(j.get("count", 0))
+                src_set = entry.setdefault("sources", set())
+                src_set.add(src_label)
+            else:
+                j2 = dict(j)
+                j2["sources"] = {src_label}
+                join_key_to_entry[key] = j2
+        # table_usage 합산
+        for tbl, usage in (sub.get("table_usage") or {}).items():
+            if tbl not in table_usage_merged:
+                table_usage_merged[tbl] = dict(usage)
+                table_usage_merged[tbl]["sources"] = {src_label}
+            else:
+                merged = table_usage_merged[tbl]
+                for k in ("as_main_count", "as_join_count"):
+                    merged[k] = int(merged.get(k, 0)) + int(usage.get(k, 0))
+                merged.setdefault("sources", set()).add(src_label)
+
+    # set → 정렬된 list (JSON/MD 직렬화 가능)
+    joins_out = []
+    for entry in join_key_to_entry.values():
+        entry["sources"] = sorted(entry.get("sources") or [])
+        joins_out.append(entry)
+    for tbl_entry in table_usage_merged.values():
+        tbl_entry["sources"] = sorted(tbl_entry.get("sources") or [])
+
+    print(f"\n  multi-dir 통합: mappers={mapper_total}, "
+          f"statements={len(all_statements)}, joins={len(joins_out)}, "
+          f"tables={len(table_usage_merged)}")
+
+    return {
+        "base_dir": "; ".join(base_dirs),
+        "base_dirs": list(base_dirs),
+        "mapper_count": mapper_total,
+        "statement_count": len(all_statements),
+        "statements": all_statements,
+        "joins": joins_out,
+        "table_usage": table_usage_merged,
+    }

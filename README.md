@@ -173,12 +173,25 @@ python main.py schema --table CUSTOMERS
 MyBatis, iBatis XML 모두 지원합니다.
 
 ```powershell
-# 기본 실행
+# 기본 실행 — 단일 mapper 폴더
 python main.py query /path/to/mybatis/mapper
 
 # 스키마 .md 기반 필터링 (스키마에 없는 테이블 제외, 권장)
 python main.py query /path/to/mybatis/mapper --schema-md ./output/스키마.md
+
+# 백엔드 여러 개 — --mapper-dir 반복 (positional 과 같이 사용 가능)
+python main.py query `
+  C:\workspace\backend\app1\src\main\resources\mapper `
+  --mapper-dir C:\workspace\backend\app2\src\main\resources\mapper `
+  --mapper-dir C:\workspace\backend\batch\src\main\resources\mapper `
+  --schema-md .\output\스키마.md
 ```
+
+**multi-dir 모드**:
+- 결과는 통합 `query.md` 1개 — JOIN 페어 `(table1, table2)` 기준 dedupe
+- 같은 JOIN 이 여러 backend 에 나오면 count 합산 + `sources` 에 백엔드명 누적
+- `table_usage` 도 합산 (as_main / as_join count + sources)
+- statements 각각에 `source_dir` 필드 — 어느 backend mapper 인지 추적
 
 ### 3. 스키마 코멘트 보강 (LLM)
 

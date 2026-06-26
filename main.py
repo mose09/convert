@@ -91,16 +91,28 @@ def cmd_schema(args):
 
 def cmd_query(args):
     """Analyze MyBatis/iBatis mapper XML files and extract relationships."""
-    from oracle_embeddings.mybatis_parser import parse_all_mappers
+    from oracle_embeddings.mybatis_parser import (
+        parse_all_mappers, parse_all_mappers_multi,
+    )
     from oracle_embeddings.storage import save_query_markdown
 
     config = load_config(args.config) if os.path.exists(args.config) else {}
     base_output = config.get("storage", {}).get("output_dir", "./output")
     output_dir = _build_dated_output_dir(base_output, "query")
 
-    mybatis_dir = args.mybatis_dir
-    if not os.path.isdir(mybatis_dir):
-        print(f"Error: Directory not found: {mybatis_dir}")
+    # 입력 dir 목록 수집 — positional + 반복 --mapper-dir 모두 허용
+    dirs: list[str] = []
+    if args.mybatis_dir:
+        dirs.append(args.mybatis_dir)
+    for d in (getattr(args, "mapper_dir", None) or []):
+        if d and d not in dirs:
+            dirs.append(d)
+    if not dirs:
+        print("Error: mapper 디렉토리 필요 — positional 또는 --mapper-dir 로 지정")
+        return
+    missing = [d for d in dirs if not os.path.isdir(d)]
+    if missing:
+        print(f"Error: 디렉토리 없음: {missing}")
         return
 
     # Load schema table names for filtering (optional)
@@ -111,7 +123,10 @@ def cmd_query(args):
         valid_tables = {t["name"] for t in schema["tables"]}
         print(f"Schema filter: {len(valid_tables)} tables loaded")
 
-    analysis = parse_all_mappers(mybatis_dir)
+    if len(dirs) == 1:
+        analysis = parse_all_mappers(dirs[0])
+    else:
+        analysis = parse_all_mappers_multi(dirs)
 
     # Filter joins/usage to only include tables in schema
     if valid_tables:
@@ -2594,7 +2609,15 @@ def main():
 
     # query command
     query_parser = subparsers.add_parser("query", help="Analyze MyBatis mapper XML files")
-    query_parser.add_argument("mybatis_dir", help="Path to MyBatis/iBatis mapper XML directory")
+    query_parser.add_argument("mybatis_dir", nargs="?", default=None,
+                               help="(단일) MyBatis/iBatis mapper XML 디렉토리. "
+                                    "여러 폴더면 --mapper-dir 반복 또는 둘 같이 사용 가능")
+    query_parser.add_argument("--mapper-dir", action="append", default=None,
+                               metavar="DIR",
+                               help="(반복 가능) 추가 MyBatis mapper 디렉토리. "
+                                    "백엔드 여러 개일 때 each --mapper-dir <path>. "
+                                    "결과는 통합 query.md 1개로 — JOIN 페어 dedupe + "
+                                    "source 백엔드 누적 표시.")
     query_parser.add_argument("--schema-md", help="Path to schema .md file (filters out non-existent tables)")
 
     # erd command (direct, requires Oracle connection)
