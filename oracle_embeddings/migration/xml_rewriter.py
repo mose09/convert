@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -285,6 +286,9 @@ def annotate_statements(
         new_tail = (
             "\n  " + body_text.lstrip(" \t\r\n") if body_text.strip() else "\n  "
         )
+        # 첫 줄만 lstrip + 2칸 재들여쓰기 되면서 줄 끝 주석 정렬이 다시
+        # 틀어질 수 있으므로, 최종 본문 형태에서 한 번 더 ``/*`` 정렬.
+        new_tail = _realign_trailing_comments(new_tail)
         comments[-1].tail = _maybe_cdata(new_tail)
 
 
@@ -515,6 +519,56 @@ def _compile_substitutions(
     return compiled
 
 
+def _disp_width(s: str) -> int:
+    """모노스페이스 표시 폭 (한글/CJK 전각 = 2칸)."""
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in s)
+
+
+# 줄 끝 인라인 주석 (``코드  /* 한글 */`` 또는 ``코드  -- ...``). 코드부 +
+# 공백 gap + 주석으로 분리. 코드부가 비면 (주석만 있는 줄) 매치 안 됨.
+_TRAILING_COMMENT_RE = re.compile(
+    r"^(?P<code>.*?\S)(?P<gap>[ \t]+)(?P<comment>/\*.*?\*/|--.*?)[ \t]*$"
+)
+
+
+def _realign_trailing_comments(text: str) -> str:
+    """식별자 치환으로 폭이 바뀐 뒤, 줄 끝 인라인 주석의 ``/*`` 시작을
+    윗줄과 다시 맞춘다.
+
+    AS-IS 에서 컬럼별로 정렬돼 있던 ``/* 한글 */`` 주석은 ``CUST_NM`` →
+    ``CUSTOMER_NAME`` 처럼 컬럼명 길이가 바뀌면 그만큼 밀려 어긋난다. 본
+    함수는 **연속된** 줄 끝 주석 줄 묶음마다 코드부 최대 표시폭 + 1칸에
+    ``/*`` 가 오도록 공백을 재패딩한다 (코드/주석 내용은 보존, 정렬만 교정).
+    표시폭 기준이라 한글이 섞여도 어긋나지 않는다.
+    """
+    if "\n" not in text or ("/*" not in text and "--" not in text):
+        return text
+    lines = text.split("\n")
+    parsed: List[Optional[Tuple[str, str]]] = []
+    for ln in lines:
+        m = _TRAILING_COMMENT_RE.match(ln)
+        parsed.append((m.group("code"), m.group("comment")) if m else None)
+
+    out = list(lines)
+    i, n = 0, len(lines)
+    while i < n:
+        if parsed[i] is None:
+            i += 1
+            continue
+        j = i
+        while j < n and parsed[j] is not None:
+            j += 1
+        if j - i >= 2:  # 2줄 이상 연속일 때만 정렬 의미 있음
+            target = max(_disp_width(parsed[k][0]) for k in range(i, j)) + 1
+            for k in range(i, j):
+                code, comment = parsed[k]
+                pad = max(target - _disp_width(code), 1)
+                out[k] = code + " " * pad + comment
+        i = j
+    return "\n".join(out)
+
+
 def _apply_subs_to_tree(
     root: etree._Element,
     subs: List[Tuple[re.Pattern, str]],
@@ -528,16 +582,19 @@ def _apply_subs_to_tree(
     text like ``&lt;= ...`` on serialization. When the text *does* change
     and contains XML special chars, we re-wrap with ``etree.CDATA(...)`` so
     the user's CDATA section survives the round-trip.
+
+    치환으로 식별자 폭이 바뀌면 줄 끝 정렬 주석이 어긋나므로,
+    ``_realign_trailing_comments`` 로 ``/*`` 시작을 다시 맞춘다.
     """
     for elem in root.iter():
         if elem.text:
             new_text = _apply_subs_outside_literals(elem.text, subs)
             if new_text != elem.text:
-                elem.text = _maybe_cdata(new_text)
+                elem.text = _maybe_cdata(_realign_trailing_comments(new_text))
         if elem.tail:
             new_tail = _apply_subs_outside_literals(elem.tail, subs)
             if new_tail != elem.tail:
-                elem.tail = _maybe_cdata(new_tail)
+                elem.tail = _maybe_cdata(_realign_trailing_comments(new_tail))
 
 
 def _maybe_cdata(text: str):
