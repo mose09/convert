@@ -283,11 +283,8 @@ def annotate_statements(
         # Body may carry XML special chars (e.g. raw ``<`` from the user's
         # ``<![CDATA[ ... <= ... ]]>``); ``_maybe_cdata`` re-wraps with
         # CDATA so they round-trip unchanged.
-        new_tail = (
-            "\n  " + body_text.lstrip(" \t\r\n") if body_text.strip() else "\n  "
-        )
-        # 첫 줄만 lstrip + 2칸 재들여쓰기 되면서 줄 끝 주석 정렬이 다시
-        # 틀어질 수 있으므로, 최종 본문 형태에서 한 번 더 ``/*`` 정렬.
+        new_tail = _reindent_body(body_text)
+        # 재들여쓰기 후 줄 끝 주석 ``/*`` 시작을 다시 맞춘다 (idempotent).
         new_tail = _realign_trailing_comments(new_tail)
         comments[-1].tail = _maybe_cdata(new_tail)
 
@@ -567,6 +564,40 @@ def _realign_trailing_comments(text: str) -> str:
                 out[k] = code + " " * pad + comment
         i = j
     return "\n".join(out)
+
+
+# 변환 본문을 ``<statement>`` 한 단계 안으로 들여쓸 때의 기준 들여쓰기.
+# 메타/AS-IS 주석 프레임이 2칸이므로 본문은 그보다 한 단계 깊은 4칸.
+_BODY_BASE_INDENT = "    "
+
+
+def _reindent_body(body_text: str) -> str:
+    """SQL 본문 블록을 ``<select>`` 등 statement 태그 한 단계 안으로
+    재들여쓰기. **내부 정렬(리딩 콤마 / 줄 끝 주석)은 그대로 유지**한다.
+
+    기존엔 첫 줄만 ``lstrip`` 후 2칸을 붙여, 첫 줄(``SELECT``)이 이어지는
+    ``, ...`` / ``FROM`` 줄과 어긋나고 본문이 태그 밑으로 안 들어갔다.
+    여기선 비어있지 않은 줄들의 공통 들여쓰기(common indent)만 벗기고
+    ``_BODY_BASE_INDENT`` 를 일괄로 다시 붙여, 상대 정렬을 보존하면서
+    블록 전체를 한 단계 안으로 옮긴다.
+    """
+    if not body_text.strip():
+        return "\n  "
+    lines = body_text.strip("\r\n").split("\n")
+    # 바깥쪽 공백-only 줄 제거 (원본 ``\n  `` 꼬리 등이 빈 줄로 남지 않게).
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    nonblank = [ln for ln in lines if ln.strip()]
+    common = min(
+        (len(ln) - len(ln.lstrip(" \t")) for ln in nonblank), default=0
+    )
+    rebased = [
+        (_BODY_BASE_INDENT + ln[common:]).rstrip() if ln.strip() else ""
+        for ln in lines
+    ]
+    return "\n" + "\n".join(rebased) + "\n  "
 
 
 def _apply_subs_to_tree(
