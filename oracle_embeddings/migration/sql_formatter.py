@@ -30,6 +30,7 @@ Scope 제한:
 """
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
@@ -38,6 +39,22 @@ from sqlglot import exp
 from sqlglot.errors import ParseError
 
 from .sql_rewriter import mask_mybatis_placeholders, unmask_mybatis_placeholders
+
+
+def _disp_width(s: str) -> int:
+    """모노스페이스 표시 폭. 한글/CJK 전각 문자는 2칸으로 계산한다.
+
+    인라인 주석 정렬을 ``len()`` (글자 수) 으로 하면 한글이 1칸으로 세져
+    에디터에서 ``/*`` ~ ``*/`` 가 안 맞는다 (한글은 실제 2칸). East Asian
+    Width 가 W(ide)/F(ullwidth) 인 문자만 2, 나머지 1.
+    """
+    return sum(2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+               for ch in s)
+
+
+def _pad_to(s: str, width: int) -> str:
+    """``s`` 우측에 공백을 채워 표시 폭이 ``width`` 가 되도록 (CJK 인식)."""
+    return s + " " * max(width - _disp_width(s), 0)
 
 
 # ---------------------------------------------------------------------------
@@ -718,13 +735,15 @@ class _Formatter:
     # ── 공통: 렌더 (폭 통일 + 주석 right-pad) ──────────────────────────
     def _render(self, lines: List[_Line]) -> str:
         # 각 줄의 ``prefix + text`` 길이의 max 에 맞춰 주석 시작 col 통일
+        # 폭 계산은 모두 표시 폭 (``_disp_width``) 기준 — 한글이 2칸이라
+        # ``len()`` 으로 맞추면 에디터에서 ``/*`` / ``*/`` 가 어긋난다.
         if self.style.normalize_comment_width and any(l.comment for l in lines):
-            body_widths = [len(l.prefix) + len(l.text) for l in lines]
+            body_widths = [_disp_width(l.prefix + l.text) for l in lines]
             target = max(body_widths) + 2  # text 뒤 2-space gap
             # 주석 본문 폭도 max 맞춤 — ``/* 한글 */`` 에서 ``한글`` 부분만.
             # 근데 좌->우 갈수록 주석 폭이 다를 수 있음 → 한 block 기준.
             comments_inner = [_strip_comment_braces(l.comment) for l in lines]
-            max_ci = max((len(c) for c in comments_inner if c), default=0)
+            max_ci = max((_disp_width(c) for c in comments_inner if c), default=0)
         else:
             target = 0
             comments_inner = [_strip_comment_braces(l.comment) for l in lines]
@@ -734,8 +753,8 @@ class _Formatter:
         for l, ci in zip(lines, comments_inner):
             body = l.prefix + l.text
             if l.comment:
-                pad = max(target - len(body), 1)
-                ci_padded = ci.ljust(max_ci) if max_ci else ci
+                pad = max(target - _disp_width(body), 1)
+                ci_padded = _pad_to(ci, max_ci) if max_ci else ci
                 out.append(body + " " * pad + f"/* {ci_padded} */")
             else:
                 out.append(body.rstrip())

@@ -898,17 +898,15 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: migrate-sql 리포트 제어문자 IllegalCharacterError
+### 진행 중: 변환 SQL 인라인 한글 주석 정렬 (CJK 표시폭)
 
-AS-IS SQL 본문에 XML 비허용 제어문자 (`\x00`~`\x08`/`\x0b`/`\x0c`/
-`\x0e`~`\x1f`) 가 섞이면 openpyxl 이 셀 쓰기에서 `IllegalCharacterError`
-→ 리포트 저장 실패 (converted XML 은 떨어짐).
+KoreanLegacy 포매터가 인라인 `/* 한글 */` 주석을 `len()` (글자 수) 으로
+정렬해서, 한글이 2칸인 모노스페이스 에디터에서 `/*` / `*/` 가 어긋남.
 
-- [x] `migration_report._san` + `_safe_append` — 모든 셀 값에서 제어문자
-      제거 (`ILLEGAL_CHARACTERS_RE`). 탭/개행/CR/한글 보존
-- [x] 34개 `ws.append` 전부 `_safe_append` 경유
-- [x] 회귀: _san 제거/보존 / _safe_append raise 없음 / e2e 제어문자 든
-      RewriteResult → 리포트 저장 + 재오픈 클린
+- [x] `_disp_width` (East Asian Width W/F → 2칸) + `_pad_to` 헬퍼
+- [x] `_render` 의 body/comment 폭 계산을 표시폭 기준으로 교체
+- [x] 회귀: _disp_width/_pad_to 단위 + e2e (/* 와 */ 표시폭 정렬 /
+      혼합 한글폭 / ASCII 회귀)
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
