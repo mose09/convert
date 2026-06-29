@@ -898,6 +898,19 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
+### 진행 중: `--to-be-schema-from-mapping` — 매핑에서 TO-BE 스키마 파생
+
+TO-BE DB / 스키마 .md 없이 매핑 yaml 만으로 migrate-sql 돌리기.
+
+- [x] `migration/schema_from_mapping.py` — `build_to_be_schema_tables()`
+      (`{TABLE: {COL}}`) + `build_to_be_schema_md()` (schema 호환 .md)
+- [x] main.py migrate-sql 분기 — 명시 스키마 우선, 없으면 매핑에서 파생,
+      파생본 `to_be_schema_derived_*.md` 출력
+- [x] `--to-be-schema-from-mapping` 플래그 + 한계(pass-through 오탐) 안내
+- [x] 회귀: 단위 7 케이스 (rename/split/merge/drop/type/value_map 추출,
+      md↔parse_schema_md 라운드트립, _safe_type) + e2e CLI 변환
+- [x] README §3.4 + user_manual 재빌드
+
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
 🟡 (실환경 드물 + 다른 검증 단계가 받쳐줌 → 운영 차단급 아님):

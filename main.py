@@ -1428,24 +1428,54 @@ def cmd_migrate_sql(args):
             print(f"  warning: --to-be-schema 무시됨 (파일 없음): {to_be_schema_path}")
         print("Mode: --format-only (매핑/스키마 없이 포매터만 적용, Stage A skip)")
     else:
+        derive_schema = getattr(args, "to_be_schema_from_mapping", False)
         if mapping_path is None:
             print("Error: --mapping 필수 (--format-only 로 매핑 없이 포매터만 돌릴 수 있음)")
-            return
-        if to_be_schema_path is None:
-            print("Error: --to-be-schema 필수 (--format-only 로 스키마 없이 돌릴 수 있음)")
             return
         if not mapping_path.is_file():
             print(f"Error: --mapping 파일 없음: {mapping_path}")
             return
-        if not to_be_schema_path.is_file():
-            print(f"Error: --to-be-schema 파일 없음: {to_be_schema_path}")
+        if to_be_schema_path is None and not derive_schema:
+            print("Error: --to-be-schema 필수 "
+                  "(또는 --to-be-schema-from-mapping 으로 매핑에서 파생, "
+                  "--format-only 로 스키마 없이 돌릴 수 있음)")
             return
-        to_be_schema_tables = load_schema_tables(to_be_schema_path)
-        try:
-            mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
-        except Exception as exc:
-            print(f"Error: 매핑 파일 로드 실패:\n{exc}")
-            return
+        if to_be_schema_path is not None:
+            # 명시 스키마가 우선 — --to-be-schema-from-mapping 와 같이 줘도
+            # 실제 스키마를 쓴다 (더 정확).
+            if not to_be_schema_path.is_file():
+                print(f"Error: --to-be-schema 파일 없음: {to_be_schema_path}")
+                return
+            to_be_schema_tables = load_schema_tables(to_be_schema_path)
+            try:
+                mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
+            except Exception as exc:
+                print(f"Error: 매핑 파일 로드 실패:\n{exc}")
+                return
+        else:
+            # --to-be-schema-from-mapping — 매핑 yaml 의 TO-BE 정보로 스키마
+            # 파생. 매핑을 먼저 (스키마 없이) 로드 → TO-BE 컬럼셋 추출 →
+            # 그걸로 매핑 재로드해서 unknown-table 검증을 자기 일관되게.
+            from oracle_embeddings.migration.schema_from_mapping import (
+                build_to_be_schema_md, build_to_be_schema_tables,
+            )
+            try:
+                mapping = load_mapping(mapping_path)
+            except Exception as exc:
+                print(f"Error: 매핑 파일 로드 실패:\n{exc}")
+                return
+            to_be_schema_tables = build_to_be_schema_tables(mapping)
+            try:
+                mapping = load_mapping(mapping_path, to_be_schema=to_be_schema_tables)
+            except Exception as exc:
+                print(f"Error: 매핑 파일 로드 실패:\n{exc}")
+                return
+            derived_schema_md = build_to_be_schema_md(mapping)
+            print(f"Mode: --to-be-schema-from-mapping "
+                  f"(매핑에서 TO-BE 스키마 파생 — {len(to_be_schema_tables)} 테이블, "
+                  f"{sum(len(c) for c in to_be_schema_tables.values())} 컬럼)")
+            print("  ⚠ pass-through(미변경) 컬럼은 파생 스키마에 없어 Stage A "
+                  "검증에서 오탐될 수 있음 (변환 XML 자체는 정상)")
 
     formats = {f.strip().lower() for f in (args.output_format or "excel,xml").split(",")}
     emit_excel = "excel" in formats
@@ -1489,6 +1519,16 @@ def cmd_migrate_sql(args):
     base_output = config.get("storage", {}).get("output_dir", "./output")
     out_root = Path(_build_dated_output_dir(base_output, "migration"))
     converted_root = out_root / "converted"
+
+    # 매핑에서 파생한 TO-BE 스키마는 사용자가 검토/보강할 수 있도록 .md 로
+    # 같이 떨어뜨린다 (다음 실행에 --to-be-schema 로 재사용 가능).
+    derived_md = locals().get("derived_schema_md")
+    if derived_md:
+        out_root.mkdir(parents=True, exist_ok=True)
+        derived_stamp = _dt.now().strftime("%Y%m%d_%H%M%S")
+        derived_path = out_root / f"to_be_schema_derived_{derived_stamp}.md"
+        derived_path.write_text(derived_md, encoding="utf-8")
+        print(f"Derived TO-BE schema: {derived_path}")
 
     for xml_path in xml_files:
         out = rewrite_xml(xml_path, mapping)
@@ -3127,7 +3167,14 @@ def main():
     ms_parser.add_argument("--mapping",
                            help="column_mapping.yaml 경로 (--format-only 면 생략 가능)")
     ms_parser.add_argument("--to-be-schema",
-                           help="TO-BE 스키마 .md (--format-only 면 생략 가능)")
+                           help="TO-BE 스키마 .md (--format-only / "
+                                "--to-be-schema-from-mapping 면 생략 가능)")
+    ms_parser.add_argument("--to-be-schema-from-mapping", action="store_true",
+                           help="TO-BE 스키마 .md 가 없을 때 매핑 yaml 의 "
+                                "TO-BE 정보로 스키마를 파생 (DB 없이 변환 가능). "
+                                "파생본은 to_be_schema_derived_*.md 로 출력. "
+                                "⚠ pass-through(미변경) 컬럼은 빠져 Stage A "
+                                "검증에서 오탐 가능 — 변환 XML 은 정상")
     ms_parser.add_argument("--terms-md",
                            help="(선택) terms_dictionary.md — 한글 주석 삽입용")
     ms_parser.add_argument("--output-format", default="excel,xml",
