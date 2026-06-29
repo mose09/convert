@@ -443,6 +443,24 @@ def _check_table_shape(
     return False
 
 
+def _as_is_hint(as_is: Any) -> str:
+    """원본 .md 에서 grep 가능한 AS-IS 식별자 라벨. 형식이 깨져 있어도
+    best-effort (``TABLE.COLUMN`` / merge 면 ``T.C+T.C``), 못 만들면 ``""``."""
+    def _one(node: Any) -> str:
+        if isinstance(node, dict):
+            t = node.get("table")
+            c = node.get("column")
+            if isinstance(t, str) and isinstance(c, str):
+                return f"{t}.{c}"
+        elif isinstance(node, str):
+            return node
+        return ""
+    if isinstance(as_is, list):
+        labels = [lab for lab in (_one(x) for x in as_is) if lab]
+        return "+".join(labels)
+    return _one(as_is)
+
+
 def _parse_columns(node: Any, errors: _Errors) -> List[ColumnMapping]:
     if node is None:
         return []
@@ -456,6 +474,12 @@ def _parse_columns(node: Any, errors: _Errors) -> List[ColumnMapping]:
         if not isinstance(entry, dict):
             errors.add("column entry must be a mapping", loc)
             continue
+        # AS-IS 식별자를 loc 에 붙여 — columns[] 인덱스는 원본 .md 행번호와
+        # 안 맞으므로, 사용자가 원본에서 grep 할 수 있는 AS-IS table.column
+        # 을 같이 노출한다 (예: ``columns[236 CUST.USE_FLAG]``).
+        hint = _as_is_hint(entry.get("as_is"))
+        if hint:
+            loc = f"columns[{idx} {hint}]"
 
         as_is = _parse_column_as_is(entry.get("as_is"), errors, f"{loc}.as_is")
         to_be, to_be_ok = _parse_column_to_be(entry, errors, f"{loc}.to_be")
@@ -595,7 +619,14 @@ def _parse_column_ref(
     t = node.get("table")
     c = node.get("column")
     if not isinstance(t, str) or not isinstance(c, str):
-        errors.add("column reference requires string 'table' and 'column'", loc)
+        # 실제 값을 함께 노출 — ``column: NO`` 처럼 무따옴표 YAML 토큰이
+        # bool/null 로 되읽힌 경우 (``column=False``) 를 사용자가 바로
+        # 알아보고 원본에서 따옴표 처리하도록.
+        errors.add(
+            "column reference requires string 'table' and 'column' "
+            f"(got table={t!r}, column={c!r})",
+            loc,
+        )
         return None
     ty = node.get("type")
     if ty is not None and not isinstance(ty, str):
