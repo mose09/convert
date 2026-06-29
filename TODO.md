@@ -898,15 +898,19 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 변환 SQL 인라인 한글 주석 정렬 (CJK 표시폭)
+### 진행 중: 변환 XML 본문 줄 끝 주석 /* 재정렬 (컬럼 치환 후)
 
-KoreanLegacy 포매터가 인라인 `/* 한글 */` 주석을 `len()` (글자 수) 으로
-정렬해서, 한글이 2칸인 모노스페이스 에디터에서 `/*` / `*/` 가 어긋남.
+`annotate_statements` 의 실제 본문은 원본 SQL 에 식별자만 in-place 치환
+(레이아웃 보존) → 컬럼명 길이 바뀌면 AS-IS 에서 정렬돼 있던 줄 끝
+`/* 한글 */` 주석이 그만큼 밀려 어긋남 (포매터 출력은 SUGGESTED 블록
+전용이라 본문엔 영향 X).
 
-- [x] `_disp_width` (East Asian Width W/F → 2칸) + `_pad_to` 헬퍼
-- [x] `_render` 의 body/comment 폭 계산을 표시폭 기준으로 교체
-- [x] 회귀: _disp_width/_pad_to 단위 + e2e (/* 와 */ 표시폭 정렬 /
-      혼합 한글폭 / ASCII 회귀)
+- [x] `xml_rewriter._realign_trailing_comments` — 치환 후 연속된 줄 끝
+      주석 줄 묶음의 `/*` 시작을 코드부 최대 표시폭+1 로 재정렬 (CJK 폭)
+- [x] `_apply_subs_to_tree` (text/tail) + `annotate_statements` 최종
+      본문 양쪽에서 호출 (annotate 가 첫 줄 재들여쓰기 → 재정렬 필요)
+- [x] 회귀: 단위 (기본/한글코드/단독주석보존/-- 주석/1줄) + e2e
+      (rewrite_xml+annotate → /* 한 컬럼) + CDATA `>=`·무주석 회귀
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
