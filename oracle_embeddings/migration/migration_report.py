@@ -49,6 +49,30 @@ _WRAP = Alignment(wrap_text=True, vertical="top")
 
 
 # ---------------------------------------------------------------------------
+# Cell sanitisation
+# ---------------------------------------------------------------------------
+#
+# AS-IS SQL 본문 / 에러 메시지에 XML 1.0 비허용 제어문자 (``\x00``~``\x08``,
+# ``\x0b``, ``\x0c``, ``\x0e``~``\x1f``) 가 섞여 있으면 openpyxl 이
+# ``IllegalCharacterError`` 를 던져 리포트 저장이 통째로 실패한다. 모든
+# append 를 :func:`_safe_append` 로 태워 셀 값에서 해당 문자를 제거한다.
+
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+
+def _san(v):
+    """문자열이면 XML 비허용 제어문자를 제거, 그 외 타입은 그대로."""
+    if isinstance(v, str):
+        return ILLEGAL_CHARACTERS_RE.sub("", v)
+    return v
+
+
+def _safe_append(sheet, row) -> None:
+    """``ws.append`` 대체 — 행의 모든 스칼라를 :func:`_san` 으로 정화."""
+    sheet.append([_san(v) for v in row])
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -90,15 +114,15 @@ def _write_summary(
     ws = wb.active
     ws.title = "Summary"
 
-    ws.append(["SQL Migration Report"])
+    _safe_append(ws, ["SQL Migration Report"])
     ws["A1"].font = _TITLE_FONT
-    ws.append(["Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-    ws.append([])
+    _safe_append(ws, ["Generated", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+    _safe_append(ws, [])
 
-    ws.append(["Mapping", str(mapping_path) if mapping_path else "-"])
-    ws.append(["MyBatis dir", str(mybatis_dir) if mybatis_dir else "-"])
-    ws.append(["Mapping version", mapping.version])
-    ws.append([])
+    _safe_append(ws, ["Mapping", str(mapping_path) if mapping_path else "-"])
+    _safe_append(ws, ["MyBatis dir", str(mybatis_dir) if mybatis_dir else "-"])
+    _safe_append(ws, ["Mapping version", mapping.version])
+    _safe_append(ws, [])
 
     total = len(results)
     status_count = Counter(r.status for r in results)
@@ -108,45 +132,45 @@ def _write_summary(
     unresolved = status_count.get("UNRESOLVED", 0)
     parse_fail = status_count.get("PARSE_FAIL", 0)
 
-    ws.append(["Total statements", total])
-    ws.append(["  AUTO", auto])
-    ws.append(["  AUTO_WARN", auto_warn])
-    ws.append(["  NEEDS_LLM", needs_llm])
-    ws.append(["  UNRESOLVED", unresolved])
-    ws.append(["  PARSE_FAIL", parse_fail])
-    ws.append([])
+    _safe_append(ws, ["Total statements", total])
+    _safe_append(ws, ["  AUTO", auto])
+    _safe_append(ws, ["  AUTO_WARN", auto_warn])
+    _safe_append(ws, ["  NEEDS_LLM", needs_llm])
+    _safe_append(ws, ["  UNRESOLVED", unresolved])
+    _safe_append(ws, ["  PARSE_FAIL", parse_fail])
+    _safe_append(ws, [])
 
     if total:
         automation_pct = (auto + auto_warn) / total * 100
-        ws.append(["Automation rate", f"{automation_pct:.1f}% (AUTO + AUTO_WARN)"])
+        _safe_append(ws, ["Automation rate", f"{automation_pct:.1f}% (AUTO + AUTO_WARN)"])
     else:
-        ws.append(["Automation rate", "-"])
+        _safe_append(ws, ["Automation rate", "-"])
 
     stage_a_ran = [r for r in results if r.stage_a_pass is not None]
     if stage_a_ran:
         pa = sum(1 for r in stage_a_ran if r.stage_a_pass) / len(stage_a_ran) * 100
-        ws.append(["Stage A pass rate", f"{pa:.1f}% ({sum(1 for r in stage_a_ran if r.stage_a_pass)}/{len(stage_a_ran)})"])
+        _safe_append(ws, ["Stage A pass rate", f"{pa:.1f}% ({sum(1 for r in stage_a_ran if r.stage_a_pass)}/{len(stage_a_ran)})"])
     else:
-        ws.append(["Stage A pass rate", "not run"])
+        _safe_append(ws, ["Stage A pass rate", "not run"])
 
     stage_b_ran = [r for r in results if r.stage_b_pass is not None]
     if stage_b_ran:
         pb = sum(1 for r in stage_b_ran if r.stage_b_pass) / len(stage_b_ran) * 100
-        ws.append(["Stage B pass rate", f"{pb:.1f}% ({sum(1 for r in stage_b_ran if r.stage_b_pass)}/{len(stage_b_ran)})"])
+        _safe_append(ws, ["Stage B pass rate", f"{pb:.1f}% ({sum(1 for r in stage_b_ran if r.stage_b_pass)}/{len(stage_b_ran)})"])
     else:
-        ws.append(["Stage B pass rate", "not run"])
+        _safe_append(ws, ["Stage B pass rate", "not run"])
 
-    ws.append([])
-    ws.append(["Statements by type"])
+    _safe_append(ws, [])
+    _safe_append(ws, ["Statements by type"])
     type_count = Counter(r.sql_type for r in results)
     for t, c in sorted(type_count.items()):
-        ws.append([f"  {t}", c])
+        _safe_append(ws, [f"  {t}", c])
 
-    ws.append([])
-    ws.append(["Method breakdown"])
+    _safe_append(ws, [])
+    _safe_append(ws, ["Method breakdown"])
     method_count = Counter(r.conversion_method for r in results)
     for m, c in sorted(method_count.items()):
-        ws.append([f"  {m}", c])
+        _safe_append(ws, [f"  {m}", c])
 
     ws.column_dimensions["A"].width = 30
     ws.column_dimensions["B"].width = 60
@@ -182,7 +206,7 @@ _CONVERSION_COLUMNS = [
 def _write_conversions(wb: Workbook, results: List[RewriteResult]) -> None:
     ws = wb.create_sheet("Conversions")
     headers = [h for h, _w in _CONVERSION_COLUMNS]
-    ws.append(headers)
+    _safe_append(ws, headers)
     for cell in ws[1]:
         cell.font = _HEADER_FONT
     for i, (_h, width) in enumerate(_CONVERSION_COLUMNS, start=1):
@@ -209,7 +233,7 @@ def _write_conversions(wb: Workbook, results: List[RewriteResult]) -> None:
             "; ".join(r.notes + r.warnings),
             r.last_modified.strftime("%Y-%m-%d %H:%M") if r.last_modified else "",
         ]
-        ws.append(row)
+        _safe_append(ws, row)
         fill = _status_fill(r)
         if fill is not None:
             for cell in ws[ws.max_row]:
@@ -230,7 +254,7 @@ def _write_validation_errors(wb: Workbook, results: List[RewriteResult]) -> None
         "No", "XML File", "Namespace", "SQL ID", "Status",
         "Stage A", "Stage B", "ORA Error", "Notes",
     ]
-    ws.append(headers)
+    _safe_append(ws, headers)
     for cell in ws[1]:
         cell.font = _HEADER_FONT
 
@@ -241,7 +265,7 @@ def _write_validation_errors(wb: Workbook, results: List[RewriteResult]) -> None
         or r.stage_b_pass is False
     ]
     for idx, r in enumerate(filtered, start=1):
-        ws.append([
+        _safe_append(ws, [
             idx,
             str(r.xml_file),
             r.namespace,
@@ -272,13 +296,13 @@ def _write_unresolved(wb: Workbook, results: List[RewriteResult]) -> None:
         "AS-IS SQL", "TO-BE SQL (suggested)",
         "Reason / Warnings", "LLM Confidence",
     ]
-    ws.append(headers)
+    _safe_append(ws, headers)
     for cell in ws[1]:
         cell.font = _HEADER_FONT
 
     filtered = [r for r in results if r.status in ("NEEDS_LLM", "UNRESOLVED")]
     for idx, r in enumerate(filtered, start=1):
-        ws.append([
+        _safe_append(ws, [
             idx,
             str(r.xml_file),
             r.namespace,
@@ -310,7 +334,7 @@ def _write_coverage(
     mapping: Mapping,
 ) -> None:
     ws = wb.create_sheet("Mapping Coverage")
-    ws.append([
+    _safe_append(ws, [
         "Kind", "AS-IS", "TO-BE", "Applied count",
         "XML file count", "Status",
     ])
@@ -373,7 +397,7 @@ def _coverage_lookup(
 def _append_coverage_row(
     ws, kind: str, as_is: str, to_be: str, count: int, file_count: int
 ) -> None:
-    ws.append([kind, as_is, to_be, count, file_count, "UNUSED" if count == 0 else ""])
+    _safe_append(ws, [kind, as_is, to_be, count, file_count, "UNUSED" if count == 0 else ""])
     if count == 0:
         for cell in ws[ws.max_row]:
             cell.fill = _GRAY_FILL

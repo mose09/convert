@@ -898,19 +898,17 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: convert-mapping YAML 1.1 불린 토큰 컬럼명 버그
+### 진행 중: migrate-sql 리포트 제어문자 IllegalCharacterError
 
-TO-BE 컬럼/테이블 이름이 `NO`/`ON`/`OFF`/`YES`/`TRUE`/`FALSE`/`NULL`
-같으면 `_scalar` 가 무따옴표로 출력 → 재로드 시 bool/null 로 해석 →
-loader 가 "column reference requires string" 으로 거부. 원본 .md 는 멀쩡.
+AS-IS SQL 본문에 XML 비허용 제어문자 (`\x00`~`\x08`/`\x0b`/`\x0c`/
+`\x0e`~`\x1f`) 가 섞이면 openpyxl 이 셀 쓰기에서 `IllegalCharacterError`
+→ 리포트 저장 실패 (converted XML 은 떨어짐).
 
-- [x] `_scalar` — 식별자 모양이어도 YAML 라운드트립 안 되는 토큰은
-      따옴표 (`_yaml_roundtrips_as_str` 가드)
-- [x] loader 에러에 실제 값 (`column=False`) + AS-IS 힌트
-      (`columns[236 CUST.USE_FLAG]`) 노출 — columns[] 인덱스 ≠ md 행번호
-      혼동 해소
-- [x] 회귀: _scalar 11종 토큰 / 정상 식별자 유지 / e2e NO·ON·OFF 변환 /
-      _as_is_hint / 에러 메시지 값 노출
+- [x] `migration_report._san` + `_safe_append` — 모든 셀 값에서 제어문자
+      제거 (`ILLEGAL_CHARACTERS_RE`). 탭/개행/CR/한글 보존
+- [x] 34개 `ws.append` 전부 `_safe_append` 경유
+- [x] 회귀: _san 제거/보존 / _safe_append raise 없음 / e2e 제어문자 든
+      RewriteResult → 리포트 저장 + 재오픈 클린
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
