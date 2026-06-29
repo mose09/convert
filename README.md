@@ -1290,8 +1290,33 @@ python main.py migrate-sql `
 - `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
 - `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
 - `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+- `--to-be-schema-from-mapping`: TO-BE 스키마 .md 가 아직 없을 때 매핑 yaml 의
+  TO-BE 정보로 스키마를 파생 (아래 §3.4 참고)
 - `--format-only`: 매핑 / TO-BE 스키마 없이 **포매터만** 적용 — 줄맞춤 / 메타블록
   양식 사전 검토용 (아래 §3.5 참고)
+
+**3.4) TO-BE 스키마 없이 변환 (`--to-be-schema-from-mapping`)**:
+
+매핑 yaml 은 작성했는데 **TO-BE 스키마 .md 가 아직 없을 때** (TO-BE DB
+미접속 등) 변환을 돌리는 방법. 매핑 yaml 에 이미 TO-BE 테이블/컬럼/타입/
+주석이 들어있으니 그걸로 TO-BE 스키마를 자동 파생합니다.
+
+```powershell
+python main.py migrate-sql `
+  --mybatis-dir C:\work\mapper `
+  --mapping input\column_mapping.yaml `
+  --to-be-schema-from-mapping
+```
+
+- 파생된 스키마는 `output/migration/<날짜>/to_be_schema_derived_*.md` 로
+  같이 떨어집니다 — 검토 후 pass-through 컬럼을 보강하거나, 다음 실행에
+  `--to-be-schema` 로 재사용 가능.
+- **⚠ 한계**: 매핑에 등장하지 않는 **pass-through 컬럼** (AS-IS 이름 그대로
+  TO-BE 에 존재) 은 파생 스키마에 없어 **Stage A 검증에서 오탐**(없는 컬럼)
+  으로 잡힐 수 있습니다. **변환된 XML 산출물 자체는 정상** — Conversions
+  시트를 보고, Validation Errors 시트의 pass-through 오탐은 무시하면 됩니다.
+- 정확한 Stage A 검증이 필요하면 실제 TO-BE 스키마 .md 를 `--to-be-schema`
+  로 넣으세요 (둘 다 주면 명시 스키마가 우선).
 
 **3.5) 매핑 작성 전 포매터 양식만 미리보기 (`--format-only`)**:
 
