@@ -681,10 +681,29 @@ def _scalar(v: Any) -> str:
     if isinstance(v, list):
         return "[" + ", ".join(_scalar(x) for x in v) + "]"
     s = str(v)
-    # Quote if contains special chars or looks ambiguous
-    if re.match(r"^[A-Za-z_][A-Za-z0-9_.,() -]*$", s) and ":" not in s:
+    # Quote if contains special chars or looks ambiguous. 식별자 모양이어도
+    # YAML 1.1 이 다른 타입으로 되읽는 토큰 (``NO``/``ON``/``OFF``/``YES``/
+    # ``TRUE``/``FALSE``/``NULL`` 등 → bool/null) 은 반드시 따옴표로 감싼다.
+    # 안 그러면 TO-BE 컬럼명이 우연히 이런 단어일 때 loader 가
+    # "column reference requires string" 으로 거부한다.
+    if (re.match(r"^[A-Za-z_][A-Za-z0-9_.,() -]*$", s) and ":" not in s
+            and _yaml_roundtrips_as_str(s)):
         return s
     return '"' + s.replace('"', '\\"') + '"'
+
+
+def _yaml_roundtrips_as_str(s: str) -> bool:
+    """``s`` 를 무따옴표로 써도 YAML 이 같은 문자열로 되읽는가?
+
+    ``yaml.safe_load("NO")`` → ``False`` 처럼 식별자 모양이어도 스칼라
+    타입이 바뀌는 토큰을 걸러낸다. 파싱 실패 (특수문자 등) 도 안전하게
+    "따옴표 필요" 로 본다.
+    """
+    try:
+        import yaml as _yaml
+        return _yaml.safe_load(s) == s
+    except Exception:
+        return False
 
 
 # ---------------------------------------------------------------------------

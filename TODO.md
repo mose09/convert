@@ -898,18 +898,19 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: `--to-be-schema-from-mapping` — 매핑에서 TO-BE 스키마 파생
+### 진행 중: convert-mapping YAML 1.1 불린 토큰 컬럼명 버그
 
-TO-BE DB / 스키마 .md 없이 매핑 yaml 만으로 migrate-sql 돌리기.
+TO-BE 컬럼/테이블 이름이 `NO`/`ON`/`OFF`/`YES`/`TRUE`/`FALSE`/`NULL`
+같으면 `_scalar` 가 무따옴표로 출력 → 재로드 시 bool/null 로 해석 →
+loader 가 "column reference requires string" 으로 거부. 원본 .md 는 멀쩡.
 
-- [x] `migration/schema_from_mapping.py` — `build_to_be_schema_tables()`
-      (`{TABLE: {COL}}`) + `build_to_be_schema_md()` (schema 호환 .md)
-- [x] main.py migrate-sql 분기 — 명시 스키마 우선, 없으면 매핑에서 파생,
-      파생본 `to_be_schema_derived_*.md` 출력
-- [x] `--to-be-schema-from-mapping` 플래그 + 한계(pass-through 오탐) 안내
-- [x] 회귀: 단위 7 케이스 (rename/split/merge/drop/type/value_map 추출,
-      md↔parse_schema_md 라운드트립, _safe_type) + e2e CLI 변환
-- [x] README §3.4 + user_manual 재빌드
+- [x] `_scalar` — 식별자 모양이어도 YAML 라운드트립 안 되는 토큰은
+      따옴표 (`_yaml_roundtrips_as_str` 가드)
+- [x] loader 에러에 실제 값 (`column=False`) + AS-IS 힌트
+      (`columns[236 CUST.USE_FLAG]`) 노출 — columns[] 인덱스 ≠ md 행번호
+      혼동 해소
+- [x] 회귀: _scalar 11종 토큰 / 정상 식별자 유지 / e2e NO·ON·OFF 변환 /
+      _as_is_hint / 에러 메시지 값 노출
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
