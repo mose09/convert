@@ -898,17 +898,20 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 변환 XML 비교 연산자 국소 CDATA
+### 진행 중: 동적 태그(<if>) 들여쓰기 — SQL 본문 +탭×depth
 
-기존엔 본문에 `<>`/`>=` 가 하나라도 있으면 SELECT 본문 **전체**를
-`<![CDATA[...]]>` 로 감쌌다. MyBatis 관용대로 **연산자만** 국소 래핑하도록.
+`<if>`/`<choose>`/`<foreach>`/`<where>` 등 동적 태그를 SQL 본문(4칸)보다
+**탭 × 중첩깊이** 더 깊게. 안쪽 SQL 은 바깥 SQL 과 동일 정렬.
 
-- [x] `_maybe_cdata` 본문 전체 래핑 제거 (text/tail + annotate 본문)
-- [x] `_localize_cdata_operators` — 직렬화 후 태그 밖 텍스트의 escape 된
-      `&lt;&gt;`/`&lt;=`/`&gt;=`/`&lt;`/`&gt;` 만 `<![CDATA[..]]>` 로 래핑.
-      속성값/주석은 태그 split 으로 보존
-- [x] 회귀: 단위 (연산자 5종 / 속성 보존 / 주석 보존 / idempotent) + e2e
-      (활성 본문 연산자만 CDATA, 전체 래핑 없음) + realign/reindent 회귀
+- [x] `_reindent_dynamic` — body_owner.tail(첫 태그 앞 SQL) + 모든 동적
+      자식 text/tail 을 **전역 common** 으로 일괄 dedent→rebase (조각 간
+      상대정렬 보존 → 안쪽이 바깥과 정렬)
+- [x] `_dyn_indent(depth)` = `_BODY_BASE_INDENT + \t×depth`. 중첩 <if> 안
+      <if> 는 탭2개. `</if>` 도 depth 정합
+- [x] annotate: 동적 자식 있으면 raw 본문 → `_reindent_dynamic`, 없으면
+      기존 `_reindent_body`
+- [x] 회귀: 단위 (기본/중첩/다중sibling+ORDER BY/무동적) + CDATA·realign·
+      reindent 회귀
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
