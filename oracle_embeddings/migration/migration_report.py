@@ -212,6 +212,9 @@ def _write_conversions(wb: Workbook, results: List[RewriteResult]) -> None:
     for i, (_h, width) in enumerate(_CONVERSION_COLUMNS, start=1):
         ws.column_dimensions[get_column_letter(i)].width = width
 
+    # row_idx 직접 추적 — ws.max_row (O(행수)) 반복 회피 (statement 수가
+    # 많을 때 O(n²) 방지).
+    row_idx = 1  # 헤더가 row 1
     for idx, r in enumerate(results, start=1):
         row = [
             idx,
@@ -234,13 +237,14 @@ def _write_conversions(wb: Workbook, results: List[RewriteResult]) -> None:
             r.last_modified.strftime("%Y-%m-%d %H:%M") if r.last_modified else "",
         ]
         _safe_append(ws, row)
+        row_idx += 1
         fill = _status_fill(r)
         if fill is not None:
-            for cell in ws[ws.max_row]:
-                cell.fill = fill
+            for col in range(1, len(row) + 1):
+                ws.cell(row=row_idx, column=col).fill = fill
         # Wrap long SQL
         for col_idx in (6, 7, 11, 17):
-            ws.cell(row=ws.max_row, column=col_idx).alignment = _WRAP
+            ws.cell(row=row_idx, column=col_idx).alignment = _WRAP
 
 
 # ---------------------------------------------------------------------------
@@ -264,6 +268,7 @@ def _write_validation_errors(wb: Workbook, results: List[RewriteResult]) -> None
         or r.stage_a_pass is False
         or r.stage_b_pass is False
     ]
+    row_idx = 1  # 헤더가 row 1
     for idx, r in enumerate(filtered, start=1):
         _safe_append(ws, [
             idx,
@@ -276,8 +281,9 @@ def _write_validation_errors(wb: Workbook, results: List[RewriteResult]) -> None
             r.parse_error or "",
             "; ".join(r.warnings + r.notes),
         ])
-        for cell in ws[ws.max_row]:
-            cell.fill = _ERROR_FILL
+        row_idx += 1
+        for col in range(1, 10):
+            ws.cell(row=row_idx, column=col).fill = _ERROR_FILL
 
     widths = [6, 40, 28, 28, 14, 10, 10, 50, 30]
     for i, w in enumerate(widths, start=1):
@@ -301,6 +307,7 @@ def _write_unresolved(wb: Workbook, results: List[RewriteResult]) -> None:
         cell.font = _HEADER_FONT
 
     filtered = [r for r in results if r.status in ("NEEDS_LLM", "UNRESOLVED")]
+    row_idx = 1  # 헤더가 row 1
     for idx, r in enumerate(filtered, start=1):
         _safe_append(ws, [
             idx,
@@ -313,10 +320,11 @@ def _write_unresolved(wb: Workbook, results: List[RewriteResult]) -> None:
             "; ".join(r.warnings + r.notes) or "-",
             f"{r.llm_confidence:.2f}" if r.llm_confidence is not None else "",
         ])
-        for cell in ws[ws.max_row]:
-            cell.fill = _WARN_FILL
+        row_idx += 1
+        for col in range(1, 10):
+            ws.cell(row=row_idx, column=col).fill = _WARN_FILL
         for col_idx in (6, 7, 8):
-            ws.cell(row=ws.max_row, column=col_idx).alignment = _WRAP
+            ws.cell(row=row_idx, column=col_idx).alignment = _WRAP
 
     widths = [6, 40, 28, 28, 14, 60, 60, 40, 14]
     for i, w in enumerate(widths, start=1):
@@ -353,14 +361,21 @@ def _write_coverage(
             grouped_count[key] += c.count
             grouped_files.setdefault(key, set()).add(str(r.xml_file))
 
-    # Emit tables first, then columns — grouped by mapping entry
+    # Emit tables first, then columns — grouped by mapping entry.
+    # 행 인덱스를 직접 추적한다. 예전엔 ``ws[ws.max_row]`` 로 방금 쓴 행을
+    # 다시 읽어 fill 을 칠했는데, ``max_row`` 가 매 호출 O(행수) 라 매핑이
+    # 2만건 넘으면 O(n²) (실측 24k → 88s). row_idx 카운터 + O(1)
+    # ``ws.cell`` 로 교체.
+    row_idx = 1  # 헤더가 row 1
     for tm in mapping.tables:
         to_be_str = ",".join(tm.to_be_tables()) or "<dropped>"
         for as_is_name in tm.as_is_tables():
             count, files = _coverage_lookup(
                 grouped_count, grouped_files, "table", as_is_name.upper()
             )
-            _append_coverage_row(ws, tm.type, as_is_name.upper(), to_be_str, count, len(files))
+            row_idx += 1
+            _append_coverage_row(ws, row_idx, tm.type, as_is_name.upper(),
+                                 to_be_str, count, len(files))
 
     for cm in mapping.columns:
         # Build to_be display
@@ -375,7 +390,9 @@ def _write_coverage(
             count, files = _coverage_lookup(
                 grouped_count, grouped_files, "column", as_is_disp.upper()
             )
-            _append_coverage_row(ws, cm.kind, as_is_disp.upper(), to_be_disp, count, len(files))
+            row_idx += 1
+            _append_coverage_row(ws, row_idx, cm.kind, as_is_disp.upper(),
+                                 to_be_disp, count, len(files))
 
     widths = [14, 30, 40, 14, 16, 12]
     for i, w in enumerate(widths, start=1):
@@ -395,12 +412,14 @@ def _coverage_lookup(
 
 
 def _append_coverage_row(
-    ws, kind: str, as_is: str, to_be: str, count: int, file_count: int
+    ws, row_idx: int, kind: str, as_is: str, to_be: str,
+    count: int, file_count: int,
 ) -> None:
     _safe_append(ws, [kind, as_is, to_be, count, file_count, "UNUSED" if count == 0 else ""])
     if count == 0:
-        for cell in ws[ws.max_row]:
-            cell.fill = _GRAY_FILL
+        # row_idx 직접 사용 — ws[ws.max_row] (O(n)) 회피.
+        for col in range(1, 7):
+            ws.cell(row=row_idx, column=col).fill = _GRAY_FILL
 
 
 # ---------------------------------------------------------------------------
