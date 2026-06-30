@@ -1534,13 +1534,7 @@ def cmd_migrate_sql(args):
         derived_path.write_text(derived_md, encoding="utf-8")
         print(f"Derived TO-BE schema: {derived_path}")
 
-    timing = getattr(args, "timing", False)
-    import time as _time
-    loop_t0 = _time.perf_counter()
-    slow_files = []  # (path, seconds) — --timing 일 때 느린 파일만 기록
-
     for xml_path in xml_files:
-        file_t0 = _time.perf_counter() if timing else 0.0
         out = rewrite_xml(xml_path, mapping)
         if out.parse_error:
             print(f"  skip (parse err): {xml_path}: {out.parse_error}")
@@ -1633,13 +1627,6 @@ def cmd_migrate_sql(args):
             out_path = converted_root / rel
             serialize_tree(out.tree, out_path)
 
-        if timing:
-            dt = _time.perf_counter() - file_t0
-            if dt >= 1.0:  # 느린 파일만 노출 (출력 최소화)
-                slow_files.append((xml_path, dt))
-
-    loop_elapsed = _time.perf_counter() - loop_t0
-
     # Stats
     from collections import Counter
     status_count = Counter(r.status for r in all_results)
@@ -1660,26 +1647,14 @@ def cmd_migrate_sql(args):
         print(f"Stage A: {stage_a_passed}/{stage_a_ran} pass "
               f"({stage_a_passed / stage_a_ran * 100:.1f}%)")
 
-    if timing:
-        print(f"[timing] 변환 루프: {loop_elapsed:.1f}s "
-              f"({len(xml_files)} 파일)")
-        if slow_files:
-            slow_files.sort(key=lambda x: x[1], reverse=True)
-            print(f"[timing] 느린 파일 {len(slow_files)}개 (>1s) — 상위 5:")
-            for p, dt in slow_files[:5]:
-                print(f"[timing]   {dt:6.1f}s  {p}")
-
     if emit_excel:
         ts = _dt.now().strftime("%Y%m%d_%H%M%S")
         report_path = out_root / f"sql_migration_{ts}.xlsx"
-        _report_t0 = _time.perf_counter()
         write_migration_report(
             all_results, mapping, report_path,
             mybatis_dir=mybatis_dir,
             mapping_path=mapping_path,
         )
-        if timing:
-            print(f"[timing] 리포트 생성: {_time.perf_counter() - _report_t0:.1f}s")
         print(f"Excel report: {report_path}")
     if emit_xml and not args.dry_run:
         print(f"Converted XML: {converted_root}")
@@ -3218,9 +3193,6 @@ def main():
                            help="NEEDS_LLM 상태 statement 를 LLM 으로 보조 변환")
     ms_parser.add_argument("--dry-run", action="store_true",
                            help="XML 파일은 쓰지 않고 리포트만 생성")
-    ms_parser.add_argument("--timing", action="store_true",
-                           help="단계별 소요시간 출력 (변환 루프 / 리포트 생성 / "
-                                "1초 넘는 느린 파일 상위 5개) — 어디서 느린지 진단용")
     ms_parser.add_argument("--no-validate", action="store_true",
                            help="Stage A (sqlglot static) 검증 건너뜀 — DB "
                                 "접속 안 함. TO-BE 스키마/DB 미완성이라 "
