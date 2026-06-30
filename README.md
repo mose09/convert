@@ -1290,6 +1290,11 @@ python main.py migrate-sql `
 - `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
 - `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
 - `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+- `--no-validate`: **Stage A (sqlglot static) 검증 건너뜀** — DB 접속 안 함
+  (Stage A 는 원래 DB 불필요). TO-BE 스키마/DB 미완성이라 `--to-be-schema-from-mapping`
+  의 pass-through 오탐이 Validation Errors 에 쌓이거나, statement 가 많아 검증이
+  느릴 때 사용. 건너뛰면 Stage A 컬럼은 리포트에 `-`. 변환 자체는 그대로 수행.
+  (DB parse-only 검증은 별도 명령 `validate-migration` = Stage B)
 - `--to-be-schema-from-mapping`: TO-BE 스키마 .md 가 아직 없을 때 매핑 yaml 의
   TO-BE 정보로 스키마를 파생 (아래 §3.4 참고)
 - `--format-only`: 매핑 / TO-BE 스키마 없이 **포매터만** 적용 — 줄맞춤 / 메타블록
