@@ -898,13 +898,17 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: `--timing` 제거 (역할 종료)
+### 진행 중: 변환 XML 비교 연산자 국소 CDATA
 
-리포트 O(n²) 병목 진단에 쓴 임시 옵션. 병목(대형 매핑 리포트) 확정·수정
-완료(#350)되어 더 필요 없음 → 제거.
+기존엔 본문에 `<>`/`>=` 가 하나라도 있으면 SELECT 본문 **전체**를
+`<![CDATA[...]]>` 로 감쌌다. MyBatis 관용대로 **연산자만** 국소 래핑하도록.
 
-- [x] main.py `--timing` 플래그 + 계측 코드 제거
-- [x] README §12 플래그 목록 + user_manual 재빌드
+- [x] `_maybe_cdata` 본문 전체 래핑 제거 (text/tail + annotate 본문)
+- [x] `_localize_cdata_operators` — 직렬화 후 태그 밖 텍스트의 escape 된
+      `&lt;&gt;`/`&lt;=`/`&gt;=`/`&lt;`/`&gt;` 만 `<![CDATA[..]]>` 로 래핑.
+      속성값/주석은 태그 split 으로 보존
+- [x] 회귀: 단위 (연산자 5종 / 속성 보존 / 주석 보존 / idempotent) + e2e
+      (활성 본문 연산자만 CDATA, 전체 래핑 없음) + realign/reindent 회귀
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 

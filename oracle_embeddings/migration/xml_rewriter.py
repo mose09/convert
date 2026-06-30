@@ -182,7 +182,38 @@ def serialize_tree(tree: etree._ElementTree, out_path: Path) -> None:
         pretty_print=False,
         standalone=None,
     )
-    out_path.write_bytes(_pretty_cdata_breaks(raw))
+    out_path.write_bytes(_pretty_cdata_breaks(_localize_cdata_operators(raw)))
+
+
+# 텍스트 영역(태그 밖)에서 escape 된 비교 연산자만 국소 CDATA 로 감싼다.
+# 긴 것 우선 (``&lt;&gt;`` 가 ``&lt;`` 보다 먼저). 속성값/주석 안의 연산자는
+# 건드리지 않는다 — 분리 시 태그 토큰은 그대로 두기 때문 (아래 참고).
+_ESCAPED_OP_RE = re.compile(rb"&lt;=|&gt;=|&lt;&gt;|&lt;|&gt;")
+_TAG_SPLIT_RE = re.compile(rb"(<[^>]*>)")
+
+
+def _localize_cdata_operators(xml_bytes: bytes) -> bytes:
+    """``A.STS &lt;&gt; 'D'`` → ``A.STS <![CDATA[<>]]> 'D'``.
+
+    lxml 이 SQL 본문의 ``<`` / ``>`` 비교 연산자를 ``&lt;`` / ``&gt;`` 로
+    escape 하는데, MyBatis 관용대로 그 **연산자만** ``<![CDATA[..]]>`` 로
+    국소 래핑한다 (SELECT 전체를 감싸지 않음).
+
+    안전성: ``<[^>]*>`` 로 split 하면 실제 태그(``<select>`` / ``<if ...>``)
+    와 속성값(``test="a &lt; b"`` — 이스케이프 엔티티에 literal ``>`` 가
+    없어 태그 토큰 안에 그대로 포함)은 토큰으로 분리돼 건드리지 않는다.
+    주석 안의 연산자는 raw ``<>`` 라 ``&lt;``/``&gt;`` 가 아니므로 매칭 안 됨.
+    """
+    def _wrap(m: "re.Match") -> bytes:
+        op = m.group(0).replace(b"&lt;", b"<").replace(b"&gt;", b">")
+        return b"<![CDATA[" + op + b"]]>"
+
+    parts = _TAG_SPLIT_RE.split(xml_bytes)
+    # split 결과: 짝수 인덱스 = 태그 밖 텍스트, 홀수 인덱스 = 태그 토큰
+    for i in range(0, len(parts), 2):
+        if b"&lt;" in parts[i] or b"&gt;" in parts[i]:
+            parts[i] = _ESCAPED_OP_RE.sub(_wrap, parts[i])
+    return b"".join(parts)
 
 
 # Post-process patterns. Each replacement preserves the original characters
@@ -280,13 +311,13 @@ def annotate_statements(
             # Spacer between comments (overwritten on the last comment below).
             comment.tail = "\n  "
         # Reattach the original SQL body so it appears AFTER all comments.
-        # Body may carry XML special chars (e.g. raw ``<`` from the user's
-        # ``<![CDATA[ ... <= ... ]]>``); ``_maybe_cdata`` re-wraps with
-        # CDATA so they round-trip unchanged.
+        # 본문의 ``<`` / ``>`` 비교 연산자는 직렬화 시 escape 되지만,
+        # ``_localize_cdata_operators`` 후처리가 그 연산자만 국소 CDATA 로
+        # 감싼다 (SELECT 본문 전체를 CDATA 로 감싸지 않음).
         new_tail = _reindent_body(body_text)
         # 재들여쓰기 후 줄 끝 주석 ``/*`` 시작을 다시 맞춘다 (idempotent).
         new_tail = _realign_trailing_comments(new_tail)
-        comments[-1].tail = _maybe_cdata(new_tail)
+        comments[-1].tail = new_tail
 
 
 # ---------------------------------------------------------------------------
@@ -608,11 +639,13 @@ def _apply_subs_to_tree(
 
     Critically, we **only reassign elem.text / elem.tail when the value
     actually changed**. Reassigning a string to ``elem.text`` clobbers
-    lxml's internal CDATA marker even if the new value is identical — that
-    would silently turn ``<![CDATA[ ... <= ... ]]>`` into entity-escaped
-    text like ``&lt;= ...`` on serialization. When the text *does* change
-    and contains XML special chars, we re-wrap with ``etree.CDATA(...)`` so
-    the user's CDATA section survives the round-trip.
+    lxml's internal CDATA marker even when the value is identical — so
+    untouched nodes keep their original CDATA (``strip_cdata=False``).
+
+    When the text *does* change we assign plain text; ``<`` / ``>`` 비교
+    연산자는 lxml 이 ``&lt;`` / ``&gt;`` 로 escape 하지만, 직렬화 후처리
+    (:func:`_localize_cdata_operators`) 가 그 연산자만 ``<![CDATA[..]]>``
+    로 국소 래핑한다 (SELECT 본문 전체를 감싸지 않음).
 
     치환으로 식별자 폭이 바뀌면 줄 끝 정렬 주석이 어긋나므로,
     ``_realign_trailing_comments`` 로 ``/*`` 시작을 다시 맞춘다.
@@ -621,25 +654,11 @@ def _apply_subs_to_tree(
         if elem.text:
             new_text = _apply_subs_outside_literals(elem.text, subs)
             if new_text != elem.text:
-                elem.text = _maybe_cdata(_realign_trailing_comments(new_text))
+                elem.text = _realign_trailing_comments(new_text)
         if elem.tail:
             new_tail = _apply_subs_outside_literals(elem.tail, subs)
             if new_tail != elem.tail:
-                elem.tail = _maybe_cdata(_realign_trailing_comments(new_tail))
-
-
-def _maybe_cdata(text: str):
-    """Wrap ``text`` with ``etree.CDATA`` when it carries XML-significant
-    characters that lxml would otherwise entity-escape — ``<``, ``>``, or
-    ``&``. Note that ``>`` is *technically* legal as plain text in XML 1.0,
-    but lxml's serializer escapes it to ``&gt;`` regardless, which breaks
-    SQL like ``AMT >= 100``. Wrapping in CDATA preserves all three
-    verbatim. Returns the original string when nothing needs escaping or
-    an ``etree.CDATA`` object that emits as ``<![CDATA[...]]>``.
-    """
-    if text and any(c in text for c in "<>&"):
-        return etree.CDATA(text)
-    return text
+                elem.tail = _realign_trailing_comments(new_tail)
 
 
 def _apply_subs(text: str, subs: List[Tuple[re.Pattern, str]]) -> str:
