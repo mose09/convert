@@ -729,11 +729,15 @@ def _dyn_indent(depth: int) -> str:
 def _child_indent(child, parent_depth: int) -> str:
     """``parent_depth`` 안에 있는 ``child`` 태그를 배치할 들여쓰기.
 
-    블록 동적태그(``<if>`` 등)는 ``_dyn_indent`` (탭), 인라인(``<bind>``/
-    ``<include>``)은 SQL 본문 기준(4칸)."""
+    블록 동적태그(``<if>`` 등)는 ``_dyn_indent(parent_depth+1)`` (탭).
+    인라인(``<bind>``/``<include>``)은 statement 최상위(``parent_depth==0``)
+    에선 SQL 본문 기준(4칸), 동적 태그 안(``parent_depth>=1``)에선 그
+    동적 태그보다 한 탭 더 (= ``_dyn_indent(parent_depth+1)``). 예: ``<if>``
+    안의 ``<bind>`` 는 ``<if>`` 보다 한 탭 더."""
     if _is_dynamic(child):
         return _dyn_indent(parent_depth + 1)
-    return _BODY_BASE_INDENT
+    return (_BODY_BASE_INDENT if parent_depth == 0
+            else _dyn_indent(parent_depth + 1))
 
 
 def _reindent_dynamic(stmt, body_owner) -> None:

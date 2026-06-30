@@ -898,19 +898,13 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: WHERE `=` 정렬 + `<bind/>` self-closing 유지
+### 진행 중: 변환 XML 레이아웃 마감 (bind depth / 태그 들여쓰기 / AS-IS 위치)
 
-- [x] `_realign_equals` — 연속 `컬럼 = 값` 줄의 `=` 를 표시폭 정렬 (컬럼
-      rename 으로 lhs 폭 바뀐 경우 교정). `<=`/`>=`/`<>`/`!=` 제외.
-      `_emit_sql_fragment` + `_reindent_body` 양쪽 적용
-- [x] `<bind>`/`<include>` 를 `_INLINE_TAGS` 로 분리 — 블록 동적태그처럼
-      `.text` 설정 안 함 → `<bind .../>` self-closing 유지 (기존엔
-      `<bind></bind>` 로 펼쳐짐), SQL 본문 기준(4칸) 들여쓰기
-- [x] `_emit_mixed` — 혼합 콘텐츠 일반 처리 (동적/인라인 자식 + 그 사이
-      SQL 조각 전부 재들여쓰기). annotate 트리거를 "element 자식 존재" 로
-      확장 (bind-only statement 도 본문 재들여쓰기)
-- [x] 회귀: 단위 (=정렬/연산자제외/1줄, bind self-closing/4칸/bind.tail) +
-      동적·CDATA·realign·reindent 회귀
+- [x] 인라인 태그(`<bind>`/`<include>`)가 동적 태그 안(parent_depth≥1)에
+      있으면 그 태그보다 한 탭 더 (`_dyn_indent(depth+1)`). 최상위는 4칸
+- [ ] `<select>`/`<update>`/`<delete>` 등 statement 태그를 `<mapper>`
+      아래 한 단계(탭) 들여쓰기 + 안쪽 주석/본문도 그만큼 시프트
+- [ ] AS-IS (original) 주석 블록을 `<select>` 안 → 바로 위(밖)로 이동
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
