@@ -898,15 +898,16 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: migrate-sql `--timing` — 단계별 소요시간 진단
+### 진행 중: 리포트 생성 O(n²) 병목 — 대형 매핑 (2.4만건)
 
-"변환 후 마지막에 오래 걸린다"는 보고가 어느 단계(변환 루프 / 리포트 /
-특정 파일)인지 폐쇄망에서 1~2줄로 자가분류하기 위한 진단 옵션.
+매핑 2.4만건일 때 리포트 생성이 88s. `--timing` 으로 병목이 리포트
+단계임을 확인 → Mapping Coverage 가 행마다 `ws[ws.max_row]` 로 방금 쓴
+행을 다시 읽어 fill — `max_row` 가 매 호출 O(행수) 라 O(n²).
 
-- [x] `--timing` 플래그 — 변환 루프 총시간, 리포트 생성 시간, 1초 넘는
-      느린 파일 상위 5개 출력 (출력 최소화)
-- [x] README §12 주요 플래그 + user_manual 재빌드
-- [ ] 사용자 실데이터 `--timing` 결과로 병목 단계 확정 → 후속 최적화
+- [x] coverage / conversions / validation / unresolved 시트의
+      `ws[ws.max_row]` 패턴을 row_idx 카운터 + O(1) `ws.cell` 로 교체
+- [x] 측정: 24,000 컬럼 매핑 리포트 87.8s → 2.6s (34배)
+- [x] 정확성: UNUSED 회색칠 행 정렬 / 상태별 색칠 / 필터 행수 회귀
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
