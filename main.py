@@ -1508,6 +1508,10 @@ def cmd_migrate_sql(args):
         print(f"Korean comment lookup: {len(ko_lookup)} entries (source: {cs})")
 
     # Collect XML files
+    if args.no_validate and not args.format_only:
+        print("Stage A: skipped (--no-validate) — sqlglot 검증 안 함, "
+              "DB 접속 없음")
+
     if single_file_mode:
         xml_files = xml_files_iter
         print(f"Scanning 1 XML file (single-file mode): {mybatis_dir}")
@@ -1537,10 +1541,11 @@ def cmd_migrate_sql(args):
             continue
 
         for rr in out.results:
-            # Stage A — skipped under --format-only since there's no schema
-            # to look identifiers up against. stage_a_pass stays None →
-            # report shows "-".
-            if rr.to_be_sql and not args.format_only:
+            # Stage A — skipped under --format-only (no schema to look
+            # identifiers up against) or --no-validate (사용자가 명시적으로
+            # 끔 — 파생 스키마 pass-through 오탐이 쌓이거나 statement 가
+            # 많아 느릴 때). stage_a_pass stays None → report shows "-".
+            if rr.to_be_sql and not args.format_only and not args.no_validate:
                 vr = validate_static(rr.to_be_sql, to_be_schema_tables)
                 rr.stage_a_pass = vr.ok
                 if not vr.ok and not rr.parse_error:
@@ -1569,8 +1574,9 @@ def cmd_migrate_sql(args):
                         rr.status = "UNRESOLVED"
                     else:
                         rr.status = "AUTO_WARN"
-                    # Re-run Stage A on the LLM output (skip under format-only)
-                    if not args.format_only:
+                    # Re-run Stage A on the LLM output (skip under
+                    # format-only / --no-validate)
+                    if not args.format_only and not args.no_validate:
                         vr = validate_static(llm_out.converted_sql, to_be_schema_tables)
                         rr.stage_a_pass = vr.ok
                         if not vr.ok:
@@ -3187,6 +3193,13 @@ def main():
                            help="NEEDS_LLM 상태 statement 를 LLM 으로 보조 변환")
     ms_parser.add_argument("--dry-run", action="store_true",
                            help="XML 파일은 쓰지 않고 리포트만 생성")
+    ms_parser.add_argument("--no-validate", action="store_true",
+                           help="Stage A (sqlglot static) 검증 건너뜀 — DB "
+                                "접속 안 함. TO-BE 스키마/DB 미완성이라 "
+                                "Validation Errors 오탐이 쌓이거나, statement "
+                                "가 많아 느릴 때. 건너뛰면 Stage A 컬럼은 "
+                                "리포트에 '-' 로 표시 (나중에 validate-migration "
+                                "또는 재실행으로 검증)")
     ms_parser.add_argument("--format-only", action="store_true",
                            help="매핑/스키마 없이 KoreanLegacy 포매터만 적용 — "
                                 "줄맞춤/메타블록 양식 사전 검토용 (Stage A 검증 skip, "

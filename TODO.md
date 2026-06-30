@@ -898,19 +898,18 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 변환 XML 본문 들여쓰기 (statement 태그 안 + 첫 줄 정렬)
+### 진행 중: migrate-sql `--no-validate` — Stage A 검증 toggle
 
-`annotate_statements` 가 본문 첫 줄만 `lstrip` 후 2칸을 붙여, ① 본문이
-`<select>` 밑으로 안 들어가고 ② 첫 줄(`SELECT`)이 이어지는 `, ...` /
-`FROM` 줄과 어긋났다 (in-place 치환이라 SQL 포매터는 본문에 미적용).
+TO-BE 스키마/DB 미완성 단계에선 `--to-be-schema-from-mapping` 의
+pass-through 오탐이 Validation Errors 에 쌓이고, statement 많으면 Stage A
+(sqlglot static) 가 느림. 끄는 옵션 필요 (DB 접속은 원래 안 함 — DB parse
+검증은 별도 `validate-migration`).
 
-- [x] `_reindent_body` — 비어있지 않은 줄들의 공통 들여쓰기만 벗기고
-      4칸(주석 프레임 2칸 + 한 단계) 일괄 재부여 → 내부 상대정렬(리딩
-      콤마/주석) 보존 + 블록 전체를 태그 한 단계 안으로. 바깥 공백 줄 제거
-- [x] `_realign_trailing_comments` — 치환 후 줄 끝 주석 `/*` 시작을
-      코드부 최대 표시폭+1 로 재정렬 (CJK 폭), text/tail + 최종 본문
-- [x] 회귀: 단위 (리딩콤마 상대정렬/인라인/빈줄제거/빈본문/e2e content
-      정렬) + 주석 정렬 단위 + CDATA `>=`·무주석·인라인 회귀
+- [x] `--no-validate` 플래그 + 시작 시 "Stage A: skipped" 1줄 안내
+- [x] Stage A 호출 2곳 (기본 + LLM 재검증) gate, 건너뛰면 stage_a_pass
+      None → 리포트 '-', Validation Errors 0행
+- [x] README §12 주요 플래그 + user_manual 재빌드
+- [x] 검증: with/without 비교 (오탐 1행 → 0행, Stage A Pass '-')
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
