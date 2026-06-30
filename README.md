@@ -1290,6 +1290,8 @@ python main.py migrate-sql `
 - `--llm-fallback`: NEEDS_LLM 상태 statement 를 사내 LLM 으로 보조 변환 시도
 - `--no-xml-preserve-as-is`: AS-IS 주석 블록 skip
 - `--dry-run`: 리포트만 생성, 파일 쓰지 않음
+- `--timing`: 단계별 소요시간 출력 (변환 루프 / 리포트 생성 / 1초 넘는 느린
+  파일 상위 5개) — "어디서 오래 걸리나" 진단용
 - `--no-validate`: **Stage A (sqlglot static) 검증 건너뜀** — DB 접속 안 함
   (Stage A 는 원래 DB 불필요). TO-BE 스키마/DB 미완성이라 `--to-be-schema-from-mapping`
   의 pass-through 오탐이 Validation Errors 에 쌓이거나, statement 가 많아 검증이

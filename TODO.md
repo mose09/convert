@@ -898,18 +898,15 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: migrate-sql `--no-validate` — Stage A 검증 toggle
+### 진행 중: migrate-sql `--timing` — 단계별 소요시간 진단
 
-TO-BE 스키마/DB 미완성 단계에선 `--to-be-schema-from-mapping` 의
-pass-through 오탐이 Validation Errors 에 쌓이고, statement 많으면 Stage A
-(sqlglot static) 가 느림. 끄는 옵션 필요 (DB 접속은 원래 안 함 — DB parse
-검증은 별도 `validate-migration`).
+"변환 후 마지막에 오래 걸린다"는 보고가 어느 단계(변환 루프 / 리포트 /
+특정 파일)인지 폐쇄망에서 1~2줄로 자가분류하기 위한 진단 옵션.
 
-- [x] `--no-validate` 플래그 + 시작 시 "Stage A: skipped" 1줄 안내
-- [x] Stage A 호출 2곳 (기본 + LLM 재검증) gate, 건너뛰면 stage_a_pass
-      None → 리포트 '-', Validation Errors 0행
+- [x] `--timing` 플래그 — 변환 루프 총시간, 리포트 생성 시간, 1초 넘는
+      느린 파일 상위 5개 출력 (출력 최소화)
 - [x] README §12 주요 플래그 + user_manual 재빌드
-- [x] 검증: with/without 비교 (오탐 1행 → 0행, Stage A Pass '-')
+- [ ] 사용자 실데이터 `--timing` 결과로 병목 단계 확정 → 후속 최적화
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
