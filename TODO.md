@@ -898,13 +898,18 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 변환 XML 레이아웃 마감 (bind depth / 태그 들여쓰기 / AS-IS 위치)
+### 진행 중: statement 태그 한 탭 들여쓰기 + AS-IS 주석 밖 위로
 
-- [x] 인라인 태그(`<bind>`/`<include>`)가 동적 태그 안(parent_depth≥1)에
-      있으면 그 태그보다 한 탭 더 (`_dyn_indent(depth+1)`). 최상위는 4칸
-- [ ] `<select>`/`<update>`/`<delete>` 등 statement 태그를 `<mapper>`
-      아래 한 단계(탭) 들여쓰기 + 안쪽 주석/본문도 그만큼 시프트
-- [ ] AS-IS (original) 주석 블록을 `<select>` 안 → 바로 위(밖)로 이동
+- [x] `_STMT_INDENT` (\t) 도입 — `_BODY_BASE_INDENT`/주석 프레임/닫는
+      태그가 모두 그 위에 쌓이게. `<select>` 등 statement 가 `<mapper>`
+      아래 한 탭, 본문은 `\t`+4칸
+- [x] `_indent_top_level` — `<mapper>` 직속 자식(statement + AS-IS 주석)
+      전부 한 탭으로 정렬
+- [x] AS-IS (original) 주석을 statement **밖 바로 위** 로 (`addprevious`).
+      MIGRATION 메타는 statement 안 유지. iter() 중 트리변경 안전 위해
+      statement 먼저 리스트로 수집
+- [x] 회귀: mapper/asis 단위 (태그 한탭/AS-IS 위치/MIGRATION 안/본문 깊이/
+      preserve=False) + bind·동적·CDATA·realign·reindent (새 스킴 반영)
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 

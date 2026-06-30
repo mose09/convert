@@ -276,40 +276,30 @@ def annotate_statements(
     root = tree.getroot()
     ns_attr = root.get("namespace", "") or ""
 
-    for stmt in root.iter():
-        tag = _local(stmt.tag)
-        if tag not in _STATEMENT_TAGS:
-            continue
-        rr = by_id.get((ns_attr, stmt.get("id", "") or ""))
-        if rr is None:
-            continue
+    # 트리 변경(addprevious) 중 iter() 가 영향받지 않도록 먼저 수집.
+    statements = [s for s in root.iter()
+                  if _local(s.tag) in _STATEMENT_TAGS
+                  and by_id.get((ns_attr, s.get("id", "") or "")) is not None]
 
-        # Build comment text(s) and place them BEFORE the SQL body text,
-        # matching docs/migration/spec.md §12.2: all metadata/AS-IS/SUGGESTED
-        # comments come first, then the body SQL, then any dynamic-tag
-        # children. lxml's ``elem.insert(0, comment)`` would put the comment
-        # AFTER ``elem.text`` (the SQL body) — so we explicitly relocate the
-        # body text onto the last comment's ``.tail``.
-        blocks: List[str] = [_format_metadata_block(rr)]
-        if preserve_as_is and rr.as_is_sql:
-            blocks.append(_format_as_is_block(rr))
+    for stmt in statements:
+        rr = by_id[(ns_attr, stmt.get("id", "") or "")]
+
+        # MIGRATION 메타 (+ SUGGESTED) 는 statement **안** 첫머리에, AS-IS
+        # (original) 블록은 statement **밖 바로 위** 로 (사용자 요청).
+        inside_blocks: List[str] = [_format_metadata_block(rr)]
         show_to_be = (
             rr.status in ("UNRESOLVED", "NEEDS_LLM") or force_show_to_be
         )
         if show_to_be and rr.to_be_sql and rr.to_be_sql != rr.as_is_sql:
-            blocks.append(_format_suggested_block(rr.to_be_sql))
-
-        if not blocks:
-            continue
+            inside_blocks.append(_format_suggested_block(rr.to_be_sql))
 
         body_text = stmt.text or ""
-        stmt.text = "\n  "  # leading indent before the first comment
+        stmt.text = "\n" + _COMMENT_FRAME  # 첫 주석 앞 들여쓰기
 
-        comments = [etree.Comment(_sanitize_for_xml(text)) for text in blocks]
+        comments = [etree.Comment(_sanitize_for_xml(t)) for t in inside_blocks]
         for i, comment in enumerate(comments):
             stmt.insert(i, comment)
-            # Spacer between comments (overwritten on the last comment below).
-            comment.tail = "\n  "
+            comment.tail = "\n" + _COMMENT_FRAME  # 주석 간 스페이서 (마지막은 아래서 덮음)
         # Reattach the original SQL body so it appears AFTER all comments.
         # 본문의 ``<`` / ``>`` 비교 연산자는 직렬화 시 escape 되지만,
         # ``_localize_cdata_operators`` 후처리가 그 연산자만 국소 CDATA 로
@@ -317,12 +307,31 @@ def annotate_statements(
         if any(isinstance(c.tag, str) for c in stmt):
             # element 자식(동적 <if> / 인라인 <bind> 등) 존재 — 본문이 여러
             # text/tail 조각으로 쪼개지므로 혼합 콘텐츠 재들여쓰기.
-            # body_text(첫 자식 앞 SQL) 를 raw 로 넘겨 조각 간 정렬을 일관되게.
             comments[-1].tail = body_text
             _reindent_dynamic(stmt, comments[-1])
         else:
-            # 동적/인라인 태그 없는 순수 SQL — 단일 조각 재들여쓰기.
             comments[-1].tail = _reindent_body(body_text)
+
+        # AS-IS (original) 주석을 statement **밖 바로 위** 에 배치.
+        if preserve_as_is and rr.as_is_sql:
+            asis = etree.Comment(_sanitize_for_xml(_format_as_is_block(rr)))
+            stmt.addprevious(asis)
+
+    # ``<mapper>`` 직속 자식(statement + AS-IS 주석 등)을 한 탭씩 들여쓰기.
+    _indent_top_level(root)
+
+
+def _indent_top_level(mapper) -> None:
+    """``<mapper>`` 직속 자식들을 ``_STMT_INDENT`` (한 탭) 로 들여쓰기.
+
+    ``<select>``/``<update>`` 등 statement 와 그 위 AS-IS 주석이 모두
+    ``<mapper>`` 한 단계 안으로 정렬된다."""
+    children = list(mapper)
+    if not children:
+        return
+    mapper.text = "\n" + _STMT_INDENT
+    for i, c in enumerate(children):
+        c.tail = ("\n" + _STMT_INDENT) if i < len(children) - 1 else "\n"
 
 
 # ---------------------------------------------------------------------------
@@ -602,9 +611,13 @@ def _realign_trailing_comments(text: str) -> str:
     return "\n".join(out)
 
 
-# 변환 본문을 ``<statement>`` 한 단계 안으로 들여쓸 때의 기준 들여쓰기.
-# 메타/AS-IS 주석 프레임이 2칸이므로 본문은 그보다 한 단계 깊은 4칸.
-_BODY_BASE_INDENT = "    "
+# ``<select>``/``<update>`` 등 statement 태그의 ``<mapper>`` 아래 들여쓰기
+# (한 탭). 모든 statement 내부 들여쓰기는 이 위에 쌓인다.
+_STMT_INDENT = "\t"
+# statement 안 주석/구조 프레임 (statement 보다 2칸 깊게).
+_COMMENT_FRAME = _STMT_INDENT + "  "
+# SQL 본문 base — statement 보다 4칸 깊게 (= 주석 프레임보다 2칸 더).
+_BODY_BASE_INDENT = _STMT_INDENT + "    "
 
 
 def _reindent_body(body_text: str) -> str:
@@ -618,9 +631,9 @@ def _reindent_body(body_text: str) -> str:
     블록 전체를 한 단계 안으로 옮긴다.
     """
     if not body_text.strip():
-        return "\n  "
+        return "\n" + _STMT_INDENT
     lines = body_text.strip("\r\n").split("\n")
-    # 바깥쪽 공백-only 줄 제거 (원본 ``\n  `` 꼬리 등이 빈 줄로 남지 않게).
+    # 바깥쪽 공백-only 줄 제거 (원본 꼬리가 빈 줄로 남지 않게).
     while lines and not lines[0].strip():
         lines.pop(0)
     while lines and not lines[-1].strip():
@@ -635,7 +648,8 @@ def _reindent_body(body_text: str) -> str:
     )
     # ``=`` 정렬 먼저 (lhs 폭 변동 흡수) → 줄 끝 주석 정렬.
     rebased = _realign_trailing_comments(_realign_equals(rebased))
-    return "\n" + rebased + "\n  "
+    # 닫는 ``</statement>`` 는 statement 들여쓰기 위치로.
+    return "\n" + rebased + "\n" + _STMT_INDENT
 
 
 # MyBatis 블록형 동적 SQL 태그 — SQL 을 감싸며, SQL 본문(스페이스)보다
@@ -761,9 +775,10 @@ def _reindent_dynamic(stmt, body_owner) -> None:
 
     _gather(stmt)
     common = _global_common_indent(frags)
+    # 최상위 close_indent = statement 들여쓰기 (``</select>`` 위치).
     _emit_mixed(stmt, common, lambda: body_owner.tail,
                 lambda v: setattr(body_owner, "tail", v),
-                depth=0, close_indent="  ")
+                depth=0, close_indent=_STMT_INDENT)
 
 
 def _emit_mixed(elem, common: int, get_leading, set_leading,
