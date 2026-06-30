@@ -898,20 +898,19 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 동적 태그(<if>) 들여쓰기 — SQL 본문 +탭×depth
+### 진행 중: WHERE `=` 정렬 + `<bind/>` self-closing 유지
 
-`<if>`/`<choose>`/`<foreach>`/`<where>` 등 동적 태그를 SQL 본문(4칸)보다
-**탭 × 중첩깊이** 더 깊게. 안쪽 SQL 은 바깥 SQL 과 동일 정렬.
-
-- [x] `_reindent_dynamic` — body_owner.tail(첫 태그 앞 SQL) + 모든 동적
-      자식 text/tail 을 **전역 common** 으로 일괄 dedent→rebase (조각 간
-      상대정렬 보존 → 안쪽이 바깥과 정렬)
-- [x] `_dyn_indent(depth)` = `_BODY_BASE_INDENT + \t×depth`. 중첩 <if> 안
-      <if> 는 탭2개. `</if>` 도 depth 정합
-- [x] annotate: 동적 자식 있으면 raw 본문 → `_reindent_dynamic`, 없으면
-      기존 `_reindent_body`
-- [x] 회귀: 단위 (기본/중첩/다중sibling+ORDER BY/무동적) + CDATA·realign·
-      reindent 회귀
+- [x] `_realign_equals` — 연속 `컬럼 = 값` 줄의 `=` 를 표시폭 정렬 (컬럼
+      rename 으로 lhs 폭 바뀐 경우 교정). `<=`/`>=`/`<>`/`!=` 제외.
+      `_emit_sql_fragment` + `_reindent_body` 양쪽 적용
+- [x] `<bind>`/`<include>` 를 `_INLINE_TAGS` 로 분리 — 블록 동적태그처럼
+      `.text` 설정 안 함 → `<bind .../>` self-closing 유지 (기존엔
+      `<bind></bind>` 로 펼쳐짐), SQL 본문 기준(4칸) 들여쓰기
+- [x] `_emit_mixed` — 혼합 콘텐츠 일반 처리 (동적/인라인 자식 + 그 사이
+      SQL 조각 전부 재들여쓰기). annotate 트리거를 "element 자식 존재" 로
+      확장 (bind-only statement 도 본문 재들여쓰기)
+- [x] 회귀: 단위 (=정렬/연산자제외/1줄, bind self-closing/4칸/bind.tail) +
+      동적·CDATA·realign·reindent 회귀
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
