@@ -898,16 +898,13 @@ token 절감.
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.
 
-### 진행 중: 리포트 생성 O(n²) 병목 — 대형 매핑 (2.4만건)
+### 진행 중: `--timing` 제거 (역할 종료)
 
-매핑 2.4만건일 때 리포트 생성이 88s. `--timing` 으로 병목이 리포트
-단계임을 확인 → Mapping Coverage 가 행마다 `ws[ws.max_row]` 로 방금 쓴
-행을 다시 읽어 fill — `max_row` 가 매 호출 O(행수) 라 O(n²).
+리포트 O(n²) 병목 진단에 쓴 임시 옵션. 병목(대형 매핑 리포트) 확정·수정
+완료(#350)되어 더 필요 없음 → 제거.
 
-- [x] coverage / conversions / validation / unresolved 시트의
-      `ws[ws.max_row]` 패턴을 row_idx 카운터 + O(1) `ws.cell` 로 교체
-- [x] 측정: 24,000 컬럼 매핑 리포트 87.8s → 2.6s (34배)
-- [x] 정확성: UNUSED 회색칠 행 정렬 / 상태별 색칠 / 필터 행수 회귀
+- [x] main.py `--timing` 플래그 + 계측 코드 제거
+- [x] README §12 플래그 목록 + user_manual 재빌드
 
 ### 보류: 다른 안전망이 있는 엣지 케이스
 
