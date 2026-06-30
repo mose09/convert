@@ -314,10 +314,16 @@ def annotate_statements(
         # 본문의 ``<`` / ``>`` 비교 연산자는 직렬화 시 escape 되지만,
         # ``_localize_cdata_operators`` 후처리가 그 연산자만 국소 CDATA 로
         # 감싼다 (SELECT 본문 전체를 CDATA 로 감싸지 않음).
-        new_tail = _reindent_body(body_text)
-        # 재들여쓰기 후 줄 끝 주석 ``/*`` 시작을 다시 맞춘다 (idempotent).
-        new_tail = _realign_trailing_comments(new_tail)
-        comments[-1].tail = new_tail
+        if any(_is_dynamic(c) for c in stmt):
+            # 동적 태그(<if> 등) 포함 — 본문(body_text=첫 태그 앞 SQL) + 모든
+            # 동적 자식의 text/tail 을 전역 common 으로 일괄 재들여쓰기.
+            # body_text 를 raw 로 넘겨 조각 간 정렬을 일관되게.
+            comments[-1].tail = body_text
+            _reindent_dynamic(stmt, comments[-1])
+        else:
+            new_tail = _reindent_body(body_text)
+            # 재들여쓰기 후 줄 끝 주석 ``/*`` 시작 재정렬 (idempotent).
+            comments[-1].tail = _realign_trailing_comments(new_tail)
 
 
 # ---------------------------------------------------------------------------
@@ -629,6 +635,99 @@ def _reindent_body(body_text: str) -> str:
         for ln in lines
     ]
     return "\n" + "\n".join(rebased) + "\n  "
+
+
+# MyBatis 동적 SQL 태그 — 이 태그들은 SQL 본문(스페이스)보다 깊이만큼
+# 탭으로 들여쓰고, 그 안의 SQL 은 바깥 SQL 과 같은 기준(스페이스)으로 정렬.
+_DYNAMIC_TAGS = {"if", "choose", "when", "otherwise", "foreach", "where",
+                 "set", "trim", "bind"}
+
+
+def _is_dynamic(elem) -> bool:
+    return isinstance(elem.tag, str) and _local(elem.tag) in _DYNAMIC_TAGS
+
+
+def _global_common_indent(frags: List[str]) -> int:
+    """여러 SQL 조각에 걸친 공통 최소 들여쓰기 (전체를 한 덩어리로 보고
+    상대 정렬을 보존하기 위함 — 조각별로 따로 dedent 하면 ``<if>`` 안의
+    SQL 이 바깥 SQL 과 어긋난다)."""
+    indents = [
+        len(ln) - len(ln.lstrip(" \t"))
+        for f in frags for ln in f.split("\n") if ln.strip()
+    ]
+    return min(indents) if indents else 0
+
+
+def _emit_sql_fragment(text: str, common: int) -> str:
+    """SQL 조각을 전역 ``common`` 만큼 dedent 후 ``_BODY_BASE_INDENT`` 로
+    재부여 (상대 정렬 보존) + 줄 끝 주석 재정렬. 선행 ``\\n`` 포함, 후행
+    공백/개행 없음. SQL 이 없으면 ``""``."""
+    if not text or not text.strip():
+        return ""
+    lines = text.strip("\r\n").split("\n")
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    rebased = [
+        (_BODY_BASE_INDENT + ln[common:]).rstrip() if ln.strip() else ""
+        for ln in lines
+    ]
+    return "\n" + _realign_trailing_comments("\n".join(rebased))
+
+
+def _dyn_indent(depth: int) -> str:
+    """동적 태그(``<if>`` 등) 들여쓰기. SQL 본문(``_BODY_BASE_INDENT``,
+    4칸)보다 중첩 깊이만큼 **탭** 더 깊게 — 사용자 표준: "SELECT 본문이
+    한 탭 들어가 있으니 거기서 한 탭 더". 중첩 ``<if>`` 안 ``<if>`` 는 탭 2개."""
+    return _BODY_BASE_INDENT + "\t" * depth
+
+
+def _reindent_dynamic(stmt, body_owner) -> None:
+    """동적 태그(``<if>`` 등)를 포함한 statement 본문 재들여쓰기.
+
+    - SQL 조각(``body_owner.tail`` = 첫 동적태그 앞 SQL, 각 동적태그의
+      ``.text`` / ``.tail``)은 전역 common 으로 일괄 dedent → ``_BODY_BASE_INDENT``
+      로 rebase. 상대 정렬이 보존돼 ``<if>`` 안 SQL 이 바깥 SQL 과 정렬됨.
+    - 동적 태그 자체는 ``_dyn_indent(depth)`` (SQL 본문보다 탭 × depth 깊게).
+    """
+    frags = [body_owner.tail or ""]
+
+    def _gather(el):
+        for c in el:
+            if _is_dynamic(c):
+                frags.append(c.text or "")
+                _gather(c)
+                frags.append(c.tail or "")
+
+    _gather(stmt)
+    common = _global_common_indent(frags)
+
+    # body_owner.tail = 첫 동적태그 앞 SQL, 그 뒤 첫 태그는 depth 1
+    body_owner.tail = (_emit_sql_fragment(body_owner.tail, common)
+                       + "\n" + _dyn_indent(1))
+    _emit_dynamic_children(stmt, depth=1, common=common, close_indent="  ")
+
+
+def _emit_dynamic_children(parent, depth: int, common: int,
+                           close_indent: str) -> None:
+    """``parent`` 의 동적 자식들을 ``_dyn_indent(depth)`` 로 배치, 안쪽
+    SQL/중첩 처리."""
+    dyn = [c for c in parent if _is_dynamic(c)]
+    tag_indent = _dyn_indent(depth)
+    for i, c in enumerate(dyn):
+        nested = [g for g in c if _is_dynamic(g)]
+        if nested:
+            # 안쪽에 또 동적태그 → 그 태그는 한 탭 더 깊게
+            c.text = (_emit_sql_fragment(c.text, common)
+                      + "\n" + _dyn_indent(depth + 1))
+            _emit_dynamic_children(c, depth + 1, common, close_indent=tag_indent)
+        else:
+            # 잎 동적태그 — 안쪽 SQL 뒤 닫는 태그는 이 태그와 같은 들여쓰기
+            c.text = _emit_sql_fragment(c.text, common) + "\n" + tag_indent
+        last = (i == len(dyn) - 1)
+        nxt = close_indent if last else tag_indent
+        c.tail = _emit_sql_fragment(c.tail, common) + "\n" + nxt
 
 
 def _apply_subs_to_tree(
