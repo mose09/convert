@@ -2022,6 +2022,33 @@ python main.py erd-rag
 python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 ```
 
+### 18. 로컬 실행 화면 (webui) — SQL 마이그레이션 + 용어검색
+
+비개발자가 CLI 없이 **브라우저 화면**으로 SQL 마이그레이션과 용어 검색을
+로컬에서 실행할 수 있는 Streamlit 앱 (`webui/app.py`).
+
+```powershell
+# 실행 (또는 루트의 run_webui.bat 더블클릭)
+python -m streamlit run webui/app.py
+# → http://localhost:8501 자동 오픈. 외부 전송 없음 (localhost 전용).
+```
+
+두 화면:
+- **SQL 마이그레이션**: AS-IS mapper XML (여러 개) + 매핑 YAML 업로드 →
+  옵션(한글 주석 / Stage A 검증 skip / LLM 보조 / TO-BE 스키마 파생·업로드)
+  선택 → **변환 실행** → 변환 XML + Excel 리포트 zip 다운로드.
+  내부적으로 `migrate-sql` 을 그대로 호출하므로 CLI 와 결과 동일.
+- **용어 검색**: `build-dict` 로 적재한 표준사전 SQLite
+  (`vectordb/standard_dict.sqlite`) 를 단어/용어/도메인별 LIKE 검색 →
+  표로 결과 (만료 항목 포함 토글).
+
+설치 (폐쇄망은 wheel 반입 — `requirements.txt` 의 streamlit 항목 참고):
+```powershell
+python -m pip install streamlit
+```
+⚠ streamlit 은 전이 의존성(numpy/pandas/pyarrow/altair 등 ~30개)이 많아
+폐쇄망 wheel 폴더가 커진다. 미설치여도 CLI 커맨드는 영향 없음.
+
 ## 추천 워크플로우
 
 ```powershell

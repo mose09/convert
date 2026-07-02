@@ -1,0 +1,271 @@
+"""로컬 실행용 Streamlit 화면 — 비개발자가 CLI 없이 마이그레이션 / 용어검색.
+
+실행:
+    streamlit run webui/app.py
+    (또는 루트의 run_webui.bat 더블클릭)
+
+두 화면:
+  1) SQL 마이그레이션 — AS-IS mapper XML + 매핑 YAML → 변환 XML + 리포트 zip
+  2) 용어 검색 — build-dict 로 적재한 표준사전 SQLite 를 LIKE 검색
+
+기존 CLI/함수를 그대로 재사용한다:
+  - 마이그레이션은 ``python main.py migrate-sql`` 를 subprocess 로 호출
+    (동작 100% 동일 보장). 출력은 임시 폴더로 격리 후 zip.
+  - 용어 검색은 표준사전 SQLite 를 직접 조회.
+폐쇄망/오프라인 전제 — 외부 네트워크 호출 없음.
+"""
+from __future__ import annotations
+
+import glob
+import io
+import os
+import sqlite3
+import subprocess
+import sys
+import tempfile
+import zipfile
+from pathlib import Path
+
+import streamlit as st
+
+try:
+    import yaml
+except Exception:  # pragma: no cover
+    yaml = None
+
+ROOT = Path(__file__).resolve().parent.parent  # 프로젝트 루트
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+st.set_page_config(page_title="SQL 마이그레이션 & 용어검색",
+                   page_icon="🛠️", layout="wide")
+
+
+# ---------------------------------------------------------------------------
+# 공통 헬퍼
+# ---------------------------------------------------------------------------
+def _default_dict_db() -> Path:
+    """config.yaml 의 vectordb.db_path 기준 표준사전 SQLite 경로."""
+    db_dir = "./vectordb"
+    cfg = ROOT / "config.yaml"
+    if yaml and cfg.is_file():
+        try:
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+            db_dir = (data.get("vectordb") or {}).get("db_path", db_dir)
+        except Exception:
+            pass
+    return (ROOT / db_dir / "standard_dict.sqlite").resolve()
+
+
+def _write_temp_config(out_dir: Path) -> Path:
+    """기존 config.yaml 복사 + storage.output_dir 만 임시 폴더로 덮어써서
+    마이그레이션 산출물을 격리한다 (사용자 output/ 오염 방지)."""
+    data = {}
+    cfg = ROOT / "config.yaml"
+    if yaml and cfg.is_file():
+        try:
+            data = yaml.safe_load(cfg.read_text(encoding="utf-8")) or {}
+        except Exception:
+            data = {}
+    data.setdefault("storage", {})["output_dir"] = str(out_dir)
+    tmp = out_dir / "_webui_config.yaml"
+    tmp.write_text(yaml.safe_dump(data, allow_unicode=True) if yaml
+                   else f'storage:\n  output_dir: "{out_dir}"\n',
+                   encoding="utf-8")
+    return tmp
+
+
+# ---------------------------------------------------------------------------
+# 화면 1: SQL 마이그레이션
+# ---------------------------------------------------------------------------
+def render_migration() -> None:
+    st.header("🛠️ SQL 마이그레이션")
+    st.caption("AS-IS MyBatis mapper XML + 컬럼 매핑 YAML → TO-BE 변환 XML + "
+               "Excel 리포트. 결과는 zip 으로 내려받습니다.")
+
+    mappers = st.file_uploader(
+        "① AS-IS mapper XML (여러 개 선택 가능)",
+        type=["xml"], accept_multiple_files=True)
+    mapping = st.file_uploader("② 컬럼 매핑 YAML", type=["yaml", "yml"])
+
+    schema_mode = st.radio(
+        "③ TO-BE 스키마",
+        ["매핑 YAML 에서 자동 파생 (DB/스키마 없이)", "TO-BE 스키마 .md 업로드"],
+        help="스키마가 아직 없으면 매핑에서 파생하세요. pass-through 컬럼은 "
+             "Stage A 검증에서 오탐될 수 있으나 변환 XML 은 정상입니다.")
+    schema_md = None
+    if schema_mode.startswith("TO-BE 스키마 .md"):
+        schema_md = st.file_uploader("TO-BE 스키마 .md", type=["md"])
+
+    c1, c2, c3 = st.columns(3)
+    emit_comments = c1.checkbox("한글 주석 삽입", value=False,
+                                help="--emit-column-comments")
+    no_validate = c2.checkbox("Stage A 검증 건너뛰기", value=True,
+                              help="--no-validate (DB/스키마 미완성 단계 권장)")
+    llm_fallback = c3.checkbox("LLM 보조 변환", value=False,
+                               help="--llm-fallback (NEEDS_LLM 케이스)")
+
+    ready = bool(mappers) and mapping is not None and not (
+        schema_mode.startswith("TO-BE 스키마 .md") and schema_md is None)
+    if st.button("▶ 변환 실행", type="primary", disabled=not ready):
+        _run_migration(mappers, mapping, schema_mode, schema_md,
+                       emit_comments, no_validate, llm_fallback)
+
+    # 직전 실행 결과 (rerun 후에도 유지)
+    res = st.session_state.get("mig_result")
+    if res:
+        if res["ok"]:
+            st.success(res["summary"])
+            st.download_button(
+                "⬇ 변환 결과 zip 내려받기", data=res["zip"],
+                file_name="migration_result.zip", mime="application/zip")
+        else:
+            st.error("변환 실패")
+        with st.expander("실행 로그"):
+            st.code(res["log"] or "(로그 없음)")
+
+
+def _run_migration(mappers, mapping, schema_mode, schema_md,
+                   emit_comments, no_validate, llm_fallback) -> None:
+    with st.spinner("변환 중…"):
+        work = Path(tempfile.mkdtemp(prefix="webui_mig_"))
+        in_dir = work / "mapper"
+        in_dir.mkdir()
+        for f in mappers:
+            (in_dir / f.name).write_bytes(f.getbuffer())
+        map_path = work / "mapping.yaml"
+        map_path.write_bytes(mapping.getbuffer())
+        out_dir = work / "out"
+        out_dir.mkdir()
+        cfg = _write_temp_config(out_dir)
+
+        # ``--config`` 는 전역 인자라 subcommand(migrate-sql) **앞** 에 온다.
+        cmd = [sys.executable, str(ROOT / "main.py"), "--config", str(cfg),
+               "migrate-sql",
+               "--mybatis-dir", str(in_dir),
+               "--mapping", str(map_path),
+               "--output-format", "excel,xml"]
+        if schema_mode.startswith("TO-BE 스키마 .md"):
+            sp = work / "to_be_schema.md"
+            sp.write_bytes(schema_md.getbuffer())
+            cmd += ["--to-be-schema", str(sp)]
+        else:
+            cmd += ["--to-be-schema-from-mapping"]
+        if emit_comments:
+            cmd += ["--emit-column-comments"]
+        if no_validate:
+            cmd += ["--no-validate"]
+        if llm_fallback:
+            cmd += ["--llm-fallback"]
+
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              cwd=str(ROOT))
+        log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+
+        # 산출물(migration/<date>/) 을 zip 으로
+        dated = sorted(glob.glob(str(out_dir / "migration" / "*")))
+        zip_buf = io.BytesIO()
+        summary = ""
+        if dated:
+            latest = Path(dated[-1])
+            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in latest.rglob("*"):
+                    if p.is_file():
+                        zf.write(p, p.relative_to(latest))
+            zip_buf.seek(0)
+        for line in log.splitlines():
+            if line.startswith("Converted "):
+                summary = line.strip()
+                break
+
+    st.session_state["mig_result"] = {
+        "ok": proc.returncode == 0 and bool(dated),
+        "summary": summary or "변환 완료 (요약 라인 없음 — 로그 확인)",
+        "zip": zip_buf.getvalue(),
+        "log": log,
+    }
+    st.rerun()
+
+
+# ---------------------------------------------------------------------------
+# 화면 2: 용어 검색
+# ---------------------------------------------------------------------------
+_SEARCH_SPECS = {
+    "용어": ("term",
+             ["logical", "physical", "eng", "domain", "data_type",
+              "length", "scale", "is_std", "desc"],
+             ["logical", "physical", "eng", "desc"]),
+    "단어": ("word",
+             ["logical", "physical", "eng", "is_std", "is_classifier",
+              "synonyms", "desc"],
+             ["logical", "physical", "eng", "synonyms", "desc"]),
+    "도메인": ("domain",
+              ["grp", "name", "data_type", "length", "scale", "full_type",
+               "desc"],
+              ["name", "grp", "desc"]),
+}
+
+
+def render_term_search() -> None:
+    st.header("🔎 용어 검색")
+    st.caption("build-dict 로 적재한 표준 단어/용어/도메인 사전(SQLite)을 "
+               "검색합니다.")
+
+    db_path = Path(st.text_input("표준사전 SQLite 경로",
+                                 value=str(_default_dict_db())))
+    if not db_path.is_file():
+        st.warning(f"표준사전이 없습니다: {db_path}\n\n"
+                   "먼저 `python main.py build-dict --word-dict ... "
+                   "--term-dict ...` 로 적재하세요.")
+        return
+
+    c1, c2 = st.columns([3, 1])
+    q = c1.text_input("검색어 (한글 논리명 / 영문 / 물리명 일부)")
+    target = c2.radio("대상", list(_SEARCH_SPECS.keys()), horizontal=False)
+
+    include_expired = st.checkbox("만료 항목 포함", value=False)
+
+    if not q.strip():
+        st.info("검색어를 입력하세요.")
+        return
+
+    table, cols, search_cols = _SEARCH_SPECS[target]
+    where = " OR ".join(f"{c} LIKE ?" for c in search_cols)
+    params = [f"%{q.strip()}%"] * len(search_cols)
+    sql = f"SELECT {', '.join(cols)} FROM {table} WHERE ({where})"
+    if not include_expired and table in ("word", "term", "domain"):
+        sql += " AND COALESCE(expired, 0) = 0"
+    sql += " LIMIT 500"
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        rows = [dict(r) for r in conn.execute(sql, params)]
+        conn.close()
+    except Exception as e:  # noqa: BLE001
+        st.error(f"검색 실패: {type(e).__name__}: {e}")
+        return
+
+    st.write(f"**{len(rows)}건** (최대 500)")
+    if rows:
+        st.dataframe(rows, use_container_width=True, hide_index=True)
+    else:
+        st.info("일치하는 항목이 없습니다.")
+
+
+# ---------------------------------------------------------------------------
+# 라우팅
+# ---------------------------------------------------------------------------
+def main() -> None:
+    st.sidebar.title("메뉴")
+    page = st.sidebar.radio("화면", ["SQL 마이그레이션", "용어 검색"],
+                            label_visibility="collapsed")
+    st.sidebar.markdown("---")
+    st.sidebar.caption("로컬 실행 · 오프라인 · 외부 전송 없음")
+    if page == "SQL 마이그레이션":
+        render_migration()
+    else:
+        render_term_search()
+
+
+main()
