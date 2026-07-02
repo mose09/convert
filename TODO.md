@@ -23,6 +23,19 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: 로컬 실행 화면 (webui) — Streamlit
+
+비개발자가 CLI 없이 브라우저로 SQL 마이그레이션 / 용어검색 실행.
+
+- [x] `webui/app.py` — 2화면 (마이그레이션 업로드→변환→zip 다운로드 /
+      표준사전 SQLite LIKE 검색). 마이그레이션은 `migrate-sql` subprocess
+      재사용(전역 `--config` 로 output 임시폴더 격리), 용어검색은 SQLite 직접
+- [x] `run_webui.bat` 런처 + requirements.txt streamlit (폐쇄망 wheel 안내)
+- [x] README §18 + user_manual 재빌드
+- [x] 검증: streamlit headless 부팅 HTTP 200 / 용어검색 쿼리 4케이스 /
+      마이그레이션 subprocess RC0·격리·zip
+- [ ] PR + squash-merge
+
 ### 진행 중: `docs` — 기능 카탈로그 형태로 재설계
 
 기존 빌더가 README 를 그냥 한 페이지에 다 쏟아붓는 형태였는데 사용자가

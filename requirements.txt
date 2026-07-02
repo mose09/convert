@@ -46,3 +46,15 @@ python-pptx>=0.6.23
 #     set PLAYWRIGHT_BROWSERS_PATH=C:\tools\ms-playwright  (반입한 번들 경로)
 # 미설치여도 capture-screens 외 커맨드는 영향 없음 (import 가드).
 playwright>=1.40
+
+# Streamlit: 로컬 실행 화면 (webui/app.py — SQL 마이그레이션 + 용어검색).
+# 비개발자가 CLI 없이 브라우저로 실행. run_webui.bat 더블클릭.
+# ⚠ 전이 의존성이 많다 (numpy/pandas/pyarrow/altair/tornado 등 ~30개) —
+# 폐쇄망 반입 시 wheel 폴더가 커진다.
+#   인터넷 PC:
+#     python -m pip download streamlit -d .\wheels ^
+#       --platform win_amd64 --python-version 311 --only-binary=:all:
+#   폐쇄망 PC:
+#     python -m pip install --no-index --find-links=.\wheels streamlit
+# 미설치여도 CLI 커맨드(migrate-sql 등)는 영향 없음 (webui 만 미동작).
+streamlit>=1.30
