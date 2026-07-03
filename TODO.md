@@ -37,7 +37,10 @@
 - [x] 마이그레이션 폴더 지정 모드 — input 폴더(재귀)/매핑/출력 폴더
       경로 지정, 지정 폴더로 출력 (업로드 모드와 코어 공유)
 - [x] 표준사전 적재 화면 (build-dict — Excel 업로드→SQLite, --no-embed)
-- [ ] (후속) 스키마추출/코멘트증강/ERD추출/ERD보기 화면
+- [x] 스키마 추출(schema, DB) + 코멘트 증강(enrich-schema, LLM) 화면
+      — subprocess + 공통 결과 헬퍼(_latest_output_file). DB/LLM 은
+      로컬에서 실행 (이 환경 검증 불가, 명령구성/에러처리/부팅만)
+- [ ] (후속) ERD 추출 + ERD 보기 화면
 
 ### 진행 중: `docs` — 기능 카탈로그 형태로 재설계
 
