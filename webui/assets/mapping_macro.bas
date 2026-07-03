@@ -64,15 +64,28 @@ Sub ExportMappingMd()
         outPath = Environ("USERPROFILE") & "\Desktop\column_mapping.md"
     End If
 
-    ' UTF-8 로 저장 (VBA 기본 Print 는 ANSI 라 한글 깨짐 → ADODB.Stream)
-    Dim stream As Object
+    ' UTF-8(BOM 없이) 저장. VBA 기본 Print 는 ANSI 라 한글 깨지고,
+    ' ADODB.Stream utf-8 은 앞에 BOM(EF BB BF) 을 붙여 convert-mapping 의
+    ' 헤더 인식이 실패한다. → 텍스트로 쓴 뒤 BOM 3바이트를 건너뛴 이진을
+    ' 다시 저장한다.
+    Dim stream As Object, binStream As Object, dataBytes() As Byte
     Set stream = CreateObject("ADODB.Stream")
     stream.Type = 2                 ' adTypeText
     stream.Charset = "utf-8"
     stream.Open
     stream.WriteText md
-    stream.SaveToFile outPath, 2    ' adSaveCreateOverWrite
+    stream.Position = 0
+    stream.Type = 1                 ' adTypeBinary (Position 0 에서만 전환 가능)
+    stream.Position = 3             ' BOM 3바이트 skip
+    dataBytes = stream.Read
     stream.Close
+
+    Set binStream = CreateObject("ADODB.Stream")
+    binStream.Type = 1              ' adTypeBinary
+    binStream.Open
+    binStream.Write dataBytes
+    binStream.SaveToFile outPath, 2 ' adSaveCreateOverWrite
+    binStream.Close
 
     MsgBox wrote & " 행을 내보냈습니다:" & vbLf & outPath, vbInformation, _
         "매핑 MD 내보내기"
