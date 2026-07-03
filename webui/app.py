@@ -75,6 +75,18 @@ def _write_temp_config(out_dir: Path) -> Path:
     return tmp
 
 
+def _preview(text: str, n: int = 20, tail: bool = False) -> str:
+    """큰 텍스트를 앞/뒤 ``n`` 줄만 잘라 미리보기용으로. (다운로드는 전체 유지 —
+    매핑이 수만 건이면 st.code 로 전체를 그리면 브라우저가 멈춘다.)"""
+    lines = (text or "").splitlines()
+    if len(lines) <= n:
+        return text or ""
+    total = f"총 {len(lines):,}줄"
+    if tail:
+        return f"… ({total} 중 마지막 {n}줄)\n" + "\n".join(lines[-n:])
+    return "\n".join(lines[:n]) + f"\n… ({total} 중 앞 {n}줄만 표시)"
+
+
 # ---------------------------------------------------------------------------
 # .env 읽기/쓰기 (설정 화면)
 # ---------------------------------------------------------------------------
@@ -302,7 +314,7 @@ def render_mapping_maker() -> None:
                                file_name="column_mapping.md",
                                mime="text/markdown")
             with st.expander("MD 미리보기"):
-                st.code(md, language="markdown")
+                st.code(_preview(md), language="markdown")
             st.markdown("**→ 마이그레이션 입력용 YAML 로 변환**")
             _render_md_to_yaml(md, "mm_xlsx_yaml")
 
@@ -315,7 +327,7 @@ def render_mapping_maker() -> None:
         # utf-8-sig: 매크로/메모장 UTF-8 저장의 BOM 제거 (없어도 안전)
         md_text = mdup.getvalue().decode("utf-8-sig")
         with st.expander("MD 미리보기"):
-            st.code(md_text, language="markdown")
+            st.code(_preview(md_text), language="markdown")
         _render_md_to_yaml(md_text, "mm_md_yaml")
 
 
@@ -359,11 +371,11 @@ def _render_md_to_yaml(md_text: str, state_key: str) -> None:
                                file_name="column_mapping.yaml",
                                mime="text/yaml", key=f"{state_key}_dl")
             with st.expander("YAML 미리보기"):
-                st.code(res["yaml"], language="yaml")
+                st.code(_preview(res["yaml"]), language="yaml")
         else:
             st.error("변환 실패 — 로그를 확인하세요.")
         with st.expander("변환 로그"):
-            st.code(res["log"] or "(로그 없음)")
+            st.code(_preview(res["log"], n=40, tail=True) or "(로그 없음)")
 
 
 # ---------------------------------------------------------------------------
@@ -480,7 +492,7 @@ def _render_migration_upload() -> None:
         else:
             st.error("변환 실패")
         with st.expander("실행 로그"):
-            st.code(res["log"] or "(로그 없음)")
+            st.code(_preview(res["log"], n=40, tail=True) or "(로그 없음)")
 
 
 def _render_migration_folder() -> None:
@@ -516,7 +528,7 @@ def _render_migration_folder() -> None:
         else:
             st.error("변환 실패 — 로그를 확인하세요.")
         with st.expander("실행 로그"):
-            st.code(log or "(로그 없음)")
+            st.code(_preview(log, n=40, tail=True) or "(로그 없음)")
 
 
 # ---------------------------------------------------------------------------
@@ -626,8 +638,8 @@ def render_build_dict() -> None:
             st.success("적재 완료 — '용어 검색' 화면에서 조회하세요.")
         else:
             st.error("적재 실패 — 로그를 확인하세요.")
-        st.code((proc.stdout or "") + (
-            "\n" + proc.stderr if proc.stderr else ""))
+        st.code(_preview((proc.stdout or "") + (
+            "\n" + proc.stderr if proc.stderr else ""), n=40, tail=True))
 
 
 # ---------------------------------------------------------------------------
@@ -660,7 +672,7 @@ def _show_cmd_result(proc, area, exts, session_key, label):
     else:
         st.error(f"{label} 실패 — DB/LLM 접속·설정('설정' 화면)을 확인하세요.")
     with st.expander("실행 로그", expanded=proc.returncode != 0):
-        st.code(log or "(로그 없음)")
+        st.code(_preview(log, n=40, tail=True) or "(로그 없음)")
     return None
 
 
