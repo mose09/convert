@@ -282,7 +282,7 @@ def render_mapping_maker() -> None:
         "폴더에 `column_mapping.md` 가 생성됩니다 (UTF-8, 한글 OK).")
 
     st.divider()
-    st.subheader("② (매크로 없이) 채운 엑셀 → MD 바로 변환")
+    st.subheader("② (매크로 없이) 채운 엑셀 → MD + YAML 바로 변환")
     up = st.file_uploader("작성한 매핑 엑셀 (.xlsx) — '매핑' 시트 9컬럼",
                           type=["xlsx"])
     if up is not None:
@@ -303,6 +303,66 @@ def render_mapping_maker() -> None:
                                mime="text/markdown")
             with st.expander("MD 미리보기"):
                 st.code(md, language="markdown")
+            st.markdown("**→ 마이그레이션 입력용 YAML 로 변환**")
+            _render_md_to_yaml(md, "mm_xlsx_yaml")
+
+    st.divider()
+    st.subheader("③ 기존 MD → 매핑 YAML (매크로로 만든 .md 등)")
+    st.caption("VBA 매크로로 만든 `column_mapping.md` 를 마이그레이션 입력용 "
+               "YAML 로 변환합니다 (convert-mapping).")
+    mdup = st.file_uploader("column_mapping.md 업로드", type=["md"])
+    if mdup is not None:
+        md_text = mdup.getvalue().decode("utf-8")
+        with st.expander("MD 미리보기"):
+            st.code(md_text, language="markdown")
+        _render_md_to_yaml(md_text, "mm_md_yaml")
+
+
+def _md_to_yaml(md_text: str, no_llm: bool):
+    """MD (9컬럼 flat) → column_mapping.yaml (convert-mapping subprocess).
+
+    Returns ``(yaml_text | None, log)``."""
+    work = Path(tempfile.mkdtemp(prefix="webui_map_"))
+    mp = work / "column_mapping.md"
+    mp.write_text(md_text, encoding="utf-8")
+    yp = work / "column_mapping.yaml"
+    cmd = [sys.executable, str(ROOT / "main.py"), "convert-mapping",
+           "--mapping-md", str(mp), "--output", str(yp)]
+    if no_llm:
+        cmd += ["--no-llm"]
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    yaml_text = yp.read_text(encoding="utf-8") if yp.is_file() else None
+    return yaml_text, log
+
+
+def _render_md_to_yaml(md_text: str, state_key: str) -> None:
+    """MD→YAML 변환 버튼 + 결과(다운로드/미리보기/검증) 렌더 (섹션 ②/③ 공유)."""
+    no_llm = st.checkbox("LLM 사용 안 함 (heuristic 만)", value=True,
+                         key=f"{state_key}_nollm",
+                         help="폐쇄망/LLM 미설정이면 켜두세요. 끄면 설정의 LLM "
+                              "으로 split/merge 등 복잡 케이스를 더 잘 추론.")
+    if st.button("▶ MD → 매핑 YAML 변환", key=f"{state_key}_btn"):
+        with st.spinner("변환 중…"):
+            yaml_text, log = _md_to_yaml(md_text, no_llm)
+        st.session_state[state_key] = {"yaml": yaml_text, "log": log}
+
+    res = st.session_state.get(state_key)
+    if res:
+        if res["yaml"]:
+            val = next((l.strip() for l in res["log"].splitlines()
+                        if "Validation" in l), "")
+            st.success(f"YAML 생성 완료. {val}")
+            st.download_button("⬇ column_mapping.yaml 내려받기",
+                               data=res["yaml"],
+                               file_name="column_mapping.yaml",
+                               mime="text/yaml", key=f"{state_key}_dl")
+            with st.expander("YAML 미리보기"):
+                st.code(res["yaml"], language="yaml")
+        else:
+            st.error("변환 실패 — 로그를 확인하세요.")
+        with st.expander("변환 로그"):
+            st.code(res["log"] or "(로그 없음)")
 
 
 # ---------------------------------------------------------------------------
