@@ -570,13 +570,103 @@ def render_build_dict() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 공통: 산출물 위치 찾기 + 명령 결과 표시
+# ---------------------------------------------------------------------------
+def _latest_output_file(area: str, exts: tuple):
+    """``output/<area>/<최신날짜>/`` 에서 확장자 매칭 최신(mtime) 파일."""
+    base = ROOT / "output" / area
+    if not base.is_dir():
+        return None
+    for d in sorted((p for p in base.glob("*") if p.is_dir()), reverse=True):
+        files = [p for p in d.iterdir() if p.is_file() and p.suffix in exts]
+        if files:
+            return max(files, key=lambda p: p.stat().st_mtime)
+    return None
+
+
+def _show_cmd_result(proc, area, exts, session_key, label):
+    log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    if proc.returncode == 0:
+        f = _latest_output_file(area, exts)
+        if f:
+            st.success(f"{label} 생성: {f}")
+            if session_key:
+                st.session_state[session_key] = str(f)
+            st.download_button(f"⬇ {f.name}", data=f.read_bytes(),
+                               file_name=f.name)
+            return f
+        st.warning(f"{label} 명령은 끝났으나 산출물을 못 찾았습니다 — 로그 확인.")
+    else:
+        st.error(f"{label} 실패 — DB/LLM 접속·설정('설정' 화면)을 확인하세요.")
+    with st.expander("실행 로그", expanded=proc.returncode != 0):
+        st.code(log or "(로그 없음)")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 화면: 스키마 추출 (schema — Oracle → .md)
+# ---------------------------------------------------------------------------
+def render_schema_extract() -> None:
+    st.header("📤 스키마 추출 (Oracle → .md)")
+    st.caption("Oracle DB 에 접속해 테이블/컬럼/PK/FK/인덱스를 .md 로 추출합니다. "
+               "접속 정보는 **설정** 화면(.env)에서 지정하세요.")
+    fmt = st.radio("형식", ["markdown", "txt"], horizontal=True)
+    c1, c2 = st.columns(2)
+    owner = c1.text_input("스키마 owner (선택)",
+                          help="미지정 시 .env 의 ORACLE_SCHEMA_OWNER")
+    table = c2.text_input("특정 테이블만 (선택)")
+    if st.button("▶ 추출 실행", type="primary"):
+        with st.spinner("추출 중… (DB 접속)"):
+            cmd = [sys.executable, str(ROOT / "main.py"), "schema",
+                   "--format", fmt]
+            if owner.strip():
+                cmd += ["--owner", owner.strip()]
+            if table.strip():
+                cmd += ["--table", table.strip()]
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  cwd=str(ROOT))
+        _show_cmd_result(proc, "schema", (".md", ".txt"),
+                         "last_schema_md", "스키마")
+
+
+# ---------------------------------------------------------------------------
+# 화면: 코멘트 증강 (enrich-schema — LLM)
+# ---------------------------------------------------------------------------
+def render_enrich_schema() -> None:
+    st.header("💬 스키마 코멘트 증강 (LLM)")
+    st.caption("빈 테이블/컬럼 코멘트를 LLM 이 약어를 해석해 채웁니다. LLM 접속은 "
+               "**설정** 화면(.env).")
+    default = st.session_state.get("last_schema_md", "")
+    path = st.text_input("스키마 .md 경로", value=default,
+                         help="스키마 추출 화면에서 만든 파일 경로가 자동 채워집니다.")
+    up = st.file_uploader("또는 스키마 .md 업로드", type=["md"])
+    ready = bool(path.strip()) or up is not None
+    if st.button("▶ 증강 실행", type="primary", disabled=not ready):
+        with st.spinner("증강 중… (LLM 호출)"):
+            if up is not None:
+                work = Path(tempfile.mkdtemp(prefix="webui_enrich_"))
+                schema_md = work / up.name
+                schema_md.write_bytes(up.getbuffer())
+            else:
+                schema_md = Path(path.strip())
+            cmd = [sys.executable, str(ROOT / "main.py"), "enrich-schema",
+                   "--schema-md", str(schema_md)]
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  cwd=str(ROOT))
+        _show_cmd_result(proc, "enrich-schema", (".md",),
+                         "last_schema_md", "증강 스키마")
+
+
+# ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
 _PAGES = {
-    "매핑 만들기": render_mapping_maker,
-    "SQL 마이그레이션": render_migration,
+    "스키마 추출": render_schema_extract,
+    "코멘트 증강": render_enrich_schema,
     "표준사전 적재": render_build_dict,
     "용어 검색": render_term_search,
+    "매핑 만들기": render_mapping_maker,
+    "SQL 마이그레이션": render_migration,
     "설정": render_settings,
 }
 
