@@ -40,7 +40,8 @@
 - [x] 스키마 추출(schema, DB) + 코멘트 증강(enrich-schema, LLM) 화면
       — subprocess + 공통 결과 헬퍼(_latest_output_file). DB/LLM 은
       로컬에서 실행 (이 환경 검증 불가, 명령구성/에러처리/부팅만)
-- [ ] (후속) ERD 추출 + ERD 보기 화면
+- [x] ERD 추출(query+erd-md/erd-group → HTML) + ERD 보기(components.html
+      임베드, 폐쇄망 D3 안내). Phase 2 완료 — README §18/매뉴얼 갱신
 
 ### 진행 중: `docs` — 기능 카탈로그 형태로 재설계
 

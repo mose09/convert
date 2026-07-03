@@ -2022,10 +2022,11 @@ python main.py erd-rag
 python main.py erd-rag --tables "ORDERS,CUSTOMERS"
 ```
 
-### 18. 로컬 실행 화면 (webui) — SQL 마이그레이션 + 용어검색
+### 18. 로컬 실행 화면 (webui) — 전 파이프라인 GUI
 
-비개발자가 CLI 없이 **브라우저 화면**으로 SQL 마이그레이션과 용어 검색을
-로컬에서 실행할 수 있는 Streamlit 앱 (`webui/app.py`).
+비개발자가 CLI 없이 **브라우저 화면**으로 주요 기능을 로컬에서 실행하는
+Streamlit 앱 (`webui/app.py`). 각 화면은 기존 CLI 를 그대로(subprocess)
+호출하므로 결과가 동일하다.
 
 ```powershell
 # 실행 (또는 루트의 run_webui.bat 더블클릭)
@@ -2033,14 +2034,24 @@ python -m streamlit run webui/app.py
 # → http://localhost:8501 자동 오픈. 외부 전송 없음 (localhost 전용).
 ```
 
-두 화면:
-- **SQL 마이그레이션**: AS-IS mapper XML (여러 개) + 매핑 YAML 업로드 →
-  옵션(한글 주석 / Stage A 검증 skip / LLM 보조 / TO-BE 스키마 파생·업로드)
-  선택 → **변환 실행** → 변환 XML + Excel 리포트 zip 다운로드.
-  내부적으로 `migrate-sql` 을 그대로 호출하므로 CLI 와 결과 동일.
-- **용어 검색**: `build-dict` 로 적재한 표준사전 SQLite
-  (`vectordb/standard_dict.sqlite`) 를 단어/용어/도메인별 LIKE 검색 →
-  표로 결과 (만료 항목 포함 토글).
+화면 (사이드바):
+- **스키마 추출** — `schema` (Oracle 접속, 형식/owner/table).
+- **코멘트 증강** — `enrich-schema` (LLM, 스키마 .md 경로 자동 연결).
+- **ERD 추출** — 스키마 .md (+ 선택 mapper 폴더 JOIN) → `erd-md`/`erd-group`
+  인터랙티브 HTML.
+- **ERD 보기** — 생성된 ERD HTML 임베드 (최근 생성/경로/업로드). 폐쇄망은
+  D3(CDN) 로컬 반입 필요.
+- **표준사전 적재** — `build-dict` (단어/용어/도메인 Excel → SQLite,
+  `--no-embed` 기본).
+- **용어 검색** — 적재된 SQLite 를 단어/용어/도메인별 LIKE 검색 (만료 토글).
+- **매핑 만들기** — 9컬럼 엑셀 템플릿 + VBA 매크로(.bas) → `column_mapping.md`
+  (매크로 없이 "엑셀 업로드→MD 변환"도 제공).
+- **SQL 마이그레이션** — 파일 업로드(→zip) / 폴더 지정(→지정 폴더) 두 모드.
+  `migrate-sql` 호출 (한글 주석 / Stage A skip / LLM / 스키마 파생·지정).
+- **설정** — `.env` (LLM/DB 접속) 그룹별 편집 (로컬 저장, 비밀번호 마스킹).
+
+DB/LLM 이 필요한 화면(스키마 추출·코멘트 증강)은 **설정** 화면에서 접속
+정보를 먼저 지정해야 한다.
 
 설치 (폐쇄망은 wheel 반입 — `requirements.txt` 의 streamlit 항목 참고):
 ```powershell
