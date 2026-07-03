@@ -2,6 +2,7 @@ import argparse
 import logging
 import os
 import re
+import sys
 
 import yaml
 from dotenv import load_dotenv
@@ -1516,8 +1517,12 @@ def cmd_migrate_sql(args):
         xml_files = xml_files_iter
         print(f"Scanning 1 XML file (single-file mode): {mybatis_dir}")
     else:
-        xml_files = sorted(scan_root.rglob("*.xml"))
-        print(f"Scanning {len(xml_files)} XML file(s) under {scan_root}...")
+        # 프로젝트 폴더에는 pom.xml / web.xml / spring config 등 mapper 가
+        # 아닌 XML 이 섞여 있으므로, 실제 MyBatis/iBatis mapper 만 식별해
+        # 변환한다 (scan_mybatis_dir = _is_sql_mapper + 빌드산출물 skip).
+        from oracle_embeddings.mybatis_parser import scan_mybatis_dir
+        xml_files = [Path(p) for p in scan_mybatis_dir(str(scan_root))]
+        print(f"Scanning {len(xml_files)} mapper XML file(s) under {scan_root}...")
 
     all_results = []
     base_output = config.get("storage", {}).get("output_dir", "./output")
@@ -2640,6 +2645,15 @@ def cmd_analyze_legacy(args):
 
 
 def main():
+    # Windows 한글(cp949) 콘솔/파이프에 특수문자(→, ✓, 박스문자 등)를 출력할
+    # 때 UnicodeEncodeError 로 죽는 것 방지 — 인코딩은 유지하되 표현 못하는
+    # 문자는 대체(?)한다. (webui subprocess 는 PYTHONUTF8=1 로 utf-8 강제.)
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(errors="replace")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         description="Oracle Schema & Query Analyzer for Msty Knowledge Base"
     )

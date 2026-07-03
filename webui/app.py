@@ -76,6 +76,16 @@ def _write_temp_config(out_dir: Path) -> Path:
     return tmp
 
 
+def _run(cmd: list):
+    """subprocess.run 래퍼 — 자식(main.py)을 UTF-8 모드로 강제해 Windows
+    한글(cp949) 콘솔/파이프 인코딩 에러(UnicodeEncodeError)를 방지하고,
+    출력도 UTF-8 로 캡처한다."""
+    env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    return subprocess.run(cmd, capture_output=True, text=True,
+                          encoding="utf-8", errors="replace",
+                          cwd=str(ROOT), env=env)
+
+
 def _preview(text: str, n: int = 20, tail: bool = False) -> str:
     """큰 텍스트를 앞/뒤 ``n`` 줄만 잘라 미리보기용으로. (다운로드는 전체 유지 —
     매핑이 수만 건이면 st.code 로 전체를 그리면 브라우저가 멈춘다.)"""
@@ -344,7 +354,7 @@ def _md_to_yaml(md_text: str, no_llm: bool):
            "--mapping-md", str(mp), "--output", str(yp)]
     if no_llm:
         cmd += ["--no-llm"]
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    proc = _run(cmd)
     log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
     yaml_text = yp.read_text(encoding="utf-8") if yp.is_file() else None
     return yaml_text, log
@@ -407,7 +417,7 @@ def _run_migrate(in_dir, map_path, out_dir, flags):
     cmd = [sys.executable, str(ROOT / "main.py"), "--config", str(cfg),
            "migrate-sql", "--mybatis-dir", str(in_dir),
            "--mapping", str(map_path)] + flags
-    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    proc = _run(cmd)
     log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
     dated = sorted(glob.glob(str(Path(out_dir) / "migration" / "*")))
     summary = next((l.strip() for l in log.splitlines()
@@ -655,8 +665,7 @@ def render_build_dict() -> None:
             if no_embed:
                 cmd += ["--no-embed"]
             db_path.parent.mkdir(parents=True, exist_ok=True)
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(ROOT))
+            proc = _run(cmd)
         if proc.returncode == 0:
             st.success("적재 완료 — '용어 검색' 화면에서 조회하세요.")
         else:
@@ -719,8 +728,7 @@ def render_schema_extract() -> None:
                 cmd += ["--owner", owner.strip()]
             if table.strip():
                 cmd += ["--table", table.strip()]
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(ROOT))
+            proc = _run(cmd)
         _show_cmd_result(proc, "schema", (".md", ".txt"),
                          "last_schema_md", "스키마")
 
@@ -747,8 +755,7 @@ def render_enrich_schema() -> None:
                 schema_md = Path(path.strip())
             cmd = [sys.executable, str(ROOT / "main.py"), "enrich-schema",
                    "--schema-md", str(schema_md)]
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(ROOT))
+            proc = _run(cmd)
         _show_cmd_result(proc, "enrich-schema", (".md",),
                          "last_schema_md", "증강 스키마")
 
@@ -787,10 +794,8 @@ def render_erd_extract() -> None:
 
             query_md = None
             if mapper_dir.strip() and Path(mapper_dir.strip()).is_dir():
-                subprocess.run(
-                    [sys.executable, str(ROOT / "main.py"), "query",
-                     mapper_dir.strip(), "--schema-md", str(schema_md)],
-                    capture_output=True, text=True, cwd=str(ROOT))
+                _run([sys.executable, str(ROOT / "main.py"), "query",
+                     mapper_dir.strip(), "--schema-md", str(schema_md)])
                 query_md = _latest_output_file("query", (".md",))
 
             sub = "erd-md" if erd_type.startswith("erd-md") else "erd-group"
@@ -803,8 +808,7 @@ def render_erd_extract() -> None:
                     cmd += ["--related-only"]
                 if tables.strip():
                     cmd += ["--tables", tables.strip()]
-            proc = subprocess.run(cmd, capture_output=True, text=True,
-                                  cwd=str(ROOT))
+            proc = _run(cmd)
         f = _show_cmd_result(proc, "erd", (".html",), "last_erd_html", "ERD HTML")
         if f:
             st.info("→ **ERD 보기** 화면에서 열 수 있습니다.")
