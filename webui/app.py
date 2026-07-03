@@ -19,6 +19,7 @@ from __future__ import annotations
 import glob
 import io
 import os
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -496,12 +497,14 @@ def _render_migration_upload() -> None:
 
 
 def _render_migration_folder() -> None:
-    st.caption("로컬 폴더 경로를 지정합니다. 이 PC 에서 직접 접근하므로 대량 "
-               "변환에 적합합니다.")
+    st.caption("로컬 폴더 경로를 지정합니다. 변환 XML 은 **입력 폴더 구조 그대로** "
+               "출력 폴더에 떨어집니다 (대량 변환에 적합).")
     in_dir = st.text_input("① AS-IS mapper 폴더 경로 (하위 .xml 재귀)")
     map_path = st.text_input("② 컬럼 매핑 YAML 경로")
-    out_dir = st.text_input("③ 출력 폴더 경로",
-                            help="여기 아래 migration/<날짜>/ 로 결과가 떨어집니다.")
+    out_dir = st.text_input(
+        "③ 출력 폴더 경로",
+        help="입력 폴더의 상대 경로를 그대로 유지해 변환 XML 을 씁니다. "
+             "리포트(xlsx)/파생스키마도 이 폴더에 함께 저장됩니다.")
     from_mapping, emit, no_validate, llm = _schema_options()
     schema_path = None
     if not from_mapping:
@@ -514,17 +517,37 @@ def _render_migration_folder() -> None:
         and (from_mapping or not _bad(schema_path, False))
     if st.button("▶ 변환 실행", type="primary", disabled=not ready):
         with st.spinner("변환 중…"):
-            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            out_root = Path(out_dir)
+            out_root.mkdir(parents=True, exist_ok=True)
+            # migrate-sql 은 임시 폴더로 격리 실행 후, converted/ 트리를
+            # 입력 구조 그대로 출력 폴더로 복사한다.
+            tmp = Path(tempfile.mkdtemp(prefix="webui_migf_"))
             flags = _migrate_flags(from_mapping, schema_path, emit,
                                    no_validate, llm)
-            rc, log, dated, summary = _run_migrate(
-                in_dir, map_path, out_dir, flags)
-        if rc == 0 and dated is not None:
+            rc, log, dated, summary = _run_migrate(in_dir, map_path, tmp, flags)
+            xmls, reports = [], []
+            if dated is not None:
+                conv = dated / "converted"
+                if conv.is_dir():
+                    for p in conv.rglob("*"):
+                        if p.is_file():
+                            rel = p.relative_to(conv)
+                            dest = out_root / rel
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(p, dest)
+                            xmls.append(str(rel))
+                # 리포트(xlsx) / 파생스키마(md) 도 출력 폴더 루트에
+                for p in dated.iterdir():
+                    if p.is_file():
+                        shutil.copy2(p, out_root / p.name)
+                        reports.append(p.name)
+        if rc == 0 and xmls:
             st.success(summary or "변환 완료")
-            st.info(f"결과 폴더: {dated}")
-            files = sorted(str(p.relative_to(dated))
-                           for p in dated.rglob("*") if p.is_file())
-            st.write("생성 파일:", files)
+            st.info(f"출력 폴더(입력 구조 유지): {out_root}\n\n"
+                    f"변환 XML {len(xmls)}개 · 리포트 {len(reports)}개")
+            st.write("생성 XML (앞 200개):", xmls[:200])
+            if reports:
+                st.write("리포트/스키마:", reports)
         else:
             st.error("변환 실패 — 로그를 확인하세요.")
         with st.expander("실행 로그"):
