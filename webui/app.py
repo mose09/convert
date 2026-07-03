@@ -525,11 +525,57 @@ def render_term_search() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 화면: 표준사전 적재 (build-dict → SQLite)
+# ---------------------------------------------------------------------------
+def render_build_dict() -> None:
+    st.header("📚 표준사전 적재 (단어/용어/도메인 → SQLite)")
+    st.caption("표준 사전 Excel 을 SQLite 로 적재합니다. 적재 후 **용어 검색** "
+               "화면에서 조회 가능. **기존 내용은 삭제 후 재적재**됩니다.")
+
+    word = st.file_uploader("단어사전 (.xlsx)", type=["xlsx"])
+    term = st.file_uploader("용어사전 (.xlsx)", type=["xlsx"])
+    domain = st.file_uploader("도메인사전 (.xlsx, 선택)", type=["xlsx"])
+    no_embed = st.checkbox(
+        "임베딩 건너뛰기 (--no-embed)", value=True,
+        help="용어검색은 임베딩이 불필요합니다. 임베딩 API 미설정 시 켜두세요 "
+             "(recommend-names 의 RAG 를 쓸 때만 임베딩 필요).")
+
+    db_path = _default_dict_db()
+    st.caption(f"저장 위치: `{db_path}`")
+
+    ready = word is not None or term is not None or domain is not None
+    if st.button("▶ 적재 실행", type="primary", disabled=not ready):
+        with st.spinner("적재 중…"):
+            work = Path(tempfile.mkdtemp(prefix="webui_dict_"))
+            cmd = [sys.executable, str(ROOT / "main.py"), "build-dict",
+                   "--dict-db", str(db_path)]
+            for label, f, flag in [("word", word, "--word-dict"),
+                                   ("term", term, "--term-dict"),
+                                   ("domain", domain, "--domain-dict")]:
+                if f is not None:
+                    p = work / f"{label}.xlsx"
+                    p.write_bytes(f.getbuffer())
+                    cmd += [flag, str(p)]
+            if no_embed:
+                cmd += ["--no-embed"]
+            db_path.parent.mkdir(parents=True, exist_ok=True)
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  cwd=str(ROOT))
+        if proc.returncode == 0:
+            st.success("적재 완료 — '용어 검색' 화면에서 조회하세요.")
+        else:
+            st.error("적재 실패 — 로그를 확인하세요.")
+        st.code((proc.stdout or "") + (
+            "\n" + proc.stderr if proc.stderr else ""))
+
+
+# ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
 _PAGES = {
     "매핑 만들기": render_mapping_maker,
     "SQL 마이그레이션": render_migration,
+    "표준사전 적재": render_build_dict,
     "용어 검색": render_term_search,
     "설정": render_settings,
 }
