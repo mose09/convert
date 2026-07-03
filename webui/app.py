@@ -658,11 +658,105 @@ def render_enrich_schema() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 화면: ERD 추출 (query + erd-md / erd-group)
+# ---------------------------------------------------------------------------
+def render_erd_extract() -> None:
+    st.header("🔗 ERD 추출")
+    st.caption("스키마 .md (+ 선택: mapper XML 폴더의 JOIN 관계) → 인터랙티브 "
+               "HTML ERD. 생성 후 **ERD 보기** 화면에서 열람.")
+    default = st.session_state.get("last_schema_md", "")
+    schema_path = st.text_input("스키마 .md 경로", value=default)
+    schema_up = st.file_uploader("또는 스키마 .md 업로드", type=["md"])
+    mapper_dir = st.text_input(
+        "mapper XML 폴더 경로 (선택 — 쿼리 JOIN 관계 추가)",
+        help="지정하면 query 로 JOIN 관계를 뽑아 ERD 에 반영합니다.")
+    erd_type = st.radio("ERD 종류",
+                        ["erd-md (단일)", "erd-group (주제영역 분할)"],
+                        horizontal=True)
+    related_only, tables = False, ""
+    if erd_type.startswith("erd-md"):
+        c1, c2 = st.columns(2)
+        related_only = c1.checkbox("관계 있는 테이블만 (--related-only)")
+        tables = c2.text_input("특정 테이블만 (쉼표, 선택)")
+
+    ready = bool(schema_path.strip()) or schema_up is not None
+    if st.button("▶ ERD 생성", type="primary", disabled=not ready):
+        with st.spinner("생성 중…"):
+            work = Path(tempfile.mkdtemp(prefix="webui_erd_"))
+            if schema_up is not None:
+                schema_md = work / "schema.md"
+                schema_md.write_bytes(schema_up.getbuffer())
+            else:
+                schema_md = Path(schema_path.strip())
+
+            query_md = None
+            if mapper_dir.strip() and Path(mapper_dir.strip()).is_dir():
+                subprocess.run(
+                    [sys.executable, str(ROOT / "main.py"), "query",
+                     mapper_dir.strip(), "--schema-md", str(schema_md)],
+                    capture_output=True, text=True, cwd=str(ROOT))
+                query_md = _latest_output_file("query", (".md",))
+
+            sub = "erd-md" if erd_type.startswith("erd-md") else "erd-group"
+            cmd = [sys.executable, str(ROOT / "main.py"), sub,
+                   "--schema-md", str(schema_md)]
+            if query_md:
+                cmd += ["--query-md", str(query_md)]
+            if sub == "erd-md":
+                if related_only:
+                    cmd += ["--related-only"]
+                if tables.strip():
+                    cmd += ["--tables", tables.strip()]
+            proc = subprocess.run(cmd, capture_output=True, text=True,
+                                  cwd=str(ROOT))
+        f = _show_cmd_result(proc, "erd", (".html",), "last_erd_html", "ERD HTML")
+        if f:
+            st.info("→ **ERD 보기** 화면에서 열 수 있습니다.")
+
+
+# ---------------------------------------------------------------------------
+# 화면: ERD 보기 (생성된 HTML 임베드)
+# ---------------------------------------------------------------------------
+def render_erd_view() -> None:
+    import streamlit.components.v1 as components
+    st.header("👁️ ERD 보기")
+    last = st.session_state.get("last_erd_html", "")
+    src = st.radio("ERD 소스", ["최근 생성", "파일 경로", "업로드"],
+                   horizontal=True)
+    html, name = None, None
+    if src == "최근 생성":
+        if last and Path(last).is_file():
+            html, name = Path(last).read_text(encoding="utf-8"), Path(last).name
+        else:
+            st.info("최근 생성된 ERD 가 없습니다. 'ERD 추출' 을 먼저 실행하거나 "
+                    "다른 소스를 선택하세요.")
+    elif src == "파일 경로":
+        p = st.text_input("ERD HTML 경로", value=last)
+        if p.strip() and Path(p.strip()).is_file():
+            html, name = Path(p.strip()).read_text(encoding="utf-8"), Path(p.strip()).name
+        elif p.strip():
+            st.warning("파일을 찾을 수 없습니다.")
+    else:
+        up = st.file_uploader("ERD HTML 업로드", type=["html"])
+        if up is not None:
+            html, name = up.getvalue().decode("utf-8"), up.name
+
+    if html:
+        st.caption(f"표시 중: `{name}`")
+        components.html(html, height=800, scrolling=True)
+        st.caption("⚠ 폐쇄망에서는 ERD 의 D3(CDN)가 안 열려 인터랙티브가 "
+                   "제한될 수 있습니다 — d3.v7.min.js 를 HTML 옆에 로컬 반입하면 "
+                   "정상 동작합니다.")
+
+
+# ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
 _PAGES = {
     "스키마 추출": render_schema_extract,
     "코멘트 증강": render_enrich_schema,
+    "ERD 추출": render_erd_extract,
+    "ERD 보기": render_erd_view,
     "표준사전 적재": render_build_dict,
     "용어 검색": render_term_search,
     "매핑 만들기": render_mapping_maker,
