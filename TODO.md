@@ -23,6 +23,17 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: 배포 패키지 (포터블 파이썬 + run.bat)
+
+비개발자 PC 에 파이썬 설치 없이 zip→압축풀기→run.bat 로 실행.
+PyInstaller(exe)는 Streamlit freezing 불안정 → 포터블 파이썬 방식.
+
+- [x] `packaging/run.bat` (런타임 런처) + `packaging/사용법.txt`
+- [x] `build_dist.ps1` — embeddable 파이썬 + 의존성 설치 + 앱 복사 +
+      zip. 인터넷/폐쇄망(wheels) 양쪽. dist/build 는 .gitignore
+- [x] README §19 + 배포 레이아웃(app/ 재배치+PYTHONPATH) 부팅 검증
+- [ ] 사용자 Windows 에서 build_dist.ps1 실 실행 확인 (리눅스 검증 불가)
+
 ### 진행 중: 로컬 실행 화면 (webui) — Streamlit 확장
 
 비개발자가 CLI 없이 브라우저로 전 파이프라인 실행. 순서: 마이그레이션
