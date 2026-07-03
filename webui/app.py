@@ -76,6 +76,107 @@ def _write_temp_config(out_dir: Path) -> Path:
 
 
 # ---------------------------------------------------------------------------
+# .env 읽기/쓰기 (설정 화면)
+# ---------------------------------------------------------------------------
+def _env_path() -> Path:
+    return ROOT / ".env"
+
+
+def _read_env() -> dict:
+    """현재 ``.env`` (없으면 ``.env.example``) 를 KEY=VALUE dict 로."""
+    path = _env_path()
+    src = path if path.is_file() else (ROOT / ".env.example")
+    env: dict = {}
+    if src.is_file():
+        for line in src.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if not s or s.startswith("#") or "=" not in s:
+                continue
+            k, v = s.split("=", 1)
+            env[k.strip()] = v.strip()
+    return env
+
+
+def _write_env(updates: dict) -> None:
+    """``.env`` 의 알려진 키만 갱신하고 나머지 줄/주석은 보존. 없던 키는 추가."""
+    path = _env_path()
+    seen: set = set()
+    out_lines: list = []
+    if path.is_file():
+        for line in path.read_text(encoding="utf-8").splitlines():
+            s = line.strip()
+            if s and not s.startswith("#") and "=" in s:
+                k = s.split("=", 1)[0].strip()
+                if k in updates:
+                    out_lines.append(f"{k}={updates[k]}")
+                    seen.add(k)
+                    continue
+            out_lines.append(line)
+    for k, v in updates.items():
+        if k not in seen:
+            out_lines.append(f"{k}={v}")
+    path.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+
+# .env 필드 그룹 — (그룹명, [(키, 라벨, 비밀번호여부), ...])
+_ENV_GROUPS = [
+    ("Oracle AS-IS", [
+        ("ORACLE_USER", "사용자", False),
+        ("ORACLE_PASSWORD", "비밀번호", True),
+        ("ORACLE_DSN", "DSN (host:port/service)", False),
+        ("ORACLE_SCHEMA_OWNER", "스키마 owner", False),
+        ("ORACLE_INSTANT_CLIENT_DIR", "Instant Client 경로 (thick)", False),
+    ]),
+    ("Oracle TO-BE (validate-migration Stage B)", [
+        ("ORACLE_TOBE_DSN", "TO-BE DSN", False),
+        ("ORACLE_TOBE_USER", "TO-BE 사용자", False),
+        ("ORACLE_TOBE_PASSWORD", "TO-BE 비밀번호", True),
+    ]),
+    ("LLM (enrich-schema / terms / standardize 등)", [
+        ("LLM_API_BASE", "API Base", False),
+        ("LLM_API_KEY", "API Key", True),
+        ("LLM_MODEL", "모델", False),
+    ]),
+    ("임베딩 (erd-rag / recommend-names RAG)", [
+        ("EMBEDDING_API_BASE", "API Base", False),
+        ("EMBEDDING_API_KEY", "API Key", True),
+        ("EMBEDDING_MODEL", "모델", False),
+    ]),
+    ("패턴/코딩 LLM (discover-patterns / biz 추출 / 화면변환)", [
+        ("PATTERN_LLM_API_BASE", "API Base", False),
+        ("PATTERN_LLM_API_KEY", "API Key", True),
+        ("PATTERN_LLM_MODEL", "모델", False),
+    ]),
+]
+
+
+def render_settings() -> None:
+    st.header("⚙️ 설정 (LLM / DB 환경)")
+    st.caption("`.env` 파일을 편집합니다. 값은 이 PC 로컬에만 저장되고 외부로 "
+               "전송되지 않습니다. 저장 후 실행 중인 화면/CLI 에 반영됩니다.")
+    if not _env_path().is_file():
+        st.info("`.env` 가 없어 `.env.example` 기본값을 표시합니다. 저장하면 "
+                "`.env` 가 생성됩니다.")
+
+    env = _read_env()
+    updates: dict = {}
+    with st.form("settings_form"):
+        for group, fields in _ENV_GROUPS:
+            st.subheader(group)
+            cols = st.columns(2)
+            for i, (key, label, secret) in enumerate(fields):
+                updates[key] = cols[i % 2].text_input(
+                    f"{label}  ·  `{key}`", value=env.get(key, ""),
+                    type="password" if secret else "default",
+                    key=f"env_{key}")
+        saved = st.form_submit_button("💾 저장", type="primary")
+    if saved:
+        # 빈 값도 그대로 저장 (사용자가 지운 것 반영)
+        _write_env(updates)
+        st.success(f"저장됨: {_env_path()}")
+
+
+# ---------------------------------------------------------------------------
 # 화면 1: SQL 마이그레이션
 # ---------------------------------------------------------------------------
 def render_migration() -> None:
@@ -256,16 +357,20 @@ def render_term_search() -> None:
 # ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
+_PAGES = {
+    "SQL 마이그레이션": render_migration,
+    "용어 검색": render_term_search,
+    "설정": render_settings,
+}
+
+
 def main() -> None:
     st.sidebar.title("메뉴")
-    page = st.sidebar.radio("화면", ["SQL 마이그레이션", "용어 검색"],
+    page = st.sidebar.radio("화면", list(_PAGES.keys()),
                             label_visibility="collapsed")
     st.sidebar.markdown("---")
     st.sidebar.caption("로컬 실행 · 오프라인 · 외부 전송 없음")
-    if page == "SQL 마이그레이션":
-        render_migration()
-    else:
-        render_term_search()
+    _PAGES[page]()
 
 
 main()
