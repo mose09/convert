@@ -1735,12 +1735,15 @@ def _build_ko_lookup(to_be_schema_path, terms_md):
     plus an optional terms_dictionary.md (Korean gloss)."""
     from oracle_embeddings.md_parser import parse_schema_md
     out: dict = {}
-    schema = parse_schema_md(str(to_be_schema_path))
-    for tbl in schema["tables"]:
-        for col in tbl["columns"]:
-            c = col.get("comment")
-            if c:
-                out[f"{tbl['name'].upper()}.{col['column_name'].upper()}"] = c
+    # to_be_schema 가 없을 수 있다 (--to-be-schema-from-mapping 등). None/
+    # 없는 경로면 str(None)="None" 을 열어 FileNotFoundError 나므로 skip.
+    if to_be_schema_path and os.path.isfile(str(to_be_schema_path)):
+        schema = parse_schema_md(str(to_be_schema_path))
+        for tbl in schema["tables"]:
+            for col in tbl["columns"]:
+                c = col.get("comment")
+                if c:
+                    out[f"{tbl['name'].upper()}.{col['column_name'].upper()}"] = c
     if terms_md and terms_md.is_file():
         try:
             import re
