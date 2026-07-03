@@ -308,113 +308,154 @@ def render_mapping_maker() -> None:
 # ---------------------------------------------------------------------------
 # 화면 1: SQL 마이그레이션
 # ---------------------------------------------------------------------------
+def _migrate_flags(schema_from_mapping: bool, schema_path, emit_comments: bool,
+                   no_validate: bool, llm_fallback: bool) -> list:
+    flags = ["--output-format", "excel,xml"]
+    if schema_from_mapping:
+        flags += ["--to-be-schema-from-mapping"]
+    elif schema_path:
+        flags += ["--to-be-schema", str(schema_path)]
+    if emit_comments:
+        flags += ["--emit-column-comments"]
+    if no_validate:
+        flags += ["--no-validate"]
+    if llm_fallback:
+        flags += ["--llm-fallback"]
+    return flags
+
+
+def _run_migrate(in_dir, map_path, out_dir, flags):
+    """migrate-sql 을 subprocess 로 실행. output_dir 을 out_dir 로 격리.
+
+    Returns ``(returncode, log, dated_dir | None, summary)``."""
+    cfg = _write_temp_config(Path(out_dir))
+    # ``--config`` 는 전역 인자라 subcommand 앞.
+    cmd = [sys.executable, str(ROOT / "main.py"), "--config", str(cfg),
+           "migrate-sql", "--mybatis-dir", str(in_dir),
+           "--mapping", str(map_path)] + flags
+    proc = subprocess.run(cmd, capture_output=True, text=True, cwd=str(ROOT))
+    log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
+    dated = sorted(glob.glob(str(Path(out_dir) / "migration" / "*")))
+    summary = next((l.strip() for l in log.splitlines()
+                    if l.startswith("Converted ")), "")
+    return proc.returncode, log, (Path(dated[-1]) if dated else None), summary
+
+
 def render_migration() -> None:
     st.header("🛠️ SQL 마이그레이션")
-    st.caption("AS-IS MyBatis mapper XML + 컬럼 매핑 YAML → TO-BE 변환 XML + "
-               "Excel 리포트. 결과는 zip 으로 내려받습니다.")
+    mode = st.radio("실행 방식", ["파일 업로드 (결과 zip 다운로드)",
+                                  "폴더 지정 (지정 폴더로 출력)"],
+                    horizontal=True)
+    st.divider()
+    if mode.startswith("파일 업로드"):
+        _render_migration_upload()
+    else:
+        _render_migration_folder()
 
-    mappers = st.file_uploader(
-        "① AS-IS mapper XML (여러 개 선택 가능)",
-        type=["xml"], accept_multiple_files=True)
-    mapping = st.file_uploader("② 컬럼 매핑 YAML", type=["yaml", "yml"])
 
+def _schema_options():
+    """공통: TO-BE 스키마 라디오 + 옵션 체크박스. (from_mapping, emit, no_validate, llm)."""
     schema_mode = st.radio(
-        "③ TO-BE 스키마",
-        ["매핑 YAML 에서 자동 파생 (DB/스키마 없이)", "TO-BE 스키마 .md 업로드"],
-        help="스키마가 아직 없으면 매핑에서 파생하세요. pass-through 컬럼은 "
-             "Stage A 검증에서 오탐될 수 있으나 변환 XML 은 정상입니다.")
+        "TO-BE 스키마",
+        ["매핑 YAML 에서 자동 파생 (DB/스키마 없이)", "TO-BE 스키마 .md 지정"],
+        help="스키마가 아직 없으면 매핑에서 파생. pass-through 컬럼은 Stage A "
+             "검증에서 오탐될 수 있으나 변환 XML 은 정상입니다.")
+    c1, c2, c3 = st.columns(3)
+    emit = c1.checkbox("한글 주석 삽입", value=False, help="--emit-column-comments")
+    no_validate = c2.checkbox("Stage A 검증 건너뛰기", value=True,
+                              help="--no-validate")
+    llm = c3.checkbox("LLM 보조 변환", value=False, help="--llm-fallback")
+    return schema_mode.startswith("매핑 YAML"), emit, no_validate, llm
+
+
+def _render_migration_upload() -> None:
+    st.caption("mapper XML(여러 개) + 매핑 YAML 업로드 → 변환 → 결과 zip.")
+    mappers = st.file_uploader("① AS-IS mapper XML (여러 개)", type=["xml"],
+                               accept_multiple_files=True)
+    mapping = st.file_uploader("② 컬럼 매핑 YAML", type=["yaml", "yml"])
+    from_mapping, emit, no_validate, llm = _schema_options()
     schema_md = None
-    if schema_mode.startswith("TO-BE 스키마 .md"):
+    if not from_mapping:
         schema_md = st.file_uploader("TO-BE 스키마 .md", type=["md"])
 
-    c1, c2, c3 = st.columns(3)
-    emit_comments = c1.checkbox("한글 주석 삽입", value=False,
-                                help="--emit-column-comments")
-    no_validate = c2.checkbox("Stage A 검증 건너뛰기", value=True,
-                              help="--no-validate (DB/스키마 미완성 단계 권장)")
-    llm_fallback = c3.checkbox("LLM 보조 변환", value=False,
-                               help="--llm-fallback (NEEDS_LLM 케이스)")
-
-    ready = bool(mappers) and mapping is not None and not (
-        schema_mode.startswith("TO-BE 스키마 .md") and schema_md is None)
+    ready = bool(mappers) and mapping is not None and (from_mapping or schema_md)
     if st.button("▶ 변환 실행", type="primary", disabled=not ready):
-        _run_migration(mappers, mapping, schema_mode, schema_md,
-                       emit_comments, no_validate, llm_fallback)
+        with st.spinner("변환 중…"):
+            work = Path(tempfile.mkdtemp(prefix="webui_mig_"))
+            in_dir = work / "mapper"
+            in_dir.mkdir()
+            for f in mappers:
+                (in_dir / f.name).write_bytes(f.getbuffer())
+            map_path = work / "mapping.yaml"
+            map_path.write_bytes(mapping.getbuffer())
+            out_dir = work / "out"
+            out_dir.mkdir()
+            schema_path = None
+            if schema_md is not None:
+                schema_path = work / "to_be_schema.md"
+                schema_path.write_bytes(schema_md.getbuffer())
+            flags = _migrate_flags(from_mapping, schema_path, emit,
+                                   no_validate, llm)
+            rc, log, dated, summary = _run_migrate(in_dir, map_path, out_dir, flags)
+            zbuf = io.BytesIO()
+            if dated:
+                with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
+                    for p in dated.rglob("*"):
+                        if p.is_file():
+                            zf.write(p, p.relative_to(dated))
+        st.session_state["mig_result"] = {
+            "ok": rc == 0 and dated is not None,
+            "summary": summary or "변환 완료 (요약 없음 — 로그 확인)",
+            "zip": zbuf.getvalue(), "log": log}
+        st.rerun()
 
-    # 직전 실행 결과 (rerun 후에도 유지)
     res = st.session_state.get("mig_result")
     if res:
         if res["ok"]:
             st.success(res["summary"])
-            st.download_button(
-                "⬇ 변환 결과 zip 내려받기", data=res["zip"],
-                file_name="migration_result.zip", mime="application/zip")
+            st.download_button("⬇ 변환 결과 zip", data=res["zip"],
+                               file_name="migration_result.zip",
+                               mime="application/zip")
         else:
             st.error("변환 실패")
         with st.expander("실행 로그"):
             st.code(res["log"] or "(로그 없음)")
 
 
-def _run_migration(mappers, mapping, schema_mode, schema_md,
-                   emit_comments, no_validate, llm_fallback) -> None:
-    with st.spinner("변환 중…"):
-        work = Path(tempfile.mkdtemp(prefix="webui_mig_"))
-        in_dir = work / "mapper"
-        in_dir.mkdir()
-        for f in mappers:
-            (in_dir / f.name).write_bytes(f.getbuffer())
-        map_path = work / "mapping.yaml"
-        map_path.write_bytes(mapping.getbuffer())
-        out_dir = work / "out"
-        out_dir.mkdir()
-        cfg = _write_temp_config(out_dir)
+def _render_migration_folder() -> None:
+    st.caption("로컬 폴더 경로를 지정합니다. 이 PC 에서 직접 접근하므로 대량 "
+               "변환에 적합합니다.")
+    in_dir = st.text_input("① AS-IS mapper 폴더 경로 (하위 .xml 재귀)")
+    map_path = st.text_input("② 컬럼 매핑 YAML 경로")
+    out_dir = st.text_input("③ 출력 폴더 경로",
+                            help="여기 아래 migration/<날짜>/ 로 결과가 떨어집니다.")
+    from_mapping, emit, no_validate, llm = _schema_options()
+    schema_path = None
+    if not from_mapping:
+        schema_path = st.text_input("TO-BE 스키마 .md 경로")
 
-        # ``--config`` 는 전역 인자라 subcommand(migrate-sql) **앞** 에 온다.
-        cmd = [sys.executable, str(ROOT / "main.py"), "--config", str(cfg),
-               "migrate-sql",
-               "--mybatis-dir", str(in_dir),
-               "--mapping", str(map_path),
-               "--output-format", "excel,xml"]
-        if schema_mode.startswith("TO-BE 스키마 .md"):
-            sp = work / "to_be_schema.md"
-            sp.write_bytes(schema_md.getbuffer())
-            cmd += ["--to-be-schema", str(sp)]
+    def _bad(p, is_dir):
+        return not p or (not Path(p).is_dir() if is_dir else not Path(p).is_file())
+
+    ready = not _bad(in_dir, True) and not _bad(map_path, False) and bool(out_dir) \
+        and (from_mapping or not _bad(schema_path, False))
+    if st.button("▶ 변환 실행", type="primary", disabled=not ready):
+        with st.spinner("변환 중…"):
+            Path(out_dir).mkdir(parents=True, exist_ok=True)
+            flags = _migrate_flags(from_mapping, schema_path, emit,
+                                   no_validate, llm)
+            rc, log, dated, summary = _run_migrate(
+                in_dir, map_path, out_dir, flags)
+        if rc == 0 and dated is not None:
+            st.success(summary or "변환 완료")
+            st.info(f"결과 폴더: {dated}")
+            files = sorted(str(p.relative_to(dated))
+                           for p in dated.rglob("*") if p.is_file())
+            st.write("생성 파일:", files)
         else:
-            cmd += ["--to-be-schema-from-mapping"]
-        if emit_comments:
-            cmd += ["--emit-column-comments"]
-        if no_validate:
-            cmd += ["--no-validate"]
-        if llm_fallback:
-            cmd += ["--llm-fallback"]
-
-        proc = subprocess.run(cmd, capture_output=True, text=True,
-                              cwd=str(ROOT))
-        log = (proc.stdout or "") + ("\n" + proc.stderr if proc.stderr else "")
-
-        # 산출물(migration/<date>/) 을 zip 으로
-        dated = sorted(glob.glob(str(out_dir / "migration" / "*")))
-        zip_buf = io.BytesIO()
-        summary = ""
-        if dated:
-            latest = Path(dated[-1])
-            with zipfile.ZipFile(zip_buf, "w", zipfile.ZIP_DEFLATED) as zf:
-                for p in latest.rglob("*"):
-                    if p.is_file():
-                        zf.write(p, p.relative_to(latest))
-            zip_buf.seek(0)
-        for line in log.splitlines():
-            if line.startswith("Converted "):
-                summary = line.strip()
-                break
-
-    st.session_state["mig_result"] = {
-        "ok": proc.returncode == 0 and bool(dated),
-        "summary": summary or "변환 완료 (요약 라인 없음 — 로그 확인)",
-        "zip": zip_buf.getvalue(),
-        "log": log,
-    }
-    st.rerun()
+            st.error("변환 실패 — 로그를 확인하세요.")
+        with st.expander("실행 로그"):
+            st.code(log or "(로그 없음)")
 
 
 # ---------------------------------------------------------------------------
