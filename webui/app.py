@@ -177,6 +177,135 @@ def render_settings() -> None:
 
 
 # ---------------------------------------------------------------------------
+# 화면: 매핑 만들기 (9컬럼 → MD)
+# ---------------------------------------------------------------------------
+_MAPPING_HEADERS = [
+    "asis_table", "asis_column", "asis_column_type",
+    "tobe_table", "tobe_table_comment", "tobe_column",
+    "tobe_column_type", "tobe_column_comment", "remark",
+]
+_MAPPING_EXAMPLE = [
+    ["CUST", "CUST_ID", "NUMBER(10)", "CUSTOMER", "고객 마스터",
+     "CUSTOMER_ID", "NUMBER(10)", "고객ID", ""],
+    ["CUST", "REG_DT", "VARCHAR2(8)", "CUSTOMER", "고객 마스터",
+     "REGISTER_DATE", "DATE", "등록일자", "YYYYMMDD → DATE"],
+    ["CUST", "OBSOLETE_FLAG", "CHAR(1)", "CUSTOMER", "고객 마스터",
+     "", "", "", "TO-BE 에서 삭제"],
+]
+
+
+def _macro_bas_text() -> str:
+    p = Path(__file__).resolve().parent / "assets" / "mapping_macro.bas"
+    return p.read_text(encoding="utf-8") if p.is_file() else ""
+
+
+def _rows_to_md(rows: list) -> str:
+    """9컬럼 행 리스트 → convert-mapping 용 마크다운 표 텍스트."""
+    def esc(v):
+        return str(v if v is not None else "").replace("|", "\\|").replace(
+            "\r", " ").replace("\n", " ").strip()
+    out = ["| " + " | ".join(_MAPPING_HEADERS) + " |",
+           "|" + "------|" * len(_MAPPING_HEADERS)]
+    for r in rows:
+        cells = [esc(r[i]) if i < len(r) else "" for i in range(len(_MAPPING_HEADERS))]
+        if any(c for c in cells):
+            out.append("| " + " | ".join(cells) + " |")
+    return "\n".join(out) + "\n"
+
+
+def _build_mapping_xlsx() -> bytes:
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "매핑"
+    hdr_fill = PatternFill("solid", fgColor="1F3A5F")
+    for j, h in enumerate(_MAPPING_HEADERS, start=1):
+        cell = ws.cell(row=1, column=j, value=h)
+        cell.font = Font(bold=True, color="FFFFFF")
+        cell.fill = hdr_fill
+        ws.column_dimensions[ws.cell(row=1, column=j).column_letter].width = 20
+    for i, row in enumerate(_MAPPING_EXAMPLE, start=2):
+        for j, v in enumerate(row, start=1):
+            ws.cell(row=i, column=j, value=v)
+
+    guide = wb.create_sheet("매크로_설치법")
+    steps = [
+        "AS-IS→TO-BE 컬럼 매핑 작성 → MD 내보내기",
+        "",
+        "[1] '매핑' 시트 2행부터 값을 채웁니다 (예시 3행 참고).",
+        "    - tobe_column 을 비우면 해당 컬럼은 삭제(drop) 로 처리됩니다.",
+        "",
+        "[2] 매크로 설치 (최초 1회):",
+        "    1) Alt+F11 (Visual Basic 편집기)",
+        "    2) 파일 > 파일 가져오기 > mapping_macro.bas 선택",
+        "       (또는 아래 소스를 새 모듈에 붙여넣기)",
+        "    3) 통합문서를 'Excel 매크로 사용 통합문서(*.xlsm)' 로 저장",
+        "",
+        "[3] 사용: 개발도구 > 매크로 > ExportMappingMd 실행",
+        "    → 통합문서와 같은 폴더에 column_mapping.md 생성 (UTF-8).",
+        "    이 .md 를 마이그레이션 화면 입력으로 사용하세요.",
+        "",
+        "──────── 매크로 소스 (mapping_macro.bas) ────────",
+    ]
+    row = 1
+    for s in steps:
+        guide.cell(row=row, column=1, value=s)
+        row += 1
+    for line in _macro_bas_text().splitlines():
+        guide.cell(row=row, column=1, value=line)
+        row += 1
+    guide.column_dimensions["A"].width = 90
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def render_mapping_maker() -> None:
+    st.header("📝 매핑 만들기 (AS-IS → TO-BE)")
+    st.caption("9컬럼 엑셀에 매핑을 채워 convert-mapping 용 `column_mapping.md` "
+               "를 만듭니다. 이후 마이그레이션 화면 입력으로 사용합니다.")
+
+    st.subheader("① 엑셀 템플릿 + 매크로 (권장)")
+    c1, c2 = st.columns(2)
+    c1.download_button("⬇ 매핑 템플릿 (.xlsx)", data=_build_mapping_xlsx(),
+                       file_name="mapping_template.xlsx",
+                       mime="application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet")
+    c2.download_button("⬇ VBA 매크로 (.bas)", data=_macro_bas_text(),
+                       file_name="mapping_macro.bas", mime="text/plain")
+    st.markdown(
+        "- 템플릿의 **매핑** 시트에 값을 채우고, **매크로_설치법** 시트의 "
+        "안내대로 매크로를 1회 임포트 → `.xlsm` 로 저장.\n"
+        "- 이후 **개발도구 ▸ 매크로 ▸ `ExportMappingMd`** 실행하면 같은 "
+        "폴더에 `column_mapping.md` 가 생성됩니다 (UTF-8, 한글 OK).")
+
+    st.divider()
+    st.subheader("② (매크로 없이) 채운 엑셀 → MD 바로 변환")
+    up = st.file_uploader("작성한 매핑 엑셀 (.xlsx) — '매핑' 시트 9컬럼",
+                          type=["xlsx"])
+    if up is not None:
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(up.getbuffer()), data_only=True)
+            ws = wb["매핑"] if "매핑" in wb.sheetnames else wb.active
+            rows = [[c.value for c in row]
+                    for row in ws.iter_rows(min_row=2, max_col=len(_MAPPING_HEADERS))]
+            md = _rows_to_md(rows)
+        except Exception as e:  # noqa: BLE001
+            st.error(f"엑셀 읽기 실패: {type(e).__name__}: {e}")
+        else:
+            n = md.count("\n") - 2
+            st.success(f"{max(n, 0)} 행 변환됨.")
+            st.download_button("⬇ column_mapping.md 내려받기", data=md,
+                               file_name="column_mapping.md",
+                               mime="text/markdown")
+            with st.expander("MD 미리보기"):
+                st.code(md, language="markdown")
+
+
+# ---------------------------------------------------------------------------
 # 화면 1: SQL 마이그레이션
 # ---------------------------------------------------------------------------
 def render_migration() -> None:
@@ -358,6 +487,7 @@ def render_term_search() -> None:
 # 라우팅
 # ---------------------------------------------------------------------------
 _PAGES = {
+    "매핑 만들기": render_mapping_maker,
     "SQL 마이그레이션": render_migration,
     "용어 검색": render_term_search,
     "설정": render_settings,
