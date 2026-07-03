@@ -23,18 +23,17 @@
 
 ## 0. 공통 / 인프라
 
-### 진행 중: 로컬 실행 화면 (webui) — Streamlit
+### 진행 중: 로컬 실행 화면 (webui) — Streamlit 확장
 
-비개발자가 CLI 없이 브라우저로 SQL 마이그레이션 / 용어검색 실행.
+비개발자가 CLI 없이 브라우저로 전 파이프라인 실행. 순서: 마이그레이션
+관련 먼저(설정/매핑만들기/폴더모드) → 스키마/ERD 계열.
 
-- [x] `webui/app.py` — 2화면 (마이그레이션 업로드→변환→zip 다운로드 /
-      표준사전 SQLite LIKE 검색). 마이그레이션은 `migrate-sql` subprocess
-      재사용(전역 `--config` 로 output 임시폴더 격리), 용어검색은 SQLite 직접
-- [x] `run_webui.bat` 런처 + requirements.txt streamlit (폐쇄망 wheel 안내)
-- [x] README §18 + user_manual 재빌드
-- [x] 검증: streamlit headless 부팅 HTTP 200 / 용어검색 쿼리 4케이스 /
-      마이그레이션 subprocess RC0·격리·zip
-- [ ] PR + squash-merge
+- [x] 초기 2화면 (마이그레이션 파일업로드→zip / 용어검색 SQLite) — #357
+- [x] 설정 화면 — `.env` (LLM/DB) 편집 (그룹별 폼, 비밀번호 마스킹, 기존
+      줄/주석 보존 저장). 값은 로컬 `.env` 에만
+- [ ] 매핑 만들기 — VBA 매크로 .xlsm 템플릿 (9컬럼 → MD export)
+- [ ] 마이그레이션 폴더 지정 모드 (input/output 폴더 경로)
+- [ ] (후속) 스키마추출/코멘트증강/ERD추출/ERD보기/표준사전적재 화면
 
 ### 진행 중: `docs` — 기능 카탈로그 형태로 재설계
 
