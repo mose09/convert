@@ -51,7 +51,10 @@ def convert_mapping_md(
     failures degrade to heuristic output instead of raising.
     """
 
-    text = Path(md_path).read_text(encoding="utf-8")
+    # utf-8-sig: 앞에 BOM 이 있어도 벗겨낸다. Excel VBA(ADODB.Stream) /
+    # 메모장 등이 UTF-8 저장 시 BOM 을 붙이면 첫 헤더가 ``﻿asis_table``
+    # 이 되어 헤더 인식이 실패(0 tables/columns) 하던 문제 방지.
+    text = Path(md_path).read_text(encoding="utf-8-sig")
 
     data: Optional[Dict[str, Any]] = None
     if use_llm:

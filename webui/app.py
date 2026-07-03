@@ -312,7 +312,8 @@ def render_mapping_maker() -> None:
                "YAML 로 변환합니다 (convert-mapping).")
     mdup = st.file_uploader("column_mapping.md 업로드", type=["md"])
     if mdup is not None:
-        md_text = mdup.getvalue().decode("utf-8")
+        # utf-8-sig: 매크로/메모장 UTF-8 저장의 BOM 제거 (없어도 안전)
+        md_text = mdup.getvalue().decode("utf-8-sig")
         with st.expander("MD 미리보기"):
             st.code(md_text, language="markdown")
         _render_md_to_yaml(md_text, "mm_md_yaml")
