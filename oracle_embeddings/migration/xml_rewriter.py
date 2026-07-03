@@ -414,10 +414,15 @@ def _sanitize_for_xml(text: str) -> str:
         lambda m: f"\\x{ord(m.group(0)):02x}", text
     )
     # ``-->`` would prematurely close the comment; ``--`` itself is illegal
-    # inside <!-- ... -->. Soften with a thin space so users still see the
-    # original characters without breaking the XML.
-    if "--" in out:
+    # inside <!-- ... -->. Soften with a space so users still see the
+    # original characters without breaking the XML. A single replace leaves a
+    # fresh ``--`` on odd-length runs (``---`` → ``- --``) so loop until clean.
+    while "--" in out:
         out = out.replace("--", "- -")
+    # XML also forbids a comment body ending in ``-`` (it would make ``--->``);
+    # lxml raises ``Comment may not ... end with '-'``. Pad with a space.
+    if out.endswith("-"):
+        out = out + " "
     return out
 
 
