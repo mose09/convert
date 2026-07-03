@@ -2060,6 +2060,28 @@ python -m pip install streamlit
 ⚠ streamlit 은 전이 의존성(numpy/pandas/pyarrow/altair 등 ~30개)이 많아
 폐쇄망 wheel 폴더가 커진다. 미설치여도 CLI 커맨드는 영향 없음.
 
+### 19. 배포 패키지 (비개발자 PC 용 — zip → 압축풀기 → run.bat)
+
+파이썬 설치 없이 **압축 풀고 `run.bat` 더블클릭**으로 쓰게 만드는 배포판.
+Streamlit 은 PyInstaller 단일 exe 로 얼리면 불안정하므로, **포터블
+(embeddable) 파이썬 + 모든 의존성 사전 설치 + `run.bat`** 방식으로 묶는다.
+
+빌드는 **Windows PC 에서 1회** (`build_dist.ps1`):
+```powershell
+# 인터넷 되는 PC
+powershell -ExecutionPolicy Bypass -File build_dist.ps1
+
+# 폐쇄망 PC (미리 반입: build\python-embed.zip, build\get-pip.py, wheels\)
+powershell -ExecutionPolicy Bypass -File build_dist.ps1 -WheelsDir .\wheels
+```
+→ `dist\convert-tool.zip` 생성. 이 zip 을 전달하면 받는 사람은:
+1. **쓰기 가능한 폴더**(문서/바탕화면)에 압축 해제
+2. `run.bat` 더블클릭 → 브라우저 자동 오픈 (`http://localhost:8501`)
+
+배포판 구조: `python\`(포터블 파이썬) + `app\`(webui/oracle_embeddings/
+main.py/config) + `run.bat` + `사용법.txt`. 인터넷 없이 localhost 전용.
+(런처/사용법 원본은 `packaging/`, 빌드 산출물 `dist\`·`build\` 는 git 제외.)
+
 ## 추천 워크플로우
 
 ```powershell
