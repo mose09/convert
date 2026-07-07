@@ -2035,6 +2035,8 @@ python -m streamlit run webui/app.py
 ```
 
 화면 (사이드바):
+- **사용 가이드** — `webui/assets/guide.html`(그림 포함 화면별 매뉴얼)을
+  앱 안에 임베드 (`render_guide`). 별도 파일 열 필요 없이 첫 메뉴로 열람.
 - **스키마 추출** — `schema` (Oracle 접속, 형식/owner/table).
 - **코멘트 증강** — `enrich-schema` (LLM, 스키마 .md 경로 자동 연결).
 - **ERD 추출** — 스키마 .md (+ 선택 mapper 폴더 JOIN) → `erd-md`/`erd-group`
@@ -2081,8 +2083,9 @@ powershell -ExecutionPolicy Bypass -File build_dist.ps1 -WheelsDir .\wheels
 
 배포판 구조: `python\`(포터블 파이썬) + `app\`(webui/oracle_embeddings/
 main.py/config) + `run.bat` + `사용법.txt` + `guide.html`(그림 포함 화면별
-상세 매뉴얼, 오프라인 브라우저로 열람). 인터넷 없이 localhost 전용.
-(런처/사용법/가이드 원본은 `packaging/`, 빌드 산출물 `dist\`·`build\` 는 git 제외.)
+상세 매뉴얼 — 앱의 **'사용 가이드'** 메뉴로도 열람, 루트에 복사돼 더블클릭도
+가능). 인터넷 없이 localhost 전용. (런처/사용법 원본은 `packaging/`, 가이드
+원본은 `webui/assets/guide.html`, 빌드 산출물 `dist\`·`build\` 는 git 제외.)
 
 ## 추천 워크플로우
 

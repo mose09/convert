@@ -92,7 +92,9 @@ Get-ChildItem $appdir -Recurse -Directory -Filter "__pycache__" |
 # 6) 런처 / 사용법 ---------------------------------------------------------
 Copy-Item (Join-Path $root "packaging\run.bat")    $dist
 Copy-Item (Join-Path $root "packaging\사용법.txt") $dist
-Copy-Item (Join-Path $root "packaging\guide.html") $dist
+# 가이드 원본은 webui\assets\guide.html (앱의 '사용 가이드' 메뉴가 읽는 파일).
+# 배포판 루트에도 복사해 run.bat 없이 더블클릭으로도 열람 가능하게 한다.
+Copy-Item (Join-Path $root "webui\assets\guide.html") $dist
 
 # 7) 압축 -----------------------------------------------------------------
 $zip = Join-Path $root "dist\convert-tool.zip"
