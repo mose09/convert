@@ -2079,8 +2079,9 @@ powershell -ExecutionPolicy Bypass -File build_dist.ps1 -WheelsDir .\wheels
 2. `run.bat` 더블클릭 → 브라우저 자동 오픈 (`http://localhost:8501`)
 
 배포판 구조: `python\`(포터블 파이썬) + `app\`(webui/oracle_embeddings/
-main.py/config) + `run.bat` + `사용법.txt`. 인터넷 없이 localhost 전용.
-(런처/사용법 원본은 `packaging/`, 빌드 산출물 `dist\`·`build\` 는 git 제외.)
+main.py/config) + `run.bat` + `사용법.txt` + `guide.html`(그림 포함 화면별
+상세 매뉴얼, 오프라인 브라우저로 열람). 인터넷 없이 localhost 전용.
+(런처/사용법/가이드 원본은 `packaging/`, 빌드 산출물 `dist\`·`build\` 는 git 제외.)
 
 ## 추천 워크플로우
 

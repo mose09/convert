@@ -90,8 +90,9 @@ Get-ChildItem $appdir -Recurse -Directory -Filter "__pycache__" |
   Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
 
 # 6) 런처 / 사용법 ---------------------------------------------------------
-Copy-Item (Join-Path $root "packaging\run.bat")   $dist
+Copy-Item (Join-Path $root "packaging\run.bat")    $dist
 Copy-Item (Join-Path $root "packaging\사용법.txt") $dist
+Copy-Item (Join-Path $root "packaging\guide.html") $dist
 
 # 7) 압축 -----------------------------------------------------------------
 $zip = Join-Path $root "dist\convert-tool.zip"
