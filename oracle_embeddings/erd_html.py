@@ -90,7 +90,7 @@ def generate_html_erd(schema: dict, joins: list[dict], output_path: str) -> str:
 
     erd_data = json.dumps({"nodes": nodes, "links": links}, ensure_ascii=False)
 
-    html = _build_html(erd_data)
+    html = _build_html(erd_data, _d3_inline_script())
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
@@ -101,7 +101,27 @@ def generate_html_erd(schema: dict, joins: list[dict], output_path: str) -> str:
     return output_path
 
 
-def _build_html(erd_data_json: str) -> str:
+def _d3_inline_script() -> str:
+    """Return a ``<script>`` tag with D3 v7 inlined from the bundled asset so
+    the ERD renders in **air-gapped** environments (no CDN reachable). Falls
+    back to the CDN ``src`` only if the asset is somehow missing — that path
+    is online-only and warns."""
+    asset = os.path.join(os.path.dirname(__file__), "assets", "d3.v7.min.js")
+    try:
+        with open(asset, encoding="utf-8") as f:
+            src = f.read()
+        # A literal ``</script>`` inside inline JS would close the tag early.
+        # Minified D3 has none, but guard defensively.
+        src = src.replace("</script>", "<\\/script>")
+        return "<script>\n" + src + "\n</script>"
+    except OSError:
+        logger.warning(
+            "D3 asset not found (%s); falling back to CDN — ERD will NOT "
+            "render in air-gapped environments.", asset)
+        return '<script src="https://d3js.org/d3.v7.min.js"></script>'
+
+
+def _build_html(erd_data_json: str, d3_script: str) -> str:
     """Build the full HTML page with embedded D3.js and ERD data."""
     return f"""<!DOCTYPE html>
 <html lang="ko">
@@ -227,17 +247,14 @@ svg {{ display: block; }}
 
 <div class="tooltip" id="tooltip"></div>
 
+<!-- D3.js v7 inlined from oracle_embeddings/assets/d3.v7.min.js so the ERD
+     renders offline (폐쇄망) with no CDN. See _d3_inline_script(). -->
+{d3_script}
 <script>
-// Embedded D3.js v7 minimal (force + zoom + drag)
-// Using inline minimal D3 - no CDN needed for air-gapped environments
-</script>
-<script src="https://d3js.org/d3.v7.min.js"></script>
-<script>
-// Fallback: if D3 not loaded (offline), load from embedded
 if (typeof d3 === 'undefined') {{
     document.write('<div style="padding:40px;color:#e94560;font-size:18px;">'
-        + 'D3.js failed to load. For air-gapped environments, download d3.v7.min.js '
-        + 'and place it next to this HTML file, then update the script src.</div>');
+        + 'D3.js 로드 실패. assets/d3.v7.min.js 가 누락된 배포판입니다 — '
+        + '배포 담당자에게 최신 패키지를 요청하세요.</div>');
 }}
 </script>
 <script>
