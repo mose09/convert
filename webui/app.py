@@ -844,15 +844,29 @@ def render_erd_view() -> None:
     if html:
         st.caption(f"표시 중: `{name}`")
         components.html(html, height=800, scrolling=True)
-        st.caption("⚠ 폐쇄망에서는 ERD 의 D3(CDN)가 안 열려 인터랙티브가 "
-                   "제한될 수 있습니다 — d3.v7.min.js 를 HTML 옆에 로컬 반입하면 "
-                   "정상 동작합니다.")
+        st.caption("D3 가 HTML 에 인라인되어 폐쇄망·오프라인에서도 인터랙티브가 "
+                   "그대로 동작합니다.")
+
+
+def render_guide() -> None:
+    st.header("📖 사용 가이드")
+    import streamlit.components.v1 as components
+    guide = Path(__file__).resolve().parent / "assets" / "guide.html"
+    if guide.is_file():
+        components.html(guide.read_text(encoding="utf-8"),
+                        height=900, scrolling=True)
+    else:
+        st.warning(f"가이드 파일을 찾을 수 없습니다: {guide}")
+    manual = ROOT / "user_manual.html"
+    if manual.is_file():
+        st.caption(f"CLI 커맨드 전체 레퍼런스는 `{manual.name}` (프로젝트 루트) 참고.")
 
 
 # ---------------------------------------------------------------------------
 # 라우팅
 # ---------------------------------------------------------------------------
 _PAGES = {
+    "사용 가이드": render_guide,
     "스키마 추출": render_schema_extract,
     "코멘트 증강": render_enrich_schema,
     "ERD 추출": render_erd_extract,
