@@ -2039,8 +2039,9 @@ python -m streamlit run webui/app.py
 - **코멘트 증강** — `enrich-schema` (LLM, 스키마 .md 경로 자동 연결).
 - **ERD 추출** — 스키마 .md (+ 선택 mapper 폴더 JOIN) → `erd-md`/`erd-group`
   인터랙티브 HTML.
-- **ERD 보기** — 생성된 ERD HTML 임베드 (최근 생성/경로/업로드). 폐쇄망은
-  D3(CDN) 로컬 반입 필요.
+- **ERD 보기** — 생성된 ERD HTML 임베드 (최근 생성/경로/업로드). D3.js 는
+  `oracle_embeddings/assets/d3.v7.min.js` 를 HTML 에 인라인하므로 폐쇄망·
+  오프라인에서도 CDN 없이 그대로 렌더 (`erd_html._d3_inline_script`).
 - **표준사전 적재** — `build-dict` (단어/용어/도메인 Excel → SQLite,
   `--no-embed` 기본).
 - **용어 검색** — 적재된 SQLite 를 단어/용어/도메인별 LIKE 검색 (만료 토글).
