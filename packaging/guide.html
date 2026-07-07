@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SQL 마이그레이션 도구 · 사용 가이드</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --card:#ffffff; --ink:#1b1f24; --muted:#5b6672;
+    --line:#e3e7ec; --accent:#2f6feb; --accent-soft:#eaf1ff;
+    --warn-bg:#fff7e6; --warn-line:#f0c36d; --ok-bg:#e9f7ef; --ok-line:#8fd0a8;
+    --mono:#0b2b52;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:"맑은 고딕","Malgun Gothic",-apple-system,Segoe UI,Roboto,sans-serif;
+    line-height:1.65; font-size:16px;
+  }
+  .wrap{max-width:960px; margin:0 auto; padding:32px 20px 80px;}
+  header.hero{
+    background:linear-gradient(135deg,#2f6feb,#5b8def); color:#fff;
+    border-radius:16px; padding:34px 30px; margin-bottom:12px;
+  }
+  header.hero h1{margin:0 0 6px; font-size:27px;}
+  header.hero p{margin:0; opacity:.92;}
+  .toc{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:16px 20px; margin:18px 0 30px;
+  }
+  .toc b{display:block; margin-bottom:8px; color:var(--muted); font-size:13px; letter-spacing:.03em;}
+  .toc ol{margin:0; padding-left:20px; columns:2; column-gap:30px;}
+  .toc a{color:var(--accent); text-decoration:none;}
+  .toc a:hover{text-decoration:underline;}
+  h2{
+    font-size:20px; margin:38px 0 4px; padding-top:8px;
+    border-top:2px solid var(--line);
+  }
+  h2 .num{
+    display:inline-block; min-width:26px; height:26px; line-height:26px;
+    text-align:center; background:var(--accent); color:#fff; border-radius:7px;
+    font-size:13px; margin-right:8px; vertical-align:2px;
+  }
+  h3{font-size:16px; margin:20px 0 6px; color:var(--mono);}
+  .card{
+    background:var(--card); border:1px solid var(--line); border-radius:12px;
+    padding:20px 22px; margin:14px 0;
+  }
+  .row{display:flex; gap:16px; flex-wrap:wrap;}
+  .row>div{flex:1 1 260px;}
+  .tag{
+    display:inline-block; font-size:12px; padding:2px 9px; border-radius:20px;
+    background:var(--accent-soft); color:var(--accent); font-weight:600; margin-right:6px;
+  }
+  .tag.db{background:#fdecec; color:#c0392b;}
+  .tag.llm{background:#eef7ec; color:#2e7d32;}
+  .tag.off{background:#eef0f3; color:#5b6672;}
+  ul,ol{margin:6px 0;}
+  code{
+    background:#eef1f5; color:var(--mono); padding:1px 6px; border-radius:5px;
+    font-family:Consolas,"D2Coding",monospace; font-size:14px;
+  }
+  pre{
+    background:#0f172a; color:#e2e8f0; padding:14px 16px; border-radius:10px;
+    overflow-x:auto; font-family:Consolas,"D2Coding",monospace; font-size:13.5px; line-height:1.5;
+  }
+  .note{border-left:4px solid var(--accent); background:var(--accent-soft); padding:10px 14px; border-radius:0 8px 8px 0; margin:10px 0;}
+  .warn{border-left:4px solid var(--warn-line); background:var(--warn-bg); padding:10px 14px; border-radius:0 8px 8px 0; margin:10px 0;}
+  .ok{border-left:4px solid var(--ok-line); background:var(--ok-bg); padding:10px 14px; border-radius:0 8px 8px 0; margin:10px 0;}
+  .shot{
+    border:1px dashed var(--line); background:#fafbfc; border-radius:10px;
+    padding:26px; text-align:center; color:var(--muted); font-size:13px; margin:12px 0;
+  }
+  .steps{counter-reset:s; list-style:none; padding-left:0;}
+  .steps>li{position:relative; padding-left:38px; margin:12px 0;}
+  .steps>li::before{
+    counter-increment:s; content:counter(s);
+    position:absolute; left:0; top:0; width:26px; height:26px; line-height:26px;
+    text-align:center; background:var(--accent); color:#fff; border-radius:50%; font-size:13px; font-weight:700;
+  }
+  table{border-collapse:collapse; width:100%; margin:10px 0; font-size:14.5px;}
+  th,td{border:1px solid var(--line); padding:8px 10px; text-align:left; vertical-align:top;}
+  th{background:#f0f3f7;}
+  footer{margin-top:44px; color:var(--muted); font-size:13px; text-align:center;}
+  .kbd{background:#fff; border:1px solid #c7ced6; border-bottom-width:2px; border-radius:5px; padding:1px 7px; font-size:13px;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="hero">
+    <h1>SQL 마이그레이션 · 스키마 · ERD · 용어 도구</h1>
+    <p>비개발자용 로컬 실행 가이드 — 인터넷 없이 내 PC 안에서만 동작합니다.</p>
+  </header>
+
+  <div class="toc">
+    <b>목차</b>
+    <ol>
+      <li><a href="#start">시작하기 (실행/종료)</a></li>
+      <li><a href="#settings">설정 (LLM · DB 접속)</a></li>
+      <li><a href="#schema">스키마 추출</a></li>
+      <li><a href="#enrich">코멘트 증강</a></li>
+      <li><a href="#erd">ERD 추출 / 보기</a></li>
+      <li><a href="#dict">표준사전 적재 / 용어 검색</a></li>
+      <li><a href="#mapping">매핑 만들기</a></li>
+      <li><a href="#migrate">SQL 마이그레이션</a></li>
+      <li><a href="#flow">추천 진행 순서</a></li>
+      <li><a href="#faq">자주 묻는 질문</a></li>
+    </ol>
+  </div>
+
+  <div class="note">
+    아이콘 의미 —
+    <span class="tag off">오프라인</span> 접속 불필요 ·
+    <span class="tag db">DB</span> Oracle 접속 필요 ·
+    <span class="tag llm">LLM</span> LLM 접속 필요.
+    DB/LLM 태그가 붙은 화면은 <b>먼저 「설정」 화면</b>에서 접속정보를 넣어야 동작합니다.
+  </div>
+
+  <!-- 1 -->
+  <h2 id="start"><span class="num">1</span>시작하기</h2>
+  <div class="card">
+    <ol class="steps">
+      <li>받은 압축파일을 <b>쓰기 가능한 폴더</b>(문서 · 바탕화면 등)에 풉니다.
+        <span class="warn" style="display:block">Program Files 처럼 권한이 막힌 곳은 피하세요.</span></li>
+      <li><code>run.bat</code> 을 더블클릭합니다. 검은 명령창이 뜨고 잠시 뒤 웹브라우저가 자동으로 열립니다.</li>
+      <li>안 열리면 브라우저 주소창에 직접 입력: <code>http://localhost:8501</code></li>
+      <li>왼쪽 사이드바에서 원하는 <b>화면</b>을 고릅니다.</li>
+    </ol>
+    <div class="shot">［ 스크린샷 자리 — 첫 화면(사이드바 메뉴) 캡처를 여기 넣으세요 ］</div>
+    <div class="ok"><b>종료</b> — 검은 명령창을 닫거나 창에서 <span class="kbd">Ctrl</span>+<span class="kbd">C</span>.
+      파이썬 설치가 따로 필요 없습니다(폴더 안 <code>python\</code> 사용). 처음 실행 시 방화벽이
+      “localhost 접근 허용?” 을 물으면 <b>허용</b>하세요.</div>
+  </div>
+
+  <!-- 2 -->
+  <h2 id="settings"><span class="num">2</span>설정 <span class="tag db">DB</span> <span class="tag llm">LLM</span></h2>
+  <div class="card">
+    <p><b>무엇을</b> — LLM · Oracle 접속정보를 이 PC 에 저장합니다(<code>.env</code>). 스키마 추출·코멘트 증강 등
+      DB/LLM 이 필요한 화면을 쓰기 전에 <b>가장 먼저</b> 채워야 합니다.</p>
+    <p><b>어떻게</b> — 그룹(Oracle 접속 / LLM / 임베딩 …)별로 값을 입력하고 <b>저장</b>. 비밀번호는 화면에서 가려집니다.</p>
+    <table>
+      <tr><th>항목</th><th>설명</th></tr>
+      <tr><td>ORACLE_USER / PASSWORD / DSN</td><td>AS-IS Oracle 접속 계정·주소</td></tr>
+      <tr><td>ORACLE_INSTANT_CLIENT_DIR</td><td>Instant Client 폴더 경로(스키마 추출에 필요할 수 있음)</td></tr>
+      <tr><td>LLM_API_BASE / KEY / MODEL</td><td>사내 LLM 게이트웨이(코멘트 증강 등)</td></tr>
+    </table>
+    <div class="warn">여기 저장한 값은 <b>이 PC 안에만</b> 저장되고 외부로 전송되지 않습니다.</div>
+  </div>
+
+  <!-- 3 -->
+  <h2 id="schema"><span class="num">3</span>스키마 추출 <span class="tag db">DB</span></h2>
+  <div class="card">
+    <p><b>무엇을</b> — Oracle DB 에서 테이블 · 컬럼 · PK/FK · 인덱스를 읽어 <b>스키마 문서(.md)</b> 로 만듭니다.
+      이후 코멘트 증강 · ERD · 마이그레이션의 기초 입력이 됩니다.</p>
+    <p><b>어떻게</b> — 형식(markdown/txt)·owner·table 을 지정하고 실행. 결과 <code>.md</code> 는 <code>output\schema\</code> 아래에 날짜별로 저장됩니다.</p>
+    <div class="warn">「설정」에 Oracle 접속정보가 없으면 실패합니다. 먼저 2번을 완료하세요.</div>
+  </div>
+
+  <!-- 4 -->
+  <h2 id="enrich"><span class="num">4</span>코멘트 증강 <span class="tag llm">LLM</span></h2>
+  <div class="card">
+    <p><b>무엇을</b> — 스키마 문서에서 <b>코멘트가 비어 있는 컬럼</b>에 LLM 이 한글 설명을 채워 넣습니다.</p>
+    <p><b>어떻게</b> — 스키마 <code>.md</code> 경로를 지정(최근 생성분 자동 연결)하고 실행 →
+      <code>…_enriched.md</code> 생성. 이후 용어사전 · ERD 에서 이 파일을 쓰면 설명이 풍부해집니다.</p>
+  </div>
+
+  <!-- 5 -->
+  <h2 id="erd"><span class="num">5</span>ERD 추출 / 보기 <span class="tag off">오프라인</span></h2>
+  <div class="card">
+    <div class="row">
+      <div>
+        <h3>ERD 추출</h3>
+        <p>스키마 <code>.md</code> (+ 선택: mapper 폴더의 JOIN 관계) 로 <b>관계도 HTML</b> 을 만듭니다.
+          종류를 골라 실행하면 <code>output\erd\</code> 에 인터랙티브 HTML 이 떨어집니다.</p>
+      </div>
+      <div>
+        <h3>ERD 보기</h3>
+        <p>만든 ERD HTML 을 화면 안에서 바로 엽니다(최근 생성 / 경로 지정 / 업로드).</p>
+        <div class="warn">폐쇄망에서 그림이 안 그려지면 D3 라이브러리 로컬 반입이 필요합니다(관리자 문의).</div>
+      </div>
+    </div>
+    <div class="shot">［ 스크린샷 자리 — ERD 보기 화면 캡처 ］</div>
+  </div>
+
+  <!-- 6 -->
+  <h2 id="dict"><span class="num">6</span>표준사전 적재 / 용어 검색 <span class="tag off">오프라인</span></h2>
+  <div class="card">
+    <div class="row">
+      <div>
+        <h3>표준사전 적재</h3>
+        <p>단어 · 용어 · 도메인 <b>Excel</b> 을 읽어 내부 사전(SQLite)에 적재합니다. <b>적재는 1회</b>면 되고,
+          다시 적재하면 기존 내용을 지우고 새로 넣습니다.</p>
+      </div>
+      <div>
+        <h3>용어 검색</h3>
+        <p>적재된 사전을 단어/용어/도메인별로 검색합니다(만료 항목 포함 토글).</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 7 -->
+  <h2 id="mapping"><span class="num">7</span>매핑 만들기 <span class="tag off">오프라인</span></h2>
+  <div class="card">
+    <p><b>무엇을</b> — AS-IS → TO-BE <b>컬럼 매핑</b>을 만듭니다. 마이그레이션이 “옛 테이블/컬럼 → 새 이름” 을
+      아는 근거가 되는 파일(<code>column_mapping.md</code> · <code>.yaml</code>)입니다.</p>
+    <h3>방법 ① 엑셀 템플릿 + 매크로 (권장)</h3>
+    <ol class="steps">
+      <li>화면에서 <b>9컬럼 엑셀 템플릿</b>과 <b>매크로 파일(.bas)</b> 을 내려받습니다.</li>
+      <li>엑셀에서 <span class="kbd">Alt</span>+<span class="kbd">F11</span> → 파일 가져오기로 <code>.bas</code> 추가,
+        “매크로 사용 통합문서(.xlsm)” 로 저장.</li>
+      <li>9개 열을 채우고 <code>ExportMappingMd</code> 매크로 실행 → 같은 폴더에 <code>column_mapping.md</code> 생성(UTF-8, 한글 OK).</li>
+    </ol>
+    <h3>방법 ② 매크로 없이 — 엑셀 업로드 → MD·YAML 바로 변환</h3>
+    <p>9컬럼을 채운 엑셀 파일을 화면에 업로드하면 MD 와 매핑 YAML 을 즉시 만들어 줍니다.</p>
+    <h3>방법 ③ 기존 MD → 매핑 YAML</h3>
+    <p>이미 만든 <code>.md</code>(예: 매크로 산출물)를 붙여 넣어 매핑 <code>.yaml</code> 로 변환합니다.</p>
+    <div class="warn">매핑이 수만 건이면 미리보기는 앞/뒤 몇 줄만 보여줍니다(브라우저 멈춤 방지). 전체 결과는 저장 파일에서 확인하세요.</div>
+  </div>
+
+  <!-- 8 -->
+  <h2 id="migrate"><span class="num">8</span>SQL 마이그레이션 <span class="tag off">오프라인</span></h2>
+  <div class="card">
+    <p><b>무엇을</b> — MyBatis/iBatis <b>mapper XML</b> 을 매핑에 따라 TO-BE 로 변환하고, 변환 XML 과 리포트를 만듭니다.</p>
+    <table>
+      <tr><th>모드</th><th>입력</th><th>출력</th></tr>
+      <tr><td><b>파일 업로드</b></td><td>XML 파일 몇 개 업로드</td><td>변환 결과를 <b>zip</b> 으로 다운로드</td></tr>
+      <tr><td><b>폴더 지정</b></td><td>프로젝트 폴더 경로</td><td>지정한 <b>출력 폴더에 입력 폴더 구조 그대로</b> XML 생성</td></tr>
+    </table>
+    <ol class="steps">
+      <li>모드(파일/폴더)를 고르고 입력을 지정합니다.</li>
+      <li>매핑(7번에서 만든 <code>.yaml</code>/<code>.md</code>)을 연결합니다.</li>
+      <li>옵션(한글 주석 삽입, 검증 skip, LLM 사용, 스키마 지정/파생)을 선택하고 실행.</li>
+    </ol>
+    <div class="ok">폴더 지정 모드는 <b>진짜 MyBatis/iBatis mapper XML 만</b> 골라 변환합니다
+      (<code>pom.xml</code>·<code>web.xml</code>·빌드 산출물 등은 자동 제외).</div>
+    <div class="shot">［ 스크린샷 자리 — 마이그레이션 실행 결과(리포트) 캡처 ］</div>
+  </div>
+
+  <!-- 9 -->
+  <h2 id="flow"><span class="num">9</span>추천 진행 순서</h2>
+  <div class="card">
+    <ol>
+      <li><b>설정</b> — Oracle · LLM 접속정보 입력 (한 번).</li>
+      <li><b>스키마 추출</b> → <b>코멘트 증강</b> — 스키마 문서 준비.</li>
+      <li><b>표준사전 적재</b> — 단어/용어/도메인 Excel 적재 (한 번).</li>
+      <li><b>매핑 만들기</b> — AS-IS→TO-BE 컬럼 매핑 작성.</li>
+      <li><b>SQL 마이그레이션</b> — mapper XML 변환.</li>
+      <li>(선택) <b>ERD 추출/보기</b> · <b>용어 검색</b> 으로 검토.</li>
+    </ol>
+  </div>
+
+  <!-- 10 -->
+  <h2 id="faq"><span class="num">10</span>자주 묻는 질문</h2>
+  <div class="card">
+    <h3>브라우저가 안 열려요</h3>
+    <p>주소창에 <code>http://localhost:8501</code> 을 직접 입력하세요. 검은 명령창은 켜 둔 채로 두어야 합니다.</p>
+    <h3>“cp949 / 인코딩” 오류가 나요</h3>
+    <p>최신 버전에서 해결되었습니다. 관리자에게 최신 배포판을 받으세요.</p>
+    <h3>매핑 변환이 0건으로 나와요</h3>
+    <p>엑셀 매크로로 만든 MD 는 최신 버전에서 정상 인식됩니다(BOM 문제 해결). 최신 배포판인지 확인하세요.</p>
+    <h3>인터넷에 뭔가 전송되나요?</h3>
+    <p>아니요. 이 도구는 <b>localhost</b> 에서만 동작하며 외부로 아무것도 보내지 않습니다.
+      Oracle/LLM 접속은 사내망 안에서만 이뤄집니다.</p>
+    <h3>결과 파일은 어디에 있나요?</h3>
+    <p><code>output\&lt;영역&gt;\&lt;날짜&gt;\</code> 폴더(스키마/erd/migration …). 마이그레이션 폴더 모드는 지정한 출력 폴더에 생성됩니다.</p>
+  </div>
+
+  <footer>
+    로컬 실행 · 오프라인 · 외부 전송 없음 &nbsp;·&nbsp; 문제가 지속되면 배포 담당자에게 문의하세요.
+  </footer>
+
+</div>
+</body>
+</html>
