@@ -1257,6 +1257,13 @@ def _derive_procedures(sql_ids, mybatis_idx: dict) -> list[str]:
 def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     """Build ``{table: set("C"|"R"|"U"|"D")}`` from resolved statement keys.
 
+    CRUD is attributed **per table**: the column-level index
+    (``statement_to_column_usage``) decides each table's letters, so a
+    read-only source inside a mutating statement (a ``MERGE``'s
+    ``USING``/JOIN tables, an ``INSERT ... SELECT`` source) stays R and
+    only the real write target gets C/U/D. Tables the AST walker never
+    saw fall back to the statement's whole-body CRUD below.
+
     CRUD letters come **only from SQL body analysis** (not the MyBatis
     tag). Tag-based classification was dropped because it follows
     developer intent rather than the actual query — e.g. a ``<select>``
@@ -1277,13 +1284,28 @@ def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     """
     stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
     stmt_to_body_crud = mybatis_idx.get("statement_to_body_crud", {})
+    stmt_to_cols = mybatis_idx.get("statement_to_column_usage", {})
     out: dict[str, set] = {}
     for key in sql_ids or ():
         letters = stmt_to_body_crud.get(key) or set()
         if not letters:
             continue
+        # Per-table CRUD from the column-level (sqlglot AST) index. This
+        # separates a write *target* from read-only *sources* within one
+        # statement — e.g. a ``MERGE INTO t USING (SELECT ... FROM src JOIN
+        # j) ...`` marks src/j as R only, while t gets C/U. The old code
+        # unioned the statement's whole-body CRUD onto *every* table, which
+        # wrongly tagged those USING/JOIN tables C/R/U.
+        per_table: dict[str, set] = {}
+        for tbl, cols in (stmt_to_cols.get(key) or {}).items():
+            acc = per_table.setdefault(tbl, set())
+            for col_letters in cols.values():
+                acc.update(col_letters)
         for tbl in stmt_to_tbl.get(key, ()):
-            out.setdefault(tbl, set()).update(letters)
+            # Prefer column-level attribution; fall back to body CRUD only
+            # when the AST walker never saw the table (parse failure /
+            # partial extraction) so table coverage is never lost.
+            out.setdefault(tbl, set()).update(per_table.get(tbl) or letters)
     return out
 
 
