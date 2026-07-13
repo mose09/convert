@@ -22,8 +22,8 @@ import re
 from .legacy_java_parser import parse_all_java, resolve_type_fqcn
 from .legacy_util import normalize_url
 from .mybatis_parser import (
-    _read_file_safe, extract_crud_from_sql, extract_table_usage,
-    parse_all_mappers,
+    _read_file_safe, extract_crud_from_sql, extract_table_crud_from_sql,
+    extract_table_usage, parse_all_mappers,
 )
 
 logger = logging.getLogger(__name__)
@@ -333,6 +333,11 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
     # already strips comments/literals and drops ``SELECT ... FOR UPDATE``
     # before scanning, so false positives are handled.
     statement_to_body_crud: dict[str, set] = {}
+    # Per-table CRUD by structural role — a write target gets C/U/D, every
+    # read-only source (MERGE USING/JOIN, INSERT..SELECT source, UPDATE
+    # subquery lookup) gets R only. Primary source for ``_derive_table_crud``;
+    # ``statement_to_body_crud`` stays as a legacy fallback.
+    statement_to_table_crud: dict[str, dict[str, set]] = {}
     # Column-level CRUD (Phase I). sqlglot-based AST walker in
     # ``extract_column_usage`` — empty dict when parse fails, callers
     # then fall back to table-level CRUD (``statement_to_body_crud``).
@@ -364,6 +369,16 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
                 body_letters = extract_crud_from_sql(stmt.get("sql") or "")
                 if body_letters:
                     statement_to_body_crud.setdefault(key, set()).update(body_letters)
+                # Reuse the tables already resolved for this statement so the
+                # per-table CRUD key set matches statement_to_tables exactly.
+                tbl_crud = extract_table_crud_from_sql(
+                    stmt.get("sql") or "", stmt.get("type", ""),
+                    tables=tables_for_stmt,
+                )
+                if tbl_crud:
+                    dst = statement_to_table_crud.setdefault(key, {})
+                    for t, ls in tbl_crud.items():
+                        dst.setdefault(t, set()).update(ls)
                 col_usage = stmt.get("column_usage") or {}
                 if col_usage:
                     # Merge (table, col) → letters across duplicate keys.
@@ -380,6 +395,7 @@ def _build_mybatis_indexes(mybatis_result: dict) -> dict:
         "statement_to_xml_file": statement_to_xml_file,
         "statement_to_procs": statement_to_procs,
         "statement_to_body_crud": statement_to_body_crud,
+        "statement_to_table_crud": statement_to_table_crud,
         "statement_to_column_usage": statement_to_column_usage,
     }
 
@@ -1257,12 +1273,13 @@ def _derive_procedures(sql_ids, mybatis_idx: dict) -> list[str]:
 def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     """Build ``{table: set("C"|"R"|"U"|"D")}`` from resolved statement keys.
 
-    CRUD is attributed **per table**: the column-level index
-    (``statement_to_column_usage``) decides each table's letters, so a
-    read-only source inside a mutating statement (a ``MERGE``'s
-    ``USING``/JOIN tables, an ``INSERT ... SELECT`` source) stays R and
-    only the real write target gets C/U/D. Tables the AST walker never
-    saw fall back to the statement's whole-body CRUD below.
+    CRUD is attributed **per table by structural role** via
+    ``statement_to_table_crud`` (built by
+    :func:`mybatis_parser.extract_table_crud_from_sql`): the write target
+    gets C/U/D, and a read-only source inside a mutating statement (a
+    ``MERGE``'s ``USING``/JOIN tables, an ``INSERT ... SELECT`` source, an
+    ``UPDATE t SET x=(SELECT ... FROM lookup)`` lookup) stays R. Statements
+    with no per-table entry (older cache) fall back to the whole-body CRUD.
 
     CRUD letters come **only from SQL body analysis** (not the MyBatis
     tag). Tag-based classification was dropped because it follows
@@ -1282,30 +1299,27 @@ def _derive_table_crud(sql_ids, mybatis_idx: dict) -> dict[str, set]:
     actual mutation happens inside the stored procedure, which the
     static scanner cannot see anyway.
     """
+    stmt_to_tblcrud = mybatis_idx.get("statement_to_table_crud", {})
     stmt_to_tbl = mybatis_idx.get("statement_to_tables", {})
     stmt_to_body_crud = mybatis_idx.get("statement_to_body_crud", {})
-    stmt_to_cols = mybatis_idx.get("statement_to_column_usage", {})
     out: dict[str, set] = {}
     for key in sql_ids or ():
-        letters = stmt_to_body_crud.get(key) or set()
-        if not letters:
+        per_tbl = stmt_to_tblcrud.get(key)
+        if per_tbl:
+            # Role-aware per-table CRUD: write target → C/U/D, read-only
+            # sources (MERGE USING/JOIN, INSERT..SELECT source, UPDATE
+            # subquery lookup) → R. Unioning across statements is still
+            # correct — a table read here and written elsewhere accrues both.
+            for tbl, letters in per_tbl.items():
+                if letters:
+                    out.setdefault(tbl, set()).update(letters)
             continue
-        # Per-table CRUD from the column-level (sqlglot AST) index. This
-        # separates a write *target* from read-only *sources* within one
-        # statement — e.g. a ``MERGE INTO t USING (SELECT ... FROM src JOIN
-        # j) ...`` marks src/j as R only, while t gets C/U. The old code
-        # unioned the statement's whole-body CRUD onto *every* table, which
-        # wrongly tagged those USING/JOIN tables C/R/U.
-        per_table: dict[str, set] = {}
-        for tbl, cols in (stmt_to_cols.get(key) or {}).items():
-            acc = per_table.setdefault(tbl, set())
-            for col_letters in cols.values():
-                acc.update(col_letters)
-        for tbl in stmt_to_tbl.get(key, ()):
-            # Prefer column-level attribution; fall back to body CRUD only
-            # when the AST walker never saw the table (parse failure /
-            # partial extraction) so table coverage is never lost.
-            out.setdefault(tbl, set()).update(per_table.get(tbl) or letters)
+        # Legacy fallback (per-table CRUD absent — older cache/index):
+        # union whole-body letters onto the statement's tables.
+        letters = stmt_to_body_crud.get(key) or set()
+        if letters:
+            for tbl in stmt_to_tbl.get(key, ()):
+                out.setdefault(tbl, set()).update(letters)
     return out
 
 
