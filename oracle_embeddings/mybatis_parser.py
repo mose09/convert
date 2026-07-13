@@ -374,6 +374,74 @@ def extract_crud_from_sql(sql_text: str) -> set[str]:
     return letters
 
 
+# Target-table regexes: identify the WRITE target of a DML statement so
+# read-only sources (FROM / JOIN / USING / subquery) aren't mislabeled with
+# the target's C/U/D. Each captures the table right after the keyword.
+_INSERT_TARGET_RE = re.compile(r"\bINSERT\s+INTO\s+(?:\w+\.)*(\w+)", re.IGNORECASE)
+_UPDATE_TARGET_RE = re.compile(r"\bUPDATE\s+(?:\w+\.)*(\w+)", re.IGNORECASE)
+_DELETE_TARGET_RE = re.compile(r"\bDELETE\s+(?:FROM\s+)?(?:\w+\.)*(\w+)", re.IGNORECASE)
+_MERGE_TARGET_RE = re.compile(r"\bMERGE\s+INTO\s+(?:\w+\.)*(\w+)", re.IGNORECASE)
+
+
+def extract_table_crud_from_sql(sql_text: str, stmt_type: str = "",
+                                tables: set | None = None) -> dict[str, set]:
+    """Per-table CRUD for ONE SQL body, by structural role.
+
+    Write *targets* get their operation letter (``INSERT INTO`` → C,
+    ``UPDATE`` → U, ``DELETE`` → D, ``MERGE INTO`` → the body's C/U/D);
+    **every other referenced table gets R only** (FROM / JOIN / USING /
+    subquery source). A bare ``SELECT`` marks all tables R.
+
+    This replaces the old "union the whole statement's body CRUD onto every
+    table" behavior, which wrongly tagged read-only sources — a ``MERGE``'s
+    ``USING`` / JOIN tables, an ``INSERT ... SELECT`` source, an
+    ``UPDATE t SET x=(SELECT ... FROM lookup)`` lookup — with the target's
+    C/U. Tables are taken from :func:`extract_table_usage` so the key set
+    matches ``statement_to_tables`` exactly (pass ``tables`` to reuse an
+    already-computed set and skip the re-scan).
+    """
+    if not sql_text:
+        return {}
+    if tables is None:
+        tables = set(extract_table_usage(
+            [{"sql": sql_text, "type": stmt_type or "select",
+              "mapper": "", "id": ""}]
+        ).keys())
+    else:
+        tables = {t.upper() for t in tables}
+    if not tables:
+        return {}
+
+    cleaned = _strip_sql_noise(sql_text)
+    cleaned = _FOR_UPDATE_RE.sub(" ", cleaned)
+
+    targets: dict[str, set] = {}
+
+    def _mark(name: str, letter: str) -> None:
+        up = (name or "").upper()
+        # Only real tables of this statement; drops keywords (e.g. the
+        # ``SET`` captured by ``UPDATE SET`` inside a MERGE WHEN clause).
+        if up and up in tables and up not in SQL_KEYWORDS:
+            targets.setdefault(up, set()).add(letter)
+
+    for m in _INSERT_TARGET_RE.finditer(cleaned):
+        _mark(m.group(1), "C")
+    for m in _UPDATE_TARGET_RE.finditer(cleaned):
+        _mark(m.group(1), "U")
+    for m in _DELETE_TARGET_RE.finditer(cleaned):
+        _mark(m.group(1), "D")
+    # MERGE target takes the body's write letters (WHEN clauses carry
+    # INSERT/UPDATE/DELETE); default to C+U if none parsed out.
+    merge_targets = [m.group(1).upper() for m in _MERGE_TARGET_RE.finditer(cleaned)]
+    if merge_targets:
+        write = extract_crud_from_sql(sql_text) & {"C", "U", "D"}
+        for t in merge_targets:
+            if t in tables and t not in SQL_KEYWORDS:
+                targets.setdefault(t, set()).update(write or {"C", "U"})
+
+    return {t: set(targets.get(t) or {"R"}) for t in tables}
+
+
 def extract_procedure_calls(sql_text: str, stmt_tag: str = "") -> list[str]:
     """Return Oracle stored-procedure / package names invoked in ``sql_text``.
 
