@@ -4,6 +4,15 @@ import os
 import re
 import sys
 
+# 배포판(임베더블 파이썬)은 pythonXX._pth 때문에 "스크립트 디렉토리를
+# sys.path 에 자동 추가" 하지 않고 PYTHONPATH 도 무시한다. 그래서 webui 가
+# `python main.py <cmd>` 를 subprocess 로 띄우면 명령 함수 안에서 lazy import
+# 하는 oracle_embeddings 를 못 찾아 ModuleNotFoundError 가 난다. cwd 와
+# 무관하게 항상 자기 위치를 sys.path 에 넣어 패키지를 찾게 한다.
+_MAIN_DIR = os.path.dirname(os.path.abspath(__file__))
+if _MAIN_DIR not in sys.path:
+    sys.path.insert(0, _MAIN_DIR)
+
 import yaml
 from dotenv import load_dotenv
 

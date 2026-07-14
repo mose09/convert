@@ -52,6 +52,10 @@ $pth = Get-ChildItem $pydir -Filter "python*._pth" | Select-Object -First 1
 Write-Host "==> site 활성화: $($pth.Name)" -ForegroundColor Cyan
 $content = Get-Content $pth.FullName | ForEach-Object { $_ -replace '^\s*#\s*import site', 'import site' }
 if ($content -notcontains "Lib\site-packages") { $content += "Lib\site-packages" }
+# 앱 폴더(python\ 의 형제 ..\app)를 sys.path 에 추가. 임베더블 파이썬은
+# ._pth 가 있으면 스크립트 디렉토리/PYTHONPATH 를 무시하므로, 이게 없으면
+# `python main.py <cmd>` subprocess 가 oracle_embeddings 를 못 찾는다.
+if ($content -notcontains "..\app") { $content += "..\app" }
 Set-Content -Path $pth.FullName -Value $content -Encoding ASCII
 
 # 3) pip 설치 --------------------------------------------------------------
