@@ -306,14 +306,16 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
 
     header = rows[0]
     col_map = _detect_columns(header)
-    if not {"as_is_table", "as_is_column", "to_be_table", "to_be_column"} <= col_map.keys():
+    # TO-BE 헤더(to_be_table / to_be_column)는 선택 — 없거나 값이 비면 AS-IS
+    # 이름으로 그대로 매핑(identity)한다. AS-IS 식별자만 있으면 진행.
+    if not {"as_is_table", "as_is_column"} <= col_map.keys():
         return {
             "version": "1.0",
             "default_schema": {"as_is": "LEGACY", "to_be": "NEW"},
             "tables": [],
             "columns": [],
             "notes": f"missing required headers. detected {sorted(col_map)}; "
-                     "need as_is_table / as_is_column / to_be_table / to_be_column",
+                     "need at least as_is_table / as_is_column",
         }
 
     tables: Dict[str, Dict[str, Any]] = {}
@@ -322,8 +324,9 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
     for r in rows[1:]:
         as_is_tbl = (r[col_map["as_is_table"]] or "").strip().upper()
         as_is_col = (r[col_map["as_is_column"]] or "").strip().upper()
-        to_be_tbl = (r[col_map["to_be_table"]] or "").strip().upper()
-        to_be_col = (r[col_map["to_be_column"]] or "").strip().upper()
+        # _cell 은 헤더가 없으면 "" 반환 → TO-BE 열이 아예 없는 MD 도 안전.
+        to_be_tbl = _cell(r, col_map, "to_be_table").upper()
+        to_be_col = _cell(r, col_map, "to_be_column").upper()
         if not as_is_tbl or not as_is_col:
             continue
 
@@ -344,8 +347,10 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
             if to_be_table_comment and "comment" not in tables[as_is_tbl]:
                 tables[as_is_tbl]["comment"] = to_be_table_comment
 
-        # drop 행
-        if not to_be_col or to_be_col in {"-", "DROP", "삭제"}:
+        # 명시적 drop 마커(-, DROP, 삭제)만 삭제 처리. TO-BE 컬럼이 그냥
+        # 비어있으면(헤더 없음 또는 값 공란) 오류/삭제 대신 AS-IS 컬럼명으로
+        # 그대로 매핑한다 (identity rename).
+        if to_be_col in {"-", "DROP", "삭제"}:
             entry_drop: Dict[str, Any] = {
                 "kind": "drop",
                 "as_is": {"table": as_is_tbl, "column": as_is_col},
@@ -357,16 +362,22 @@ def _heuristic_parse(text: str) -> Dict[str, Any]:
                 entry_drop["note"] = note
             columns.append(entry_drop)
             continue
+        if not to_be_col:
+            to_be_col = as_is_col
 
         as_is_type = _cell(r, col_map, "as_is_type")
         to_be_type = _cell(r, col_map, "to_be_type")
         to_be_column_comment = _cell(r, col_map, "to_be_column_comment")
         note = _cell(r, col_map, "note")
 
+        # 컬럼의 TO-BE 테이블은 이 행의 tobe_table 이 비어도 위에서 등록한
+        # 테이블 매핑(tables[as_is_tbl].to_be)을 따라간다 → 같은 테이블의
+        # 컬럼들이 CUSTOMER / CUST 로 어긋나지 않고 일관됨.
+        resolved_to_be_tbl = to_be_tbl or tables[as_is_tbl]["to_be"]
         entry: Dict[str, Any] = {
             "kind": "rename",
             "as_is": {"table": as_is_tbl, "column": as_is_col},
-            "to_be": {"table": (to_be_tbl or as_is_tbl), "column": to_be_col},
+            "to_be": {"table": resolved_to_be_tbl, "column": to_be_col},
         }
         if as_is_type:
             entry["as_is"]["type"] = as_is_type
