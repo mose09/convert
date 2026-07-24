@@ -2840,11 +2840,14 @@ def main():
                            help="여러 프론트엔드 레포가 있는 상위 디렉토리. 각 하위 폴더를 "
                                 "개별 프론트엔드 프로젝트로 인식해 URL 맵을 통합. "
                                 "특정 sub-set 만 분석하려면 --frontend-dir 을 여러 번 사용.")
-    al_parser.add_argument("--frontend-framework", choices=["auto", "react", "polymer"],
+    al_parser.add_argument("--frontend-framework",
+                           choices=["auto", "react", "polymer", "jsp"],
                            default="auto",
                            help="Frontend framework override. 기본 'auto' = package.json 의존성 + "
-                                "파일 콘텐츠 샘플링으로 React vs Polymer 자동 감지. 강제하려면 "
-                                "'react' 또는 'polymer' 지정.")
+                                "파일 콘텐츠 샘플링으로 React / Polymer / JSP 자동 감지 "
+                                "(.jsp 파일 있으면 jsp). 강제하려면 'react' / 'polymer' / "
+                                "'jsp' 지정. JSP 는 서버렌더라 화면(presentation) 컬럼은 비고 "
+                                "form action / ajax / onclick 기반 버튼→백엔드 트리거를 추출.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
     al_parser.add_argument("--menu-md",
                            help="Path to a Markdown menu file (pipe table). DRM 환경에서 Excel 대신 사용. "

@@ -95,7 +95,8 @@ convert/
     ├── llm_assist.py             # LLM 보조 (컬럼 해석, 관계 추론)
     ├── storage.py                # Markdown 파일 생성
     ├── legacy_java_parser.py     # 레거시 Java 정규식 파서 (Controller/Service/Mapper/RFC)
-    ├── legacy_frontend.py        # 프론트엔드 React/Polymer 자동 감지 + 디스패처
+    ├── legacy_frontend.py        # 프론트엔드 React/Polymer/JSP 자동 감지 + 디스패처
+    ├── legacy_jsp_scanner.py     # JSP 버튼→백엔드 URL 스캐너 (form/ajax/onclick)
     ├── legacy_pattern_discovery.py # LLM 기반 프로젝트 패턴 자동 발견
     ├── legacy_react_router.py    # React Router v5/v6 + lazy import 스캐너
     ├── legacy_polymer_router.py  # Polymer (vaadin-router/page.js/dom-module) 파서
@@ -595,7 +596,7 @@ python main.py analyze-legacy `
 | `--patterns` | `discover-patterns` 로 생성한 패턴 파일 (없으면 기본값) |
 | `--menu-md` / `--menu-xlsx` / `--menu-table` | 메뉴 소스 (우선순위: skip > md > xlsx > DB) |
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
-| `--frontend-framework` | `auto` / `react` / `polymer` 강제 지정 |
+| `--frontend-framework` | `auto` / `react` / `polymer` / **`jsp`** 강제 지정. auto 는 package.json 의존성·콘텐츠 샘플링으로 React/Polymer 를, 없고 `.jsp` 파일이 있으면 **JSP** 로 감지. JSP 는 서버렌더라 화면(presentation) 컬럼은 비고, `<form action>` / `<c:url>` / `$.ajax`·`fetch` / `location.href` / `onclick` 핸들러(공통 .js 함수 1-hop 포함) 기반으로 **버튼→백엔드 URL 트리거**를 추출 (`legacy_jsp_scanner.py`). |
 | `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 3) |
 | **`--extract-biz-logic`** | **비즈니스 로직 LLM 추출 on/off (기본 off, 회귀 없음)** |
 | `--biz-scope {backend,frontend,both}` | 추출 범위 (기본 `both`) |
