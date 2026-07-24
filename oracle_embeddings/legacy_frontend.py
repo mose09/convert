@@ -123,11 +123,11 @@ def _content_sample_score(frontend_dir: str, max_files: int = 40) -> tuple[int, 
 
 
 def detect_frontend_framework(frontend_dir: str) -> str:
-    """Return ``"react"`` / ``"polymer"`` / ``"unknown"`` for ``frontend_dir``."""
+    """Return ``"react"`` / ``"polymer"`` / ``"jsp"`` / ``"unknown"``."""
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return "unknown"
 
-    # Signal 1: package.json dependencies
+    # Signal 1: package.json dependencies (SPA 프로젝트에만 존재)
     pkg = _read_package_json(frontend_dir)
     via_deps = _check_deps(pkg) if pkg else ""
     if via_deps:
@@ -137,7 +137,13 @@ def detect_frontend_framework(frontend_dir: str) -> str:
     # Signal 2 + 3: content sampling
     react_hits, polymer_hits = _content_sample_score(frontend_dir)
     if react_hits == 0 and polymer_hits == 0:
-        logger.info("Frontend framework: no React/Polymer signals found")
+        # React/Polymer 신호가 전혀 없으면 JSP(서버렌더) 여부 확인 —
+        # JSP 프로젝트는 package.json / import React 가 없고 .jsp 파일이 있다.
+        from .legacy_jsp_scanner import count_jsp_files
+        if count_jsp_files(frontend_dir) > 0:
+            logger.info("Frontend framework detected: jsp (.jsp files present)")
+            return "jsp"
+        logger.info("Frontend framework: no React/Polymer/JSP signals found")
         return "unknown"
     if react_hits >= polymer_hits * 2:
         logger.info("Frontend framework detected via content sampling: react "
@@ -154,23 +160,39 @@ def detect_frontend_framework(frontend_dir: str) -> str:
     return chosen
 
 
+def _scanner_for(framework: str):
+    """프레임워크에 맞는 (build_api_url_index, extract_button_triggers) 반환.
+
+    JSP → ``legacy_jsp_scanner``, 그 외(react/polymer/unknown) →
+    ``legacy_react_api_scanner`` (기존 동작 유지). 두 스캐너는 동일한
+    시그니처/반환 계약을 지킨다."""
+    if (framework or "").lower() == "jsp":
+        from .legacy_jsp_scanner import build_api_url_index, extract_button_triggers
+        return build_api_url_index, extract_button_triggers
+    from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
+    return build_api_url_index, extract_button_triggers
+
+
 def build_frontend_api_index(frontend_dir: str, patterns: dict | None = None,
                                strip_patterns=None,
                                repo_index_out: dict[str, set[str]] | None = None,
+                               framework: str | None = None,
                                ) -> tuple[dict, dict]:
     """Single-frontend helper: return (api_index, trigger_index).
 
-    Thin wrapper that delegates to :mod:`legacy_react_api_scanner` so the
-    analyzer can call one place for both single and multi-repo setups.
+    ``framework`` (auto 감지 기본) 에 따라 JSP / React 스캐너로 분기.
 
     ``repo_index_out`` (out-param, optional) 가 dict 면 ``getBackendUrl(KEY,
     '/api/...')`` builder 호출의 KEY 를 ``frontend_dir/.env*`` 의
     ``REACT_APP_API_<KEY>_NAME=<repo>`` 매핑으로 lookup 해 ``{url: {repo}}`` 를
-    채워준다. 시그니처 (return tuple) 는 변경 없음 — backwards compat.
+    채워준다 (React 전용). 시그니처 (return tuple) 는 변경 없음.
     """
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}, {}
-    from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
+    fw = (framework or "auto").lower()
+    if fw == "auto":
+        fw = detect_frontend_framework(frontend_dir)
+    build_api_url_index, extract_button_triggers = _scanner_for(fw)
     api_idx = build_api_url_index(frontend_dir, patterns=patterns,
                                    strip_patterns=strip_patterns,
                                    repo_index_out=repo_index_out)
@@ -235,6 +257,14 @@ def build_frontend_url_map(frontend_dir: str, framework: str | None = None,
         return build_url_to_component_map(
             frontend_dir, strip_patterns=strip_patterns, route_prefix=route_prefix,
         ), "polymer"
+
+    if fw == "jsp":
+        # JSP 는 서버렌더라 클라이언트 라우트(url→component) 맵이 없다.
+        # presentation_layer 는 비우되 framework 를 "jsp" 로 반환해 이후
+        # api/trigger 추출이 JSP 스캐너로 분기하도록 한다.
+        logger.info("Frontend framework jsp — 라우트 맵 없음(서버렌더), "
+                    "버튼→백엔드 트리거는 JSP 스캐너로 추출")
+        return {}, "jsp"
 
     logger.warning("Frontend framework unknown — presentation_layer column will be empty")
     return {}, "unknown"
@@ -424,7 +454,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
     detected_frameworks = []
     skipped: list[str] = []
 
-    from .legacy_react_api_scanner import build_api_url_index, extract_button_triggers
+    # 스캐너는 버킷별 프레임워크에 맞춰 _scanner_for(fw) 로 선택 (JSP/React).
 
     allowed_lower = {a.lower() for a in allowed_apps} if allowed_apps else None
 
@@ -460,6 +490,12 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
             child, framework=framework,
             strip_patterns=strip_patterns, route_prefix=route_prefix,
         )
+        # 버킷 프레임워크에 맞는 api/trigger 스캐너 (JSP → JSP 스캐너).
+        build_api_url_index, extract_button_triggers = _scanner_for(fw)
+        # JSP 는 url_map 이 비어(서버렌더) 아래 detected_frameworks 기록을
+        #타지 않으므로 여기서 프레임워크를 남겨 overall 판정에 반영.
+        if fw == "jsp":
+            detected_frameworks.append(fw)
         if url_map:
             # 같은 이름의 inner app 이 여러 repo 에 있을 수 있어 bucket key
             # 충돌 가능. 기존 bucket 이 있으면 url 단위로 merge (덮어쓰기 금지).
