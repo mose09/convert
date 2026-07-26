@@ -2606,6 +2606,32 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         print(f"  menu-only: skipped {skipped_no_menu} non-matching endpoints "
               f"(chain resolution saved)")
 
+    # JSP 자동 진단 — 폐쇄망 사용자가 로그를 통째로 전달할 수 없으므로
+    # (CLAUDE.md 단방향 원칙) 결론 1~2줄로 자동 분류한다. JSP 화면의 버튼이
+    # 행에 안 붙는 1순위 원인은 URL 불일치(컨텍스트 패스 등) — 매칭 0 이면
+    # 양쪽 샘플 3개씩 보여줘 prefix 차이를 바로 눈으로 확인 가능하게.
+    if detected_frontend == "jsp":
+        _jsp_urls: set[str] = set(single_api_index.keys())
+        for _idx in api_by_frontend.values():
+            _jsp_urls.update(_idx.keys())
+        _hit = len(_jsp_urls & controller_urls)
+        if not _jsp_urls:
+            print("  ⚠ JSP 진단: 추출된 프론트 호출 URL 이 0건 — JSP 안 호출 "
+                  "패턴(공통함수/커스텀태그)이 스캐너 미지원일 수 있음. "
+                  "patterns.yaml frontend.api_call_methods 에 공통 함수명 추가 요망")
+        elif _hit == 0:
+            _js = sorted(_jsp_urls)[:3]
+            _cs = sorted(controller_urls)[:3]
+            print(f"  ✗ JSP 진단: 프론트 URL {len(_jsp_urls)}건 ↔ 컨트롤러 "
+                  f"URL {len(controller_urls)}건 매칭 0 — URL 형식 불일치 "
+                  "(컨텍스트 패스/prefix 차이 가능성). "
+                  "patterns.yaml url.url_prefix_strip 으로 prefix 제거 검토")
+            print(f"    JSP 샘플: {_js}")
+            print(f"    컨트롤러 샘플: {_cs}")
+        else:
+            print(f"  ✓ JSP 진단: 프론트 URL {_hit}/{len(_jsp_urls)}건이 "
+                  f"컨트롤러와 매칭 — 버튼→백엔드 체인 연결됨")
+
     orphan_menus = []
     for key, m in menu_url_index.items():
         if key not in controller_urls:
