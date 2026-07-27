@@ -347,10 +347,15 @@ def _urls_from_onclick(handler: str, func_bodies: dict[str, str],
     return canon
 
 
-def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
-                            patterns: dict | None = None,
-                            strip_patterns=None) -> dict[str, list[str]]:
-    """``{normalized_api_url: [button_label, ...]}`` 반환 (react 스캐너 동일 계약)."""
+def _extract_triggers_detailed(frontend_dir: str,
+                               patterns: dict | None = None,
+                               strip_patterns=None
+                               ) -> dict[str, list[tuple[str, str]]]:
+    """``{normalized_url: [(jsp_rel_path, button_label), ...]}`` 수집.
+
+    버튼이 **어느 화면(jsp)에 있는지**까지 보존한다 — 프론트 기준 행 분리
+    (화면·버튼당 1행)의 데이터 소스. 순서 보존 + (file,label) 중복 제거.
+    """
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}
     custom_res = _custom_method_res(patterns)
@@ -369,20 +374,24 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
         for name, body in _func_bodies(txt).items():
             global_bodies.setdefault(name, body)
 
-    triggers: dict[str, set[str]] = {}
+    detailed: dict[str, list[tuple[str, str]]] = {}
+    rel = ""
 
     def _assoc(label: str, urls) -> None:
         label = _clean_label(label)
         if not label:
             return
         for u in urls:
-            triggers.setdefault(u, set()).add(label)
+            pairs = detailed.setdefault(u, [])
+            if (rel, label) not in pairs:
+                pairs.append((rel, label))
 
     for path in jsp_files:
         try:
             text = _strip_comments(_read_file_safe(path))
         except Exception:
             continue
+        rel = os.path.relpath(path, frontend_dir).replace(os.sep, "/")
         # 파일 로컬 함수 우선 + 전역 보강
         local_bodies = dict(global_bodies)
         local_bodies.update(_func_bodies(text))
@@ -445,4 +454,31 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             if urls:
                 _assoc(a_text, urls)
 
-    return {u: sorted(labels) for u, labels in triggers.items()}
+    return detailed
+
+
+def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
+                            patterns: dict | None = None,
+                            strip_patterns=None) -> dict[str, list[str]]:
+    """``{normalized_api_url: [button_label, ...]}`` 반환 (react 스캐너 동일 계약)."""
+    detailed = _extract_triggers_detailed(frontend_dir, patterns, strip_patterns)
+    out: dict[str, list[str]] = {}
+    for u, pairs in detailed.items():
+        labels: list[str] = []
+        for _f, lbl in pairs:
+            if lbl not in labels:
+                labels.append(lbl)
+        out[u] = sorted(labels)
+    return out
+
+
+def extract_button_triggers_detailed(frontend_dir: str,
+                                     api_index: dict[str, list[str]],
+                                     patterns: dict | None = None,
+                                     strip_patterns=None
+                                     ) -> dict[str, list[tuple[str, str]]]:
+    """``{normalized_url: [(jsp_rel_path, button_label), ...]}`` 반환.
+
+    프론트 기준 행 분리용 — 같은 서비스ID/URL 을 여러 화면이 호출해도
+    (화면, 버튼) 쌍이 보존돼 화면당 1행으로 정확히 나눌 수 있다."""
+    return _extract_triggers_detailed(frontend_dir, patterns, strip_patterns)

@@ -177,6 +177,7 @@ def build_frontend_api_index(frontend_dir: str, patterns: dict | None = None,
                                strip_patterns=None,
                                repo_index_out: dict[str, set[str]] | None = None,
                                framework: str | None = None,
+                               trigger_details_out: dict | None = None,
                                ) -> tuple[dict, dict]:
     """Single-frontend helper: return (api_index, trigger_index).
 
@@ -198,6 +199,12 @@ def build_frontend_api_index(frontend_dir: str, patterns: dict | None = None,
                                    repo_index_out=repo_index_out)
     trig = extract_button_triggers(frontend_dir, api_idx, patterns=patterns,
                                     strip_patterns=strip_patterns) if api_idx else {}
+    # JSP: (화면, 버튼) 쌍 상세 — 프론트 기준 행 분리용 out-param.
+    if trigger_details_out is not None and fw == "jsp" and api_idx:
+        from .legacy_jsp_scanner import extract_button_triggers_detailed
+        trigger_details_out.update(extract_button_triggers_detailed(
+            frontend_dir, api_idx, patterns=patterns,
+            strip_patterns=strip_patterns))
     return api_idx, trig
 
 
@@ -417,6 +424,7 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                                   allowed_apps: set[str] | None = None,
                                   repos_by_frontend_out: dict[str, dict[str, set[str]]] | None = None,
                                   explicit_buckets: list[tuple[str, str]] | None = None,
+                                  trigger_details_out: dict[str, dict] | None = None,
                                   ) -> tuple[dict, str, dict, dict, dict]:
     """Scan multiple frontend repos under ``frontends_root`` and merge URL maps.
 
@@ -559,6 +567,25 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                     else:
                         tbucket[url] = list(labels)
                 logger.info("Frontend sub-project %s: %d button triggers", entry, len(trig))
+            # JSP: (화면, 버튼) 상세 — 프론트 기준 행 분리용. 파일 경로는
+            # api index 와 동일하게 bucket 이름 prefix.
+            if trigger_details_out is not None and fw == "jsp" and api_idx:
+                from .legacy_jsp_scanner import extract_button_triggers_detailed
+                try:
+                    det = extract_button_triggers_detailed(
+                        child, api_idx, patterns=patterns,
+                        strip_patterns=strip_patterns)
+                except Exception as e:
+                    logger.warning("trigger details %s 실패: %s", entry, e)
+                    det = {}
+                if det:
+                    dbucket = trigger_details_out.setdefault(entry_lower, {})
+                    for url, pairs in det.items():
+                        dst = dbucket.setdefault(url, [])
+                        for f, lbl in pairs:
+                            item = (f"{entry}/{f}", lbl)
+                            if item not in dst:
+                                dst.append(item)
 
     overall_fw = detected_frameworks[0] if detected_frameworks else "unknown"
     if len(set(detected_frameworks)) > 1:
@@ -588,6 +615,8 @@ def build_frontend_url_map_multi(frontends_root: str, framework: str | None = No
                     api_by_frontend.setdefault(route_slug, api_by_frontend[folder_slug])
                 if folder_slug in triggers_by_frontend:
                     triggers_by_frontend.setdefault(route_slug, triggers_by_frontend[folder_slug])
+                if trigger_details_out is not None and folder_slug in trigger_details_out:
+                    trigger_details_out.setdefault(route_slug, trigger_details_out[folder_slug])
     if alias_count:
         logger.info("Frontend multi-repo: %d Route-slug aliases registered "
                     "(folder name ≠ Route path slug)", alias_count)
