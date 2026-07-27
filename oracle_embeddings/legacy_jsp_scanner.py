@@ -374,13 +374,18 @@ def _element_labels_by_id(text: str) -> dict[str, str]:
         m = _ID_ATTR_RE.search(attrs)
         if m:
             lbl = _clean_label(body)
+            if not lbl:
+                tm = _TITLE_ATTR_RE.search(attrs)
+                if tm:
+                    lbl = _clean_label(tm.group(1))
             if lbl:
                 out.setdefault(m.group(1), lbl)
     for im in _INPUT_BTN_RE.finditer(text):
         attrs = im.group(1)
         m = _ID_ATTR_RE.search(attrs)
         if m:
-            v = _VALUE_RE.search(attrs) or _ALT_RE.search(attrs)
+            v = (_VALUE_RE.search(attrs) or _ALT_RE.search(attrs)
+                 or _TITLE_ATTR_RE.search(attrs))
             if v:
                 lbl = _clean_label(v.group(1))
                 if lbl:
@@ -542,7 +547,13 @@ def _extract_triggers_detailed(frontend_dir: str,
                                       custom_res, strip_patterns,
                                       service_res)
             if urls:
-                _assoc(b_text, urls)
+                # 내부 텍스트 없으면(아이콘 버튼) title 속성 폴백
+                lbl = b_text
+                if not _clean_label(lbl):
+                    tm = _TITLE_ATTR_RE.search(b_attrs)
+                    if tm:
+                        lbl = tm.group(1)
+                _assoc(lbl, urls)
         # <input type=button|submit|image value="label" onclick=..>
         for im in _INPUT_BTN_RE.finditer(text):
             i_attrs = im.group(1)
@@ -554,7 +565,8 @@ def _extract_triggers_detailed(frontend_dir: str,
                                       service_res)
             if not urls:
                 continue
-            v = _VALUE_RE.search(i_attrs) or _ALT_RE.search(i_attrs)
+            v = (_VALUE_RE.search(i_attrs) or _ALT_RE.search(i_attrs)
+                 or _TITLE_ATTR_RE.search(i_attrs))
             _assoc(v.group(1) if v else "button", urls)
         # <a onclick=..>label</a> / <a href="javascript:fn();" title="라벨">
         for am in _ANCHOR_RE.finditer(text):
