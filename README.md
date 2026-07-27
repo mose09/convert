@@ -598,6 +598,7 @@ python main.py analyze-legacy `
 | `--menu-only` | Program Detail 에 메뉴 매칭된 endpoint 만 표시 |
 | `--frontend-framework` | `auto` / `react` / `polymer` / **`jsp`** 강제 지정. auto 는 package.json 의존성·콘텐츠 샘플링으로 React/Polymer 를, 없고 `.jsp` 파일이 있으면 **JSP** 로 감지. JSP 는 서버렌더라 화면(presentation) 컬럼은 비고, `<form action>` / `<c:url>` / `$.ajax`·`fetch` / `location.href` / `onclick` 핸들러(공통 .js 함수 1-hop 포함) 기반으로 **버튼→백엔드 URL 트리거**를 추출 (`legacy_jsp_scanner.py`). |
 | `--rfc-depth` | Service-of-service 체인 탐색 깊이 (기본 3) |
+| `--url-prefix-strip REGEX` | 메뉴·프론트·컨트롤러 URL 에서 제거할 prefix 정규식 (**반복 지정 가능**, 예: `--url-prefix-strip "^/mes"`). patterns.yaml 없이 CLI 만으로 지정 — 파일이 있으면 `url.url_prefix_strip` 에 합집합. JSP 진단 ✗ 시 "자동 분석" 이 제안하는 prefix 를 그대로 넣으면 됨 (컨텍스트 패스 차이로 프론트↔컨트롤러 URL 매칭 0 인 케이스 해결). |
 | **`--extract-biz-logic`** | **비즈니스 로직 LLM 추출 on/off (기본 off, 회귀 없음)** |
 | `--biz-scope {backend,frontend,both}` | 추출 범위 (기본 `both`) |
 | `--biz-max-methods N` | 백엔드 메서드 LLM 호출 cap (기본 500) |

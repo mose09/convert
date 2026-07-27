@@ -2510,6 +2510,19 @@ def cmd_analyze_legacy(args):
         print(f"  Loading patterns: {args.patterns}")
         loaded_patterns = load_patterns(args.patterns)
 
+    # --url-prefix-strip: patterns.yaml 없이 CLI 만으로 prefix 제거.
+    # patterns 파일이 있으면 그 위에 합집합으로 추가 (기본값 제거 금지 원칙).
+    cli_strips = [s for s in (getattr(args, "url_prefix_strip", None) or []) if s]
+    if cli_strips:
+        loaded_patterns = loaded_patterns or {}
+        url_sec = loaded_patterns.setdefault("url", {})
+        merged = list(url_sec.get("url_prefix_strip") or [])
+        for s in cli_strips:
+            if s not in merged:
+                merged.append(s)
+        url_sec["url_prefix_strip"] = merged
+        print(f"  URL prefix strip (CLI): {cli_strips}")
+
     menu_only = getattr(args, "menu_only", False)
 
     # Business logic extraction args (Phase A: backend; Phase B: frontend).
@@ -2848,6 +2861,12 @@ def main():
                                 "(.jsp 파일 있으면 jsp). 강제하려면 'react' / 'polymer' / "
                                 "'jsp' 지정. JSP 는 서버렌더라 화면(presentation) 컬럼은 비고 "
                                 "form action / ajax / onclick 기반 버튼→백엔드 트리거를 추출.")
+    al_parser.add_argument("--url-prefix-strip", action="append", metavar="REGEX",
+                           help="메뉴·프론트·컨트롤러 URL 에서 제거할 prefix 정규식 "
+                                "(반복 지정 가능, 예: --url-prefix-strip \"^/mes\"). "
+                                "patterns.yaml 없이 CLI 만으로 지정 — 파일이 있으면 "
+                                "url.url_prefix_strip 에 합집합으로 추가. JSP 진단이 "
+                                "✗ 일 때 자동 분석이 제안하는 prefix 를 그대로 넣으면 됨.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
     al_parser.add_argument("--menu-md",
                            help="Path to a Markdown menu file (pipe table). DRM 환경에서 Excel 대신 사용. "
