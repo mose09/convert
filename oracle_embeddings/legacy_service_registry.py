@@ -26,6 +26,11 @@ logger = logging.getLogger(__name__)
 _SKIP_DIRS = {".git", ".svn", ".hg", "node_modules", "target", "build",
               "dist", "bin", "out"}
 
+# service 정의가 담기는 파일 확장자. 프레임워크에 따라 .xml 이 아니라
+# ``*.service`` (Nexcore/DevOn 계열 등) 로 저장되기도 한다. 내용 필터
+# ("serviceClass" 포함 여부)가 별도로 있어 확장자를 넓혀도 안전.
+_SERVICE_FILE_EXTS = (".xml", ".service", ".svc")
+
 # <service ...> 태그 전체 (self-closing / 열림 모두). 속성 순서 무관하게
 # 태그 안에서 개별 속성을 다시 뽑는다.
 _SERVICE_TAG_RE = re.compile(r"<service\b([^>]*?)/?>", re.IGNORECASE | re.DOTALL)
@@ -39,7 +44,8 @@ _ATTR_RES = {
 
 
 def scan_service_registry(dirs: list[str]) -> dict[str, dict]:
-    """``dirs`` 하위 모든 .xml 에서 service 정의를 수집한다.
+    """``dirs`` 하위 모든 service 정의 파일(.xml / .service / .svc)에서
+    service 정의를 수집한다.
 
     반환: ``{service_id: {"class": FQCN, "method": str, "file": relpath}}``.
     같은 id 가 여러 번 정의되면 첫 정의 유지 (first-win). serviceClass 가
@@ -54,7 +60,7 @@ def scan_service_registry(dirs: list[str]) -> dict[str, dict]:
             dnames[:] = [d for d in dnames if d not in _SKIP_DIRS
                          and not d.startswith(".")]
             for fn in fnames:
-                if not fn.lower().endswith(".xml"):
+                if not fn.lower().endswith(_SERVICE_FILE_EXTS):
                     continue
                 path = os.path.join(root, fn)
                 try:
