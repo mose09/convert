@@ -1623,7 +1623,7 @@ def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     }
 
 
-def _split_rows_per_trigger(rows: list[dict]) -> list[dict]:
+def _split_rows_per_trigger(rows: list[dict], screen_split: bool = False) -> list[dict]:
     """``--row-per-trigger`` 활성 시 각 row 의 frontend_trigger (``;\\n`` join)
     를 단일 라벨 단위로 분리해 N row 로 확장.
 
@@ -1646,6 +1646,21 @@ def _split_rows_per_trigger(rows: list[dict]) -> list[dict]:
                 new_r["frontend_trigger"] = label
                 out.append(new_r)
             continue
+        # 버튼 미탐지 폴백 (JSP screen_split): 화면이 ';' 로 병기돼 있으면
+        # 화면당 1행으로 분리. 트리거는 화면별 귀속 정보가 없으므로 비운다
+        # (자동 호출 / 미인식 바인딩 — 없는 정보를 지어내지 않음).
+        if screen_split:
+            screens = [s.strip() for s in
+                       (r.get("presentation_layer") or "").split(";\n")
+                       if s.strip()]
+            if len(screens) > 1:
+                for scr in screens:
+                    new_r = dict(r)
+                    new_r.pop("_trigger_details", None)
+                    new_r["presentation_layer"] = scr
+                    new_r["frontend_trigger"] = ""
+                    out.append(new_r)
+                continue
         triggers_raw = r.get("frontend_trigger") or ""
         triggers = [t.strip() for t in triggers_raw.split(";\n") if t.strip()]
         if len(triggers) <= 1:
@@ -2995,7 +3010,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     else:
         display_rows = _reorder_rows_by_menu(rows, menu_rows, base_dirs)
     if row_per_trigger:
-        display_rows = _split_rows_per_trigger(display_rows)
+        display_rows = _split_rows_per_trigger(
+            display_rows, screen_split=(detected_frontend == "jsp"))
     # JSP 프론트 + 메뉴 없음 → 화면(jsp) 기준으로 행 그룹핑 (메뉴가 있으면
     # 메뉴 순서가 우선이므로 건드리지 않음).
     if detected_frontend == "jsp" and not menu_rows and not skip_menu_reorder:
@@ -3343,7 +3359,8 @@ def analyze_legacy_batch(backends_root: str,
     }
     display_rows = _reorder_rows_by_menu(all_rows, menu_rows, batch_base_dirs)
     if row_per_trigger:
-        display_rows = _split_rows_per_trigger(display_rows)
+        display_rows = _split_rows_per_trigger(
+            display_rows, screen_split=(detected_frontend_fw == "jsp"))
     # JSP 프론트 + 메뉴 없음 → 화면(jsp) 기준 그룹핑 (단일 경로와 동일 규칙)
     if detected_frontend_fw == "jsp" and not menu_rows:
         display_rows = _group_rows_by_screen(display_rows)
