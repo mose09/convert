@@ -438,7 +438,7 @@ def save_legacy_markdown(result: dict, output_dir: str, menu_only: bool = False)
             f.write("\n")
 
         # Program detail table — column layout depends on menu presence
-        cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _SINGLE_COLUMNS_NO_MENU
+        cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _single_no_menu_cols(result)
         f.write("## Program Detail\n\n")
         f.write("| " + " | ".join(label for label, _ in cols) + " |\n")
         f.write("|" + "|".join(["---"] * len(cols)) + "|\n")
@@ -833,7 +833,7 @@ def save_legacy_excel(result: dict, output_dir: str, menu_only: bool = False) ->
 
     # Sheet 2: Programs (main deliverable)
     ws = wb.create_sheet("Programs")
-    cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _SINGLE_COLUMNS_NO_MENU
+    cols = _SINGLE_COLUMNS_WITH_MENU if _has_menu_data(rows) else _single_no_menu_cols(result)
     has_row_no_col = any(k == "__row_no__" for _, k in cols)
     if has_row_no_col:
         headers = [label for label, _ in cols]
@@ -1064,7 +1064,7 @@ _SINGLE_COLUMNS_NO_MENU = [
     ("URL",               "url"),
     ("File",              "file_name"),
     ("Frontend project",  "frontend_project"),
-    ("React",             "presentation_layer"),
+    ("Frontend screen",   "presentation_layer"),
     ("Trigger",           "frontend_trigger"),
     ("Backend Repo",      "backend_repo"),
     ("Frontend Validation", "frontend_validation_summary"),
@@ -1079,6 +1079,40 @@ _SINGLE_COLUMNS_NO_MENU = [
     ("Procedure",         "procedures"),
     ("RFC",               "rfc"),
 ]
+
+
+# JSP(서버렌더) 프론트 + 메뉴 없음 전용 — **화면 기준 읽기 순서**.
+# 사용자가 "jsp 기준으로 화면 → 이벤트(버튼) → 백엔드 체인" 으로 읽고
+# 싶다고 해서, 화면/트리거를 맨 앞에 두고 백엔드 체인이 뒤따르게 배치.
+# 컬럼 key 집합은 _SINGLE_COLUMNS_NO_MENU 와 동일 (순서만 다름).
+_SINGLE_COLUMNS_NO_MENU_JSP = [
+    ("Frontend screen",   "presentation_layer"),
+    ("Trigger",           "frontend_trigger"),
+    ("Frontend project",  "frontend_project"),
+    ("Program",           "program_name"),
+    ("URL",               "url"),
+    ("HTTP",              "http_method"),
+    ("File",              "file_name"),
+    ("Backend Repo",      "backend_repo"),
+    ("Frontend Validation", "frontend_validation_summary"),
+    ("Controller",        "controller_class"),
+    ("Service",           "service_class"),
+    ("Service method",    "service_methods"),
+    ("Business Logic",    "biz_summary"),
+    ("XML",               "query_xml"),
+    ("XML method",        "sql_ids"),
+    ("Tables",            "related_tables"),
+    ("Columns",           "related_columns"),
+    ("Procedure",         "procedures"),
+    ("RFC",               "rfc"),
+]
+
+
+def _single_no_menu_cols(result: dict) -> list:
+    """단일 모드 no-menu 컬럼 선택 — JSP 프론트면 화면-우선 레이아웃."""
+    if (result or {}).get("frontend_framework") == "jsp":
+        return _SINGLE_COLUMNS_NO_MENU_JSP
+    return _SINGLE_COLUMNS_NO_MENU
 
 
 def _has_menu_data(rows: list[dict]) -> bool:
