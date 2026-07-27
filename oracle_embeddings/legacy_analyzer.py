@@ -3008,8 +3008,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         _first = ((display_rows[0].get("presentation_layer") or "(화면없음)")
                   .split(";")[0] if display_rows else "-")
         _applied = "적용" if not menu_rows else "미적용(메뉴 순서 우선)"
+        _n_trig = sum(1 for r in display_rows if r.get("frontend_trigger"))
         print(f"  화면 그룹핑: {_applied} — 화면 있는 행 "
-              f"{_n_scr}/{len(display_rows)}건, 첫 행 화면: {_first}")
+              f"{_n_scr}/{len(display_rows)}건, 트리거(버튼) 있는 행 "
+              f"{_n_trig}건, 첫 행 화면: {_first}")
 
     return {
         "rows": display_rows,
@@ -3355,8 +3357,10 @@ def analyze_legacy_batch(backends_root: str,
             _applied = "적용" if not menu_rows else "미적용(메뉴 순서 우선)"
         else:
             _applied = f"미적용(frontend={detected_frontend_fw or '감지실패'})"
+        _n_trig = sum(1 for r in display_rows if r.get("frontend_trigger"))
         print(f"  화면 그룹핑: {_applied} — 화면 있는 행 "
-              f"{_n_scr}/{len(display_rows)}건, 첫 행 화면: {_first}")
+              f"{_n_scr}/{len(display_rows)}건, 트리거(버튼) 있는 행 "
+              f"{_n_trig}건, 첫 행 화면: {_first}")
 
     return {
         "rows": display_rows,
