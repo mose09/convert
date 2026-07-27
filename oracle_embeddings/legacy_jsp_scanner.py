@@ -139,8 +139,38 @@ def _custom_method_res(patterns: dict | None):
     return out
 
 
-def _urls_in_text(text: str, custom_res) -> list[str]:
-    """text 에서 URL 후보(정규화 전 원문) 리스트를 순서 보존/중복 제거로."""
+# 서비스 ID 기반 호출 (URL 이 아니라 ID 문자열이 첫 인자):
+#   httpSend("fabCBMDataList", paramJson, onSuccess, onFail, opt)
+# ID 는 service 정의 XML (<service id=.. serviceClass=..>) 로 컨트롤러와
+# 매핑된다 (legacy_service_registry). 여기서는 "/<id>" pseudo-URL 로 emit
+# 해 analyze-legacy 가 붙인 합성 엔드포인트(/<id>)와 정규화 키가 일치.
+_SERVICE_ID_METHODS = ("httpSend",)
+
+
+def _service_method_res(patterns: dict | None):
+    """서비스ID 호출 함수 정규식. 기본 httpSend + patterns
+    ``frontend.service_call_methods`` 로 확장 (합집합, 기본값 유지)."""
+    fe = (patterns or {}).get("frontend") or {}
+    names = list(_SERVICE_ID_METHODS)
+    for n in (fe.get("service_call_methods") or []):
+        n = str(n).strip()
+        if n and n not in names:
+            names.append(n)
+    out = []
+    for n in names:
+        if not re.match(r"^[A-Za-z_$][\w$.]*$", n):
+            continue
+        # 첫 문자열 인자가 bare 식별자(슬래시 없는 서비스 ID)여도 OK
+        out.append(re.compile(
+            r"\b" + re.escape(n) + r"\s*\(\s*[\"']([A-Za-z_][\w.$-]*)[\"']"))
+    return out
+
+
+def _urls_in_text(text: str, custom_res, service_res=()) -> list[str]:
+    """text 에서 URL 후보(정규화 전 원문) 리스트를 순서 보존/중복 제거로.
+
+    ``service_res`` 매칭(서비스 ID 호출)은 URL 형태 검사 없이 ``/<id>``
+    pseudo-URL 로 채택 — service registry 합성 엔드포인트와 키가 맞는다."""
     seen: dict[str, None] = {}
     for pat in _URL_PATTERNS:
         for m in pat.finditer(text):
@@ -156,6 +186,11 @@ def _urls_in_text(text: str, custom_res) -> list[str]:
             raw = m.group(1)
             if _looks_like_endpoint(raw):
                 seen.setdefault(raw, None)
+    for pat in service_res:
+        for m in pat.finditer(text):
+            sid = m.group(1)
+            if sid:
+                seen.setdefault("/" + sid.lstrip("/"), None)
     return list(seen.keys())
 
 
@@ -214,6 +249,7 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}
     custom_res = _custom_method_res(patterns)
+    service_res = _service_method_res(patterns)
     files = _scan_files(frontend_dir, _JSP_EXTS + _SCRIPT_EXTS)
     index: dict[str, set[str]] = {}
     for path in files:
@@ -222,7 +258,7 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
         except Exception:
             continue
         rel = os.path.relpath(path, frontend_dir).replace(os.sep, "/")
-        for raw in _urls_in_text(text, custom_res):
+        for raw in _urls_in_text(text, custom_res, service_res):
             canonical = normalize_url(_clean_el(raw), strip_patterns)
             if not canonical or canonical == "/":
                 continue
@@ -292,12 +328,12 @@ def _clean_label(raw: str) -> str:
 
 
 def _urls_from_onclick(handler: str, func_bodies: dict[str, str],
-                       custom_res, strip_patterns) -> list[str]:
+                       custom_res, strip_patterns, service_res=()) -> list[str]:
     """onclick 문자열에서 URL 들. inline URL + 호출 함수 body 안 URL."""
     canon: list[str] = []
 
     def _add_from(text: str):
-        for raw in _urls_in_text(text, custom_res):
+        for raw in _urls_in_text(text, custom_res, service_res):
             c = normalize_url(_clean_el(raw), strip_patterns)
             if c and c != "/" and c not in canon:
                 canon.append(c)
@@ -318,6 +354,7 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
     if not frontend_dir or not os.path.isdir(frontend_dir):
         return {}
     custom_res = _custom_method_res(patterns)
+    service_res = _service_method_res(patterns)
     jsp_files = _scan_files(frontend_dir, _JSP_EXTS)
     script_files = _scan_files(frontend_dir, _SCRIPT_EXTS)
 
@@ -379,7 +416,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             if not oc:
                 continue
             urls = _urls_from_onclick(oc.group(2), local_bodies,
-                                      custom_res, strip_patterns)
+                                      custom_res, strip_patterns,
+                                      service_res)
             if urls:
                 _assoc(b_text, urls)
         # <input type=button|submit|image value="label" onclick=..>
@@ -389,7 +427,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             if not oc:
                 continue
             urls = _urls_from_onclick(oc.group(2), local_bodies,
-                                      custom_res, strip_patterns)
+                                      custom_res, strip_patterns,
+                                      service_res)
             if not urls:
                 continue
             v = _VALUE_RE.search(i_attrs) or _ALT_RE.search(i_attrs)
@@ -401,7 +440,8 @@ def extract_button_triggers(frontend_dir: str, api_index: dict[str, list[str]],
             if not oc:
                 continue
             urls = _urls_from_onclick(oc.group(2), local_bodies,
-                                      custom_res, strip_patterns)
+                                      custom_res, strip_patterns,
+                                      service_res)
             if urls:
                 _assoc(a_text, urls)
 
