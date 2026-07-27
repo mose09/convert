@@ -2966,6 +2966,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # 메뉴 순서가 우선이므로 건드리지 않음).
     if detected_frontend == "jsp" and not menu_rows and not skip_menu_reorder:
         display_rows = _group_rows_by_screen(display_rows)
+    # 폐쇄망 자동 분류: 그룹핑 적용 여부/이유를 1줄로 emit — 사용자가
+    # "순서가 그대로" 라고 느낄 때 원인(프론트 감지값/메뉴 유무/화면 있는
+    # 행 수)을 이 한 줄로 판별 가능.
+    if detected_frontend == "jsp" and not skip_menu_reorder:
+        _n_scr = sum(1 for r in display_rows if r.get("presentation_layer"))
+        _first = ((display_rows[0].get("presentation_layer") or "(화면없음)")
+                  .split(";")[0] if display_rows else "-")
+        _applied = "적용" if not menu_rows else "미적용(메뉴 순서 우선)"
+        print(f"  화면 그룹핑: {_applied} — 화면 있는 행 "
+              f"{_n_scr}/{len(display_rows)}건, 첫 행 화면: {_first}")
 
     return {
         "rows": display_rows,
@@ -3294,6 +3304,18 @@ def analyze_legacy_batch(backends_root: str,
     # JSP 프론트 + 메뉴 없음 → 화면(jsp) 기준 그룹핑 (단일 경로와 동일 규칙)
     if detected_frontend_fw == "jsp" and not menu_rows:
         display_rows = _group_rows_by_screen(display_rows)
+    # 폐쇄망 자동 분류 — 그룹핑 판정 1줄 (frontend 감지값 포함: "jsp" 가
+    # 아니면 그 값 자체가 미적용 원인).
+    if frontend_dir:
+        _n_scr = sum(1 for r in display_rows if r.get("presentation_layer"))
+        _first = ((display_rows[0].get("presentation_layer") or "(화면없음)")
+                  .split(";")[0] if display_rows else "-")
+        if detected_frontend_fw == "jsp":
+            _applied = "적용" if not menu_rows else "미적용(메뉴 순서 우선)"
+        else:
+            _applied = f"미적용(frontend={detected_frontend_fw or '감지실패'})"
+        print(f"  화면 그룹핑: {_applied} — 화면 있는 행 "
+              f"{_n_scr}/{len(display_rows)}건, 첫 행 화면: {_first}")
 
     return {
         "rows": display_rows,
