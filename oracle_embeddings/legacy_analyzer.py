@@ -1634,13 +1634,27 @@ def _split_rows_per_trigger(rows: list[dict]) -> list[dict]:
     """
     out: list[dict] = []
     for r in rows:
+        # 프론트 기준 상세 (JSP): (화면, 버튼) 쌍이 있으면 그 단위로 분리 —
+        # 같은 서비스ID 를 여러 화면이 호출해도 각 행은 **자기 화면만**
+        # 표시한다 (화면들이 한 셀에 합쳐지는 문제 해결).
+        details = r.get("_trigger_details") or []
+        if details:
+            for scr, label in details:
+                new_r = dict(r)
+                new_r.pop("_trigger_details", None)
+                new_r["presentation_layer"] = scr
+                new_r["frontend_trigger"] = label
+                out.append(new_r)
+            continue
         triggers_raw = r.get("frontend_trigger") or ""
         triggers = [t.strip() for t in triggers_raw.split(";\n") if t.strip()]
         if len(triggers) <= 1:
+            r.pop("_trigger_details", None)
             out.append(r)
             continue
         for t in triggers:
             new_r = dict(r)
+            new_r.pop("_trigger_details", None)
             new_r["frontend_trigger"] = t
             out.append(new_r)
     return out
@@ -2321,6 +2335,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     single_api_index: dict[str, list[str]] = {}
     single_triggers: dict[str, list[str]] = {}
     single_api_repos: dict[str, set[str]] = {}
+    # JSP 프론트 기준 행 분리용 (화면, 버튼) 상세 — {url: [(jsp, label)]}
+    trigger_details_by_frontend: dict[str, dict] = {}
+    single_trigger_details: dict = {}
     detected_frontend = "unknown"
     # frontend 스캔 단계는 같은 파일을 router/import-graph/api-scanner/
     # trigger 등 4~5개 path 가 각각 다시 읽어서 디스크 I/O 가 dominant.
@@ -2338,6 +2355,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         single_api_index = precomputed_frontend.get("single_api_index") or {}
         single_triggers = precomputed_frontend.get("single_triggers") or {}
         single_api_repos = precomputed_frontend.get("single_api_repos") or {}
+        trigger_details_by_frontend = precomputed_frontend.get("trigger_details_by_frontend") or {}
+        single_trigger_details = precomputed_frontend.get("single_trigger_details") or {}
     elif frontend_dir:
         try:
             from .legacy_frontend import (
@@ -2358,6 +2377,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     patterns=patterns, allowed_apps=allowed,
                     repos_by_frontend_out=repos_by_frontend,
                     explicit_buckets=explicit_buckets,
+                    trigger_details_out=trigger_details_by_frontend,
                 )
             else:
                 print(f"  Frontend dir: {frontend_dir}")
@@ -2368,6 +2388,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 single_api_index, single_triggers = build_frontend_api_index(
                     frontend_dir, patterns=patterns, strip_patterns=url_strip,
                     repo_index_out=single_api_repos,
+                    framework=frontend_framework,
+                    trigger_details_out=single_trigger_details,
                 )
             print(f"  Frontend framework: {detected_frontend}")
             print(f"  Frontend routes indexed: {len(react_url_map)}")
@@ -2654,6 +2676,16 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                     trigger_labels = list((triggers_by_frontend.get(bucket) or {}).get(key) or [])
             elif single_triggers:
                 trigger_labels = list(single_triggers.get(key) or [])
+            # (화면, 버튼) 상세 — 프론트 기준 행 분리 (row_per_trigger 시
+            # 화면·버튼당 1행, 각 행은 자기 화면만 표시).
+            trigger_details: list = []
+            if trigger_details_by_frontend:
+                _bkt = app_slug_lower or two_hop_app
+                if _bkt:
+                    trigger_details = list(
+                        (trigger_details_by_frontend.get(_bkt) or {}).get(key) or [])
+            elif single_trigger_details:
+                trigger_details = list(single_trigger_details.get(key) or [])
 
             # Backend repo (frontend ``.env`` 의 REACT_APP_API_<KEY>_NAME 매핑
             # 으로 lookup). 같은 bucket 결정 로직 — 한 endpoint 가 여러 KEY
@@ -2684,6 +2716,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 emit_sequence_diagram=emit_sequence_diagram,
                 sequence_diagram_with_frontend=sequence_diagram_with_frontend,
             )
+            if trigger_details:
+                row["_trigger_details"] = trigger_details
             rows.append(row)
             if not row["matched"]:
                 unmatched.append(row)
@@ -3123,6 +3157,8 @@ def analyze_legacy_batch(backends_root: str,
         print(f"\n=== Scanning frontend (batch-wide, once) ===")
         repos_fe: dict[str, dict[str, set[str]]] = {}
         single_api_repos_pre: dict[str, set[str]] = {}
+        trig_details_fe: dict[str, dict] = {}
+        single_trig_details_pre: dict = {}
         if frontends_root:
             (react_map, det_fw, by_fe,
              api_fe, trig_fe) = build_frontend_url_map_multi(
@@ -3130,6 +3166,7 @@ def analyze_legacy_batch(backends_root: str,
                 strip_patterns=strip, route_prefix=rp,
                 patterns=patterns, allowed_apps=allowed,
                 repos_by_frontend_out=repos_fe,
+                trigger_details_out=trig_details_fe,
             )
             single_api, single_trig = {}, {}
         else:
@@ -3142,6 +3179,8 @@ def analyze_legacy_batch(backends_root: str,
             single_api, single_trig = build_frontend_api_index(
                 frontend_dir, patterns=patterns, strip_patterns=strip,
                 repo_index_out=single_api_repos_pre,
+                framework=frontend_framework,
+                trigger_details_out=single_trig_details_pre,
             )
         precomputed_frontend = {
             "react_url_map": react_map,
@@ -3153,6 +3192,8 @@ def analyze_legacy_batch(backends_root: str,
             "single_api_index": single_api,
             "single_triggers": single_trig,
             "single_api_repos": single_api_repos_pre,
+            "trigger_details_by_frontend": trig_details_fe,
+            "single_trigger_details": single_trig_details_pre,
         }
         total_api = sum(len(v) for v in api_fe.values()) if api_fe else len(single_api)
         total_trig = sum(len(v) for v in trig_fe.values()) if trig_fe else len(single_trig)

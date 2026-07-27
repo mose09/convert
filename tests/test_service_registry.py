@@ -7,6 +7,7 @@ JSP: ``httpSend("fabCBMDataList", ...)`` → service XML:
 from oracle_embeddings.legacy_service_registry import scan_service_registry
 from oracle_embeddings.legacy_jsp_scanner import (
     build_api_url_index, extract_button_triggers,
+    extract_button_triggers_detailed,
 )
 
 _SERVICE_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -75,3 +76,20 @@ def test_dot_service_extension_scanned(tmp_path):
     reg = scan_service_registry([str(tmp_path / "backend")])
     assert reg["fabCBMDataList"]["class"] == \
         "com.skhy.fab.CBMData.controller.CBMDataController"
+
+
+def test_trigger_details_keep_screen_per_button(tmp_path):
+    """공유 서비스ID 를 두 화면이 호출해도 (화면, 버튼) 쌍이 보존된다."""
+    d = tmp_path / "front"
+    d.mkdir()
+    (d / "a.jsp").write_text(
+        '<button onclick="httpSend(\'sharedSvc\', p)">조회A</button>',
+        encoding="utf-8")
+    (d / "b.jsp").write_text(
+        '<button onclick="httpSend(\'sharedSvc\', p)">조회B</button>',
+        encoding="utf-8")
+    api = build_api_url_index(str(d))
+    det = extract_button_triggers_detailed(str(d), api)
+    pairs = det.get("/sharedsvc") or []
+    assert ("a.jsp", "조회A") in pairs
+    assert ("b.jsp", "조회B") in pairs
