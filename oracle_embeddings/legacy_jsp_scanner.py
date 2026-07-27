@@ -292,6 +292,10 @@ def build_api_url_index(frontend_dir: str, patterns: dict | None = None,
 # ── 버튼 트리거 ───────────────────────────────────────────────────
 # 함수 정의: ``function NAME( ... ) {`` — body 는 brace 매칭으로 슬라이스.
 _FUNC_DEF_RE = re.compile(r"function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{")
+# 할당식 함수: var fn = function(){} / fn = function(){} / obj.fn = function(){}
+_FUNC_ASSIGN_RE = re.compile(
+    r"(?:\b(?:var|let|const)\s+)?([A-Za-z_$][\w$.]*)\s*=\s*"
+    r"function\s*\([^)]*\)\s*\{")
 # onclick 안에서 호출되는 함수 이름들
 _CALL_NAME_RE = re.compile(r"\b([A-Za-z_$][\w$]*)\s*\(")
 
@@ -323,21 +327,39 @@ _JS_HREF_RE = re.compile(r"\bhref\s*=\s*([\"'])javascript:\s*(.*?)\1",
                          re.IGNORECASE | re.DOTALL)
 _TITLE_ATTR_RE = re.compile(r"\btitle\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 
-# jQuery 클릭 바인딩: $('#id').click(fn) / .on('click', fn) / .bind('click', fn)
-# / 익명 function(){...}. 익명이면 fn 그룹 None → 바인딩 지점 body slice.
-# 사용자 실환경 변형 지원:
-#  - 셀렉터 # 생략: $('m60210_searchBtn') (사내 $ 래퍼)
-#  - 탐색 체인: $('id').parent().bind(...)
-#  - 이벤트 문자열에 click 포함: bind('click touchstart', ...)
-_JQUERY_CLICK_RE = re.compile(
+# jQuery 이벤트 바인딩 **시작점**만 잡는다 — 인자 형태는 보지 않는다.
+#   $('id')[.parent()...].bind( / .on( / .click( / .live( / .delegate( / .one(
+# 첫 인자가 'click' 문자열이 아니라 변수/상수여도 매칭되도록 (사용자
+# 실환경: bind(<이벤트변수>, function(event){...})). 핸들러(익명 함수
+# body 또는 이름 함수)는 매칭 지점 이후 window 에서 별도로 찾는다.
+#  - 셀렉터 # 생략 허용: $('m60210_searchBtn') (사내 $ 래퍼)
+#  - 탐색 체인 임의 허용: .parent().closest(..) 등 (바인딩 메소드명은
+#    negative lookahead 로 체인에 소비되지 않게)
+_JQUERY_BIND_START_RE = re.compile(
     r"""\$\(\s*["']\#?(?P<id>[\w.-]+)["']\s*\)
-        (?:\s*\.\s*(?:parent|parents|closest|find|children|first|last|eq|next|prev)
-           \s*\([^)]*\))*
-        \s*\.\s*
-        (?:click\s*\(\s*
-         |(?:on|bind|live|delegate)\s*\(\s*["'][^"']*click[^"']*["']\s*,\s*)
-        (?:function\s*\(|(?P<fn>[A-Za-z_$][\w$.]*))""",
+        (?:\s*\.\s*(?!(?:click|on|bind|live|delegate|one)\s*\()
+           \w+\s*\([^)]*\))*
+        \s*\.\s*(?:click|on|bind|live|delegate|one)\s*\(""",
     re.VERBOSE)
+# 바인딩 지점 이후 익명 핸들러 탐지용
+_FUNC_EXPR_RE = re.compile(r"function\s*\([^)]*\)\s*\{")
+
+
+def _slice_call_args(text: str, start: int, max_len: int = 3000) -> str:
+    """``start`` (여는 괄호 바로 뒤 인덱스)부터 매칭되는 닫는 괄호 직전까지
+    — 즉 **이 호출의 인자 구간**만 반환. 핸들러 탐색이 다음 문장/바인딩으로
+    새어 나가 엉뚱한 함수에 귀속되는 것을 막는다."""
+    depth = 1
+    end = min(len(text), start + max_len)
+    for i in range(start, end):
+        c = text[i]
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if depth == 0:
+                return text[start:i]
+    return text[start:end]
 _ID_ATTR_RE = re.compile(r"\bid\s*=\s*[\"']([\w.-]+)[\"']", re.IGNORECASE)
 
 
@@ -400,6 +422,12 @@ def _func_bodies(text: str) -> dict[str, str]:
         body = _slice_body(text, m.end() - 1)
         # 같은 이름 중복 시 첫 정의 유지
         out.setdefault(name, body)
+    # 할당 형태: var fn = function(){...} / obj.fn = function(){...}
+    for m in _FUNC_ASSIGN_RE.finditer(text):
+        name = m.group(1).rsplit(".", 1)[-1]  # obj.fn → fn 으로도 lookup
+        body = _slice_body(text, m.end() - 1)
+        out.setdefault(name, body)
+        out.setdefault(m.group(1), body)
     return out
 
 
@@ -559,24 +587,34 @@ def _extract_triggers_detailed(frontend_dir: str,
         #   $('#btnSearch').bind('click', fnSearch)
         # 요소 라벨은 같은 파일의 id 매칭 요소에서 얻는다.
         labels_by_id = _element_labels_by_id(text)
-        for jm in _JQUERY_CLICK_RE.finditer(text):
+        for jm in _JQUERY_BIND_START_RE.finditer(text):
             elem_id = jm.group("id")
             # 라벨: button/input/a 요소 → 주변 title/텍스트 → id 폴백
             label = (labels_by_id.get(elem_id)
                      or _label_near_id(text, elem_id)
                      or elem_id)
-            handler_name = jm.group("fn")
-            if handler_name:
-                body = local_bodies.get(handler_name) or ""
-                urls = _urls_from_onclick(handler_name + "()", local_bodies,
-                                          custom_res, strip_patterns,
-                                          service_res) if body else []
-            else:
-                # 익명 function(){...} — 바인딩 지점부터 body slice
-                brace = text.find("{", jm.end() - 1)
-                body = _slice_body(text, brace) if brace != -1 else ""
+            # 핸들러 탐지 — 바인딩 인자 형태 무관. 반드시 **이 호출의 인자
+            # 구간 안에서만** 찾는다 (다음 바인딩의 핸들러로 새는 것 방지):
+            #  1) 인자 구간의 첫 익명 function(){...} body
+            #  2) 없으면 인자 구간 식별자 중 함수 인덱스에 있는 이름
+            #     (bind('click', fnSearch) / bind(EVT_VAR, fn) 등)
+            start = jm.end()
+            args = _slice_call_args(text, start)
+            urls: list = []
+            fe = _FUNC_EXPR_RE.search(args)
+            if fe:
+                body = _slice_body(text, start + fe.end() - 1)
                 urls = _urls_from_onclick(body, local_bodies, custom_res,
                                           strip_patterns, service_res)
+            else:
+                for nm in re.finditer(r"[A-Za-z_$][\w$]*", args):
+                    name = nm.group(0)
+                    if name in local_bodies:
+                        urls = _urls_from_onclick(name + "()", local_bodies,
+                                                  custom_res, strip_patterns,
+                                                  service_res)
+                        if urls:
+                            break
             if urls:
                 _assoc(label, urls)
 

@@ -150,3 +150,27 @@ $('m60210_searchBtn').parent().bind('click touchstart', function(event){
     api = build_api_url_index(str(d))
     det = extract_button_triggers_detailed(str(d), api)
     assert ("m60210.jsp", "검색") in (det.get("/fabsvcsearch") or [])
+
+
+def test_bind_variable_event_arg_same_file(tmp_path):
+    """bind(변수, function...) + 같은 jsp 안 함수 + 할당식 함수 + 이름 핸들러."""
+    d = tmp_path / "front"
+    d.mkdir()
+    (d / "m.jsp").write_text(
+        """<a href="javascript:void(0);" title="검색"><span id="m_searchBtn"></span></a>
+<a href="javascript:void(0);" title="저장"><span id="m_saveBtn"></span></a>
+<script>
+var EVT = 'click touchstart';
+$('m_searchBtn').parent().bind(EVT, function(event){
+    m_fn_Search(tabid);
+});
+$('m_saveBtn').parent().on('click', m_fn_Save);
+function m_fn_Search(tabid){ if(p) httpSend("svcList", p, ok, fail, opt); }
+var m_fn_Save = function(){ httpSend("svcSave", getParam(), ok, fail, opt); };
+</script>""", encoding="utf-8")
+    api = build_api_url_index(str(d))
+    det = extract_button_triggers_detailed(str(d), api)
+    assert ("m.jsp", "검색") in (det.get("/svclist") or [])
+    # 이름 핸들러가 다음 바인딩의 익명함수로 오귀속되지 않아야 함
+    assert ("m.jsp", "저장") in (det.get("/svcsave") or [])
+    assert ("m.jsp", "저장") not in (det.get("/svclist") or [])
