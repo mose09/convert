@@ -1683,6 +1683,21 @@ def _reorder_rows_by_menu(rows: list[dict], menu_rows: list[dict] | None,
     return ordered
 
 
+def _group_rows_by_screen(rows: list[dict]) -> list[dict]:
+    """JSP 프론트용 표시 순서 — **화면(jsp 파일) 기준 그룹핑**.
+
+    JSP 는 메뉴 없이 돌리는 경우가 많아 기본 순서(컨트롤러 순회 순)로는
+    같은 화면의 버튼들이 흩어져 보인다. presentation_layer(화면 경로)로
+    정렬해 화면별로 행이 모이게 한다. stable sort 라 같은 화면 안에서는
+    기존 순서(엔드포인트/트리거 순) 유지. 화면 없는 행(프론트 미매칭)은
+    뒤로 보낸다.
+    """
+    with_screen = [r for r in rows if r.get("presentation_layer")]
+    without = [r for r in rows if not r.get("presentation_layer")]
+    with_screen.sort(key=lambda r: r.get("presentation_layer") or "")
+    return with_screen + without
+
+
 def _attach_xml_daemons(xml_jobs: list[dict], indexes: dict,
                         backend_dir: str) -> int:
     """Quartz XML 정의로 발견된 job → indexes 의 클래스에 daemon entry
@@ -2947,6 +2962,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
         display_rows = _reorder_rows_by_menu(rows, menu_rows, base_dirs)
     if row_per_trigger:
         display_rows = _split_rows_per_trigger(display_rows)
+    # JSP 프론트 + 메뉴 없음 → 화면(jsp) 기준으로 행 그룹핑 (메뉴가 있으면
+    # 메뉴 순서가 우선이므로 건드리지 않음).
+    if detected_frontend == "jsp" and not menu_rows and not skip_menu_reorder:
+        display_rows = _group_rows_by_screen(display_rows)
 
     return {
         "rows": display_rows,
@@ -3272,6 +3291,9 @@ def analyze_legacy_batch(backends_root: str,
     display_rows = _reorder_rows_by_menu(all_rows, menu_rows, batch_base_dirs)
     if row_per_trigger:
         display_rows = _split_rows_per_trigger(display_rows)
+    # JSP 프론트 + 메뉴 없음 → 화면(jsp) 기준 그룹핑 (단일 경로와 동일 규칙)
+    if detected_frontend_fw == "jsp" and not menu_rows:
+        display_rows = _group_rows_by_screen(display_rows)
 
     return {
         "rows": display_rows,
