@@ -1553,6 +1553,68 @@ def _lookup_react_entry_by_prefix(react_url_map: dict, menu_url_norm: str) -> di
     return best_entry
 
 
+def _frontend_only_row(svc_url: str, screens: list, details: list) -> dict:
+    """백엔드 미매칭 httpSend 호출의 **프론트 전용 행**.
+
+    프론트 기준 리포트에서는 서비스 ID 가 어떤 컨트롤러와도 매칭되지
+    않아도 (service 정의 누락 / serviceClass 미파싱 / 폐기된 서비스 등)
+    "이 화면이 이 서비스를 호출한다" 는 사실 자체가 남아야 한다. 백엔드
+    컬럼은 전부 빈 값 — 없는 체인을 지어내지 않는다."""
+    row = {
+        "backend_project": "",
+        "backend_framework": "",
+        "main_menu": "", "sub_menu": "", "tab": "",
+        "menu_path": "", "menu_url": "",
+        "program_id": "",
+        "program_name": svc_url.lstrip("/"),
+        "method_name": "",
+        "http_method": "",
+        "url": svc_url.lstrip("/"),
+        "file_name": "",
+        "frontend_project": "",
+        "presentation_layer": ";\n".join(screens),
+        "frontend_trigger": "",
+        "backend_repo": "",
+        "frontend_validation_summary": "",
+        "controller_class": "", "service_class": "", "service_methods": "",
+        "biz_summary": "", "biz_detail_key": "",
+        "query_xml": "", "sql_ids": "",
+        "related_tables": "", "related_columns": "",
+        "procedures": "", "rfc": "",
+        "sequence_diagram": "",
+        "matched": False,
+        "resolved_via": "frontend-only",
+    }
+    if details:
+        row["_trigger_details"] = list(details)
+    return row
+
+
+def _build_jsp_front_map(single_api_index, single_trigger_details,
+                         api_by_frontend, trigger_details_by_frontend) -> dict:
+    """{url: {"screens": [...], "details": [(scr,label)...]}} 통합 맵."""
+    out: dict = {}
+    for u, files in (single_api_index or {}).items():
+        e = out.setdefault(u, {"screens": [], "details": []})
+        for f in files:
+            if f not in e["screens"]:
+                e["screens"].append(f)
+        for pair in (single_trigger_details or {}).get(u) or []:
+            if pair not in e["details"]:
+                e["details"].append(pair)
+    for bucket, idx in (api_by_frontend or {}).items():
+        dbucket = (trigger_details_by_frontend or {}).get(bucket) or {}
+        for u, files in idx.items():
+            e = out.setdefault(u, {"screens": [], "details": []})
+            for f in files:
+                if f not in e["screens"]:
+                    e["screens"].append(f)
+            for pair in dbucket.get(u) or []:
+                if pair not in e["details"]:
+                    e["details"].append(pair)
+    return out
+
+
 def _menu_only_row(menu_entry: dict, base_dirs: dict) -> dict:
     """Placeholder row for a menu entry that didn't match any endpoint.
 
@@ -2737,6 +2799,23 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if not row["matched"]:
                 unmatched.append(row)
 
+    # 프론트 전용 행 — 백엔드 미매칭 httpSend (JSP). 배치 모드에서는 다른
+    # 프로젝트가 매칭할 수 있으므로 여기서 emit 하지 않고 aggregator 가
+    # 전 프로젝트 컨트롤러 합집합 기준으로 한 번만 emit 한다.
+    jsp_front_map: dict = {}
+    if detected_frontend == "jsp":
+        jsp_front_map = _build_jsp_front_map(
+            single_api_index, single_trigger_details,
+            api_by_frontend, trigger_details_by_frontend)
+        if not skip_menu_reorder:
+            _front_only = [u for u in jsp_front_map if u not in controller_urls]
+            for _u in sorted(_front_only):
+                _e = jsp_front_map[_u]
+                rows.append(_frontend_only_row(_u, _e["screens"], _e["details"]))
+            if _front_only:
+                print(f"  프론트 전용 행: {len(_front_only)}건 (백엔드 미매칭 "
+                      "httpSend — 트리거/화면만, 백엔드 컬럼 빈 값)")
+
     daemon_rows: list[dict] = []
     if analyze_daemons:
         daemon_rows = _collect_daemon_rows(
@@ -3031,6 +3110,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
 
     return {
         "rows": display_rows,
+        "_jsp_front_map": jsp_front_map,
+        "_controller_urls": sorted(controller_urls),
         "unmatched_controllers": unmatched,
         "orphan_menus": orphan_menus,
         "stats": stats,
@@ -3230,6 +3311,8 @@ def analyze_legacy_batch(backends_root: str,
     all_endpoint_spec_map: dict = {}
     all_orphans = []
     all_daemon_rows: list = []
+    batch_jsp_front_map: dict = {}
+    batch_controller_urls: set = set()
     per_project_stats = {}
     project_frameworks = {}
 
@@ -3295,6 +3378,16 @@ def analyze_legacy_batch(backends_root: str,
         all_unmatched.extend(result.get("unmatched_controllers", []))
         all_orphans.extend(result.get("orphan_menus", []))
         all_daemon_rows.extend(result.get("daemon_rows") or [])
+        for _u, _e in (result.get("_jsp_front_map") or {}).items():
+            _dst = batch_jsp_front_map.setdefault(
+                _u, {"screens": [], "details": []})
+            for f in _e["screens"]:
+                if f not in _dst["screens"]:
+                    _dst["screens"].append(f)
+            for pair in _e["details"]:
+                if pair not in _dst["details"]:
+                    _dst["details"].append(pair)
+        batch_controller_urls.update(result.get("_controller_urls") or [])
         per_project_stats[name] = result.get("stats", {})
         project_frameworks[name] = result.get("backend_framework", "")
         sub_biz = result.get("biz_map") or {}
@@ -3357,6 +3450,17 @@ def analyze_legacy_batch(backends_root: str,
         "react_url_map": (precomputed_frontend or {}).get("react_url_map") or {},
         "url_strip": (patterns or {}).get("url", {}).get("url_prefix_strip") or [],
     }
+    # 프론트 전용 행 — 전 프로젝트 컨트롤러 합집합 기준 백엔드 미매칭
+    # httpSend 를 한 번만 emit (프로젝트별 emit 시 중복).
+    if batch_jsp_front_map:
+        _front_only = [u for u in batch_jsp_front_map
+                       if u not in batch_controller_urls]
+        for _u in sorted(_front_only):
+            _e = batch_jsp_front_map[_u]
+            all_rows.append(_frontend_only_row(_u, _e["screens"], _e["details"]))
+        if _front_only:
+            print(f"  프론트 전용 행: {len(_front_only)}건 (백엔드 미매칭 "
+                  "httpSend — 트리거/화면만, 백엔드 컬럼 빈 값)")
     display_rows = _reorder_rows_by_menu(all_rows, menu_rows, batch_base_dirs)
     if row_per_trigger:
         display_rows = _split_rows_per_trigger(
