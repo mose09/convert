@@ -291,6 +291,15 @@ _ALT_RE = re.compile(r"\balt\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 _ACTION_ATTR_RE = re.compile(r"\baction\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 
+# <a href="javascript:fnSave();"> — onclick 없이 href 의 javascript: 로
+# 핸들러를 부르는 레거시 패턴 (사용자 실환경:
+#   <span class="button"><a href="javascript:fnSave();" title="저장">
+#     <span>저장</span></a></span>).
+# 바깥 따옴표 backref 로 내부 반대 따옴표 허용. group(2) = 핸들러 코드.
+_JS_HREF_RE = re.compile(r"\bhref\s*=\s*([\"'])javascript:\s*(.*?)\1",
+                         re.IGNORECASE | re.DOTALL)
+_TITLE_ATTR_RE = re.compile(r"\btitle\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
+
 # jQuery 클릭 바인딩: $('#id').click(fn) / .on('click', fn) / .bind('click', fn)
 # / 익명 function(){...}. 익명이면 fn 그룹 None → 바인딩 지점 body slice.
 _JQUERY_CLICK_RE = re.compile(
@@ -327,7 +336,12 @@ def _element_labels_by_id(text: str) -> dict[str, str]:
         attrs, body = am.group(1), am.group(2)
         m = _ID_ATTR_RE.search(attrs)
         if m:
+            # 내부 텍스트가 아이콘뿐인 경우 title 속성 폴백
             lbl = _clean_label(body)
+            if not lbl:
+                tm = _TITLE_ATTR_RE.search(attrs)
+                if tm:
+                    lbl = _clean_label(tm.group(1))
             if lbl:
                 out.setdefault(m.group(1), lbl)
     return out
@@ -483,17 +497,29 @@ def _extract_triggers_detailed(frontend_dir: str,
                 continue
             v = _VALUE_RE.search(i_attrs) or _ALT_RE.search(i_attrs)
             _assoc(v.group(1) if v else "button", urls)
-        # <a onclick=..>label</a>
+        # <a onclick=..>label</a> / <a href="javascript:fn();" title="라벨">
         for am in _ANCHOR_RE.finditer(text):
             a_attrs, a_text = am.group(1), am.group(2)
+            handler = None
             oc = _ONCLICK_RE.search(a_attrs)
-            if not oc:
+            if oc:
+                handler = oc.group(2)
+            else:
+                jh = _JS_HREF_RE.search(a_attrs)
+                if jh:
+                    handler = jh.group(2)
+            if not handler:
                 continue
-            urls = _urls_from_onclick(oc.group(2), local_bodies,
+            urls = _urls_from_onclick(handler, local_bodies,
                                       custom_res, strip_patterns,
                                       service_res)
             if urls:
-                _assoc(a_text, urls)
+                # 라벨: title 속성 우선 (내부가 아이콘/중첩 span 인 경우
+                # 대비), 없으면 내부 텍스트.
+                tm = _TITLE_ATTR_RE.search(a_attrs)
+                label = (tm.group(1) if tm and tm.group(1).strip()
+                         else a_text)
+                _assoc(label, urls)
 
         # 3) jQuery 바인딩 버튼 — 인라인 onclick 없이 JS 에서 클릭 핸들러를
         # 붙이는 레거시 흔한 패턴:
