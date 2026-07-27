@@ -2656,7 +2656,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             print(f"  ✗ JSP 진단: 프론트 URL {len(_jsp_urls)}건 ↔ 컨트롤러 "
                   f"URL {len(controller_urls)}건 매칭 0 — URL 형식 불일치 "
                   "(컨텍스트 패스/prefix 차이 가능성). "
-                  "patterns.yaml url.url_prefix_strip 으로 prefix 제거 검토")
+                  "--url-prefix-strip 옵션으로 prefix 제거 검토")
             print(f"    JSP 샘플: {_js}")
             print(f"    컨트롤러 샘플: {_cs}")
             # prefix 자동 추론 — 사용자가 샘플을 눈으로 비교해 패턴을 짜지
@@ -2668,10 +2668,8 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             if sug:
                 _pat, _n = sug
                 print(f"    → 자동 분석: '{_pat}' 제거 시 {_n}건 매칭 예상. "
-                      "patterns.yaml 에 아래 추가 후 --patterns 로 지정:")
-                print("       url:")
-                print("         url_prefix_strip:")
-                print(f'           - "^{_pat}"')
+                      "같은 명령에 아래 옵션만 추가해 재실행:")
+                print(f'       --url-prefix-strip "^{_pat}"')
             else:
                 print("    → 자동 분석: 공통 prefix 로 설명되지 않는 차이 — "
                       "위 샘플 두 줄의 차이(확장자/경로 구조)를 알려주면 "
