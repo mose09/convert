@@ -93,3 +93,25 @@ def test_trigger_details_keep_screen_per_button(tmp_path):
     pairs = det.get("/sharedsvc") or []
     assert ("a.jsp", "조회A") in pairs
     assert ("b.jsp", "조회B") in pairs
+
+
+def test_jquery_bound_buttons(tmp_path):
+    """인라인 onclick 없이 jQuery 로 바인딩된 버튼도 라벨·URL 연결."""
+    d = tmp_path / "front"
+    d.mkdir()
+    (d / "x.jsp").write_text(
+        """<button type="button" id="btnSearch">조회</button>
+<input type="button" id="btnSave" value="저장"/>
+<script>
+$('#btnSearch').click(onSearchList);
+$('#btnSave').on('click', function(){
+    httpSend("svcSave", getParam(), ok, fail, opt);
+});
+function onSearchList(){
+    if(p) httpSend("svcList", p, ok, fail, opt);
+}
+</script>""", encoding="utf-8")
+    api = build_api_url_index(str(d))
+    det = extract_button_triggers_detailed(str(d), api)
+    assert ("x.jsp", "조회") in (det.get("/svclist") or [])
+    assert ("x.jsp", "저장") in (det.get("/svcsave") or [])

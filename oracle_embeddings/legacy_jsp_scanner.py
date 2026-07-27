@@ -291,6 +291,47 @@ _ALT_RE = re.compile(r"\balt\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 _ACTION_ATTR_RE = re.compile(r"\baction\s*=\s*[\"']([^\"']+)[\"']", re.IGNORECASE)
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 
+# jQuery 클릭 바인딩: $('#id').click(fn) / .on('click', fn) / .bind('click', fn)
+# / 익명 function(){...}. 익명이면 fn 그룹 None → 바인딩 지점 body slice.
+_JQUERY_CLICK_RE = re.compile(
+    r"""\$\(\s*["']\#(?P<id>[\w.-]+)["']\s*\)\s*\.\s*
+        (?:click\s*\(\s*|(?:on|bind|live|delegate)\s*\(\s*["']click["']\s*,\s*)
+        (?:function\s*\(|(?P<fn>[A-Za-z_$][\w$.]*))""",
+    re.VERBOSE)
+_ID_ATTR_RE = re.compile(r"\bid\s*=\s*[\"']([\w.-]+)[\"']", re.IGNORECASE)
+
+
+def _element_labels_by_id(text: str) -> dict[str, str]:
+    """같은 파일의 button/input/a 요소에서 ``id → 라벨`` 맵.
+
+    jQuery 바인딩(``$('#btnSearch').click(...)``)의 버튼 라벨을 찾기 위한
+    보조 인덱스. 라벨이 없으면 호출측이 id 를 그대로 라벨로 쓴다."""
+    out: dict[str, str] = {}
+    for bm in _BUTTON_RE.finditer(text):
+        attrs, body = bm.group(1), bm.group(2)
+        m = _ID_ATTR_RE.search(attrs)
+        if m:
+            lbl = _clean_label(body)
+            if lbl:
+                out.setdefault(m.group(1), lbl)
+    for im in _INPUT_BTN_RE.finditer(text):
+        attrs = im.group(1)
+        m = _ID_ATTR_RE.search(attrs)
+        if m:
+            v = _VALUE_RE.search(attrs) or _ALT_RE.search(attrs)
+            if v:
+                lbl = _clean_label(v.group(1))
+                if lbl:
+                    out.setdefault(m.group(1), lbl)
+    for am in _ANCHOR_RE.finditer(text):
+        attrs, body = am.group(1), am.group(2)
+        m = _ID_ATTR_RE.search(attrs)
+        if m:
+            lbl = _clean_label(body)
+            if lbl:
+                out.setdefault(m.group(1), lbl)
+    return out
+
 
 def _slice_body(text: str, brace_open: int, max_len: int = 4000) -> str:
     """brace_open(‘{’ 위치)부터 매칭되는 ‘}’ 까지 body 문자열."""
@@ -453,6 +494,31 @@ def _extract_triggers_detailed(frontend_dir: str,
                                       service_res)
             if urls:
                 _assoc(a_text, urls)
+
+        # 3) jQuery 바인딩 버튼 — 인라인 onclick 없이 JS 에서 클릭 핸들러를
+        # 붙이는 레거시 흔한 패턴:
+        #   $('#btnSearch').click(onSearchList)
+        #   $('#btnSearch').on('click', function(){ httpSend(...) })
+        #   $('#btnSearch').bind('click', fnSearch)
+        # 요소 라벨은 같은 파일의 id 매칭 요소에서 얻는다.
+        labels_by_id = _element_labels_by_id(text)
+        for jm in _JQUERY_CLICK_RE.finditer(text):
+            elem_id = jm.group("id")
+            label = labels_by_id.get(elem_id) or elem_id
+            handler_name = jm.group("fn")
+            if handler_name:
+                body = local_bodies.get(handler_name) or ""
+                urls = _urls_from_onclick(handler_name + "()", local_bodies,
+                                          custom_res, strip_patterns,
+                                          service_res) if body else []
+            else:
+                # 익명 function(){...} — 바인딩 지점부터 body slice
+                brace = text.find("{", jm.end() - 1)
+                body = _slice_body(text, brace) if brace != -1 else ""
+                urls = _urls_from_onclick(body, local_bodies, custom_res,
+                                          strip_patterns, service_res)
+            if urls:
+                _assoc(label, urls)
 
     return detailed
 
