@@ -2720,9 +2720,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 _svc_ids_disp = [u.lstrip("/") for u in _svc_shaped[:2]]
                 print(f"    → 자동 분석: 서비스 ID 호출 {len(_svc_shaped)}건 "
                       f"(예: {_svc_ids_disp}) 이 있는데 <service id=.. "
-                      "serviceClass=..> 정의 XML 을 backend/frontend 에서 못 "
-                      "찾음 — service XML 폴더를 --service-xml-dir 로 지정해 "
-                      "재실행")
+                      "serviceClass=..> 정의 파일(.xml/.service)을 backend/"
+                      "frontend 에서 못 찾음 — 정의 파일 폴더를 "
+                      "--service-xml-dir 로 지정해 재실행")
             elif _svc_shaped and svc_registry and svc_attached == 0:
                 print(f"    → 자동 분석: service 정의 {len(svc_registry)}건은 "
                       "찾았지만 serviceClass 소스가 --backend-dir 범위에 없어 "

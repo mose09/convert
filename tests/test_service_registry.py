@@ -65,3 +65,13 @@ def test_custom_service_call_method_via_patterns(tmp_path):
     assert "/mysvcid" in api
     trig = extract_button_triggers(str(d), api, patterns=patterns)
     assert trig.get("/mysvcid") == ["실행"]
+
+
+def test_dot_service_extension_scanned(tmp_path):
+    """정의 파일이 .xml 이 아니라 *.service 확장자여도 수집 (사용자 실환경)."""
+    d = tmp_path / "backend" / "config"
+    d.mkdir(parents=True)
+    (d / "CBMData.service").write_text(_SERVICE_XML, encoding="utf-8")
+    reg = scan_service_registry([str(tmp_path / "backend")])
+    assert reg["fabCBMDataList"]["class"] == \
+        "com.skhy.fab.CBMData.controller.CBMDataController"

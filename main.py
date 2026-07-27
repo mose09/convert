@@ -2871,7 +2871,7 @@ def main():
                                 "✗ 일 때 자동 분석이 제안하는 prefix 를 그대로 넣으면 됨.")
     al_parser.add_argument("--service-xml-dir", action="append", metavar="DIR",
                            help="서비스 ID 프레임워크의 <service id=.. serviceClass=..> "
-                                "정의 XML 이 backend/frontend 밖 별도 폴더에 있을 때 "
+                                "정의 파일(.xml/.service/.svc)이 backend/frontend 밖 별도 폴더에 있을 때 "
                                 "그 폴더 지정 (반복 가능). 기본은 backend/frontend 를 "
                                 "자동 스캔.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
