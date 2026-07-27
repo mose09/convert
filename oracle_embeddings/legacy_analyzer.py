@@ -2114,6 +2114,46 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # sees. For ``mixed`` / ``unknown`` this is a no-op.
     _filter_endpoints_by_framework(classes, framework)
 
+    # 서비스 ID 레지스트리 (httpSend 계열 프레임워크): <service id=..
+    # serviceClass=..> XML 을 backend/frontend 에서 수집해 해당 클래스에
+    # 합성 엔드포인트(/<service_id>)를 붙인다. JSP 스캐너가 httpSend("id")
+    # 를 "/<id>" 로 emit 하므로 정규화 키가 일치 → 버튼→컨트롤러 체인 연결.
+    # 엔드포인트가 붙은 클래스는 _build_indexes 가 컨트롤러로 자동 승격.
+    from .legacy_service_registry import scan_service_registry
+    _svc_dirs = [backend_dir] + ([frontend_dir] if frontend_dir else [])
+    svc_registry = scan_service_registry(_svc_dirs)
+    if svc_registry:
+        _cls_by_fqcn = {c.get("fqcn"): c for c in classes if c.get("fqcn")}
+        _svc_attached = 0
+        _svc_missing: list[str] = []
+        for _sid, _info in svc_registry.items():
+            _cls = _cls_by_fqcn.get(_info["class"])
+            if _cls is None:
+                _svc_missing.append(_info["class"])
+                continue
+            _eps = _cls.setdefault("endpoints", [])
+            _u = "/" + _sid
+            if any(e.get("full_url") == _u for e in _eps):
+                continue
+            _eps.append({
+                "annotation": "ServiceXML",
+                "http_method": "POST",
+                "path": _u,
+                "full_url": _u,
+                # method 속성이 있으면 그 메소드 body 기준 체인, 없으면
+                # id 를 넣어 class-scope fallback 으로 해석되게 한다.
+                "method_name": _info.get("method") or _sid,
+                "line_number": 1,
+            })
+            _svc_attached += 1
+        print(f"  Service registry: {len(svc_registry)} service id(s), "
+              f"{_svc_attached} endpoint(s) attached to serviceClass")
+        if _svc_missing:
+            _miss_preview = ", ".join(sorted(set(_svc_missing))[:3])
+            print(f"    ⚠ serviceClass {len(set(_svc_missing))}개는 파싱된 "
+                  f"클래스에 없음 (예: {_miss_preview}) — 해당 소스가 "
+                  "--backend-dir 범위에 포함됐는지 확인")
+
     # Diagnostic: stereotype + endpoint + SQL-call + RFC-call distribution
     # so users can self-diagnose why a project might parse to zero
     # controllers / mappers / mapper chains / RFC calls.
