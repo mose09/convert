@@ -1980,6 +1980,37 @@ def _build_row(endpoint: dict, controller: dict, indexes: dict,
     return row
 
 
+def _suggest_prefix_strip(front_urls: set, ctrl_urls: set) -> tuple | None:
+    """프론트↔컨트롤러 URL 매칭 0 일 때 제거하면 매칭이 복구되는 공통
+    prefix 를 추론한다.
+
+    각 URL 의 앞 1~2 path 세그먼트를 떼어 반대편 집합에 존재하는지 세고,
+    가장 많은 URL 을 살리는 prefix 를 ``("/mes", 12)`` 형태로 반환.
+    양방향 검사 — JSP 쪽에 컨텍스트 패스가 붙은 경우와 컨트롤러 쪽에
+    공통 prefix 가 붙은 경우 모두 커버 (url_prefix_strip 은 양쪽에 적용).
+    후보가 없으면 None.
+    """
+    from collections import Counter
+    cand: Counter = Counter()
+
+    def _scan(sources: set, targets: set) -> None:
+        for u in sources:
+            parts = u.split("/")  # 선행 '/' 때문에 parts[0] == ''
+            for k in (1, 2):
+                if len(parts) > k + 1:
+                    prefix = "/" + "/".join(parts[1:1 + k])
+                    rest = "/" + "/".join(parts[1 + k:])
+                    if rest in targets:
+                        cand[prefix] += 1
+
+    _scan(front_urls, ctrl_urls)
+    _scan(ctrl_urls, front_urls)
+    if not cand:
+        return None
+    prefix, n = cand.most_common(1)[0]
+    return prefix, n
+
+
 def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    menu_rows: list[dict] | None = None,
                    rfc_depth: int = 3,
@@ -2628,6 +2659,23 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                   "patterns.yaml url.url_prefix_strip 으로 prefix 제거 검토")
             print(f"    JSP 샘플: {_js}")
             print(f"    컨트롤러 샘플: {_cs}")
+            # prefix 자동 추론 — 사용자가 샘플을 눈으로 비교해 패턴을 짜지
+            # 않아도 되게, 앞 1~2 세그먼트를 제거하면 반대편과 일치하는
+            # prefix 를 세어 최다 후보를 patterns.yaml 스니펫으로 찍는다.
+            # (url_prefix_strip 은 양쪽 URL 에 모두 적용되므로 JSP 쪽이든
+            # 컨트롤러 쪽이든 남는 prefix 를 제거하면 매칭이 복구된다.)
+            sug = _suggest_prefix_strip(_jsp_urls, controller_urls)
+            if sug:
+                _pat, _n = sug
+                print(f"    → 자동 분석: '{_pat}' 제거 시 {_n}건 매칭 예상. "
+                      "patterns.yaml 에 아래 추가 후 --patterns 로 지정:")
+                print("       url:")
+                print("         url_prefix_strip:")
+                print(f'           - "^{_pat}"')
+            else:
+                print("    → 자동 분석: 공통 prefix 로 설명되지 않는 차이 — "
+                      "위 샘플 두 줄의 차이(확장자/경로 구조)를 알려주면 "
+                      "스캐너를 보강할 수 있음")
         else:
             print(f"  ✓ JSP 진단: 프론트 URL {_hit}/{len(_jsp_urls)}건이 "
                   f"컨트롤러와 매칭 — 버튼→백엔드 체인 연결됨")
