@@ -115,3 +115,18 @@ function onSearchList(){
     det = extract_button_triggers_detailed(str(d), api)
     assert ("x.jsp", "조회") in (det.get("/svclist") or [])
     assert ("x.jsp", "저장") in (det.get("/svcsave") or [])
+
+
+def test_javascript_href_anchor_buttons(tmp_path):
+    """<a href="javascript:fn();" title="라벨"> 패턴 (사용자 실환경 마크업)."""
+    d = tmp_path / "front"
+    d.mkdir()
+    (d / "x.jsp").write_text(
+        """<span class="button"><a href="javascript:fnSave();" title="저장">
+<span class="">저장</span></a></span>
+<script>
+function fnSave(){ httpSend("svcSave", getParam(), ok, fail, opt); }
+</script>""", encoding="utf-8")
+    api = build_api_url_index(str(d))
+    det = extract_button_triggers_detailed(str(d), api)
+    assert ("x.jsp", "저장") in (det.get("/svcsave") or [])
