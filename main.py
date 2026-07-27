@@ -2593,6 +2593,7 @@ def cmd_analyze_legacy(args):
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
             llm_per_trigger=getattr(args, "llm_per_trigger", False),
             analyze_daemons=getattr(args, "analyze_daemons", False),
+            service_xml_dirs=getattr(args, "service_xml_dir", None) or [],
             output_dir=_screens_output_root(output_dir),
         )
     else:
@@ -2628,6 +2629,7 @@ def cmd_analyze_legacy(args):
             closure_popup_augment=getattr(args, "closure_popup_augment", False),
             llm_per_trigger=getattr(args, "llm_per_trigger", False),
             analyze_daemons=getattr(args, "analyze_daemons", False),
+            service_xml_dirs=getattr(args, "service_xml_dir", None) or [],
             output_dir=_screens_output_root(output_dir),
         )
 
@@ -2867,6 +2869,11 @@ def main():
                                 "patterns.yaml 없이 CLI 만으로 지정 — 파일이 있으면 "
                                 "url.url_prefix_strip 에 합집합으로 추가. JSP 진단이 "
                                 "✗ 일 때 자동 분석이 제안하는 prefix 를 그대로 넣으면 됨.")
+    al_parser.add_argument("--service-xml-dir", action="append", metavar="DIR",
+                           help="서비스 ID 프레임워크의 <service id=.. serviceClass=..> "
+                                "정의 XML 이 backend/frontend 밖 별도 폴더에 있을 때 "
+                                "그 폴더 지정 (반복 가능). 기본은 backend/frontend 를 "
+                                "자동 스캔.")
     al_parser.add_argument("--menu-table", help="Menu table name (overrides config)")
     al_parser.add_argument("--menu-md",
                            help="Path to a Markdown menu file (pipe table). DRM 환경에서 Excel 대신 사용. "
