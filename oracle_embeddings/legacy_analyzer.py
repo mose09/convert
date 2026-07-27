@@ -2043,6 +2043,7 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                    closure_popup_augment: bool = False,
                    llm_per_trigger: bool = False,
                    analyze_daemons: bool = False,
+                   service_xml_dirs: list[str] | None = None,
                    output_dir: str | None = None) -> dict:
     """Run the full legacy analysis and return a structured result.
 
@@ -2120,11 +2121,12 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
     # 를 "/<id>" 로 emit 하므로 정규화 키가 일치 → 버튼→컨트롤러 체인 연결.
     # 엔드포인트가 붙은 클래스는 _build_indexes 가 컨트롤러로 자동 승격.
     from .legacy_service_registry import scan_service_registry
-    _svc_dirs = [backend_dir] + ([frontend_dir] if frontend_dir else [])
+    _svc_dirs = ([backend_dir] + ([frontend_dir] if frontend_dir else [])
+                 + [d for d in (service_xml_dirs or []) if d])
     svc_registry = scan_service_registry(_svc_dirs)
+    svc_attached = 0
     if svc_registry:
         _cls_by_fqcn = {c.get("fqcn"): c for c in classes if c.get("fqcn")}
-        _svc_attached = 0
         _svc_missing: list[str] = []
         for _sid, _info in svc_registry.items():
             _cls = _cls_by_fqcn.get(_info["class"])
@@ -2145,9 +2147,9 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 "method_name": _info.get("method") or _sid,
                 "line_number": 1,
             })
-            _svc_attached += 1
+            svc_attached += 1
         print(f"  Service registry: {len(svc_registry)} service id(s), "
-              f"{_svc_attached} endpoint(s) attached to serviceClass")
+              f"{svc_attached} endpoint(s) attached to serviceClass")
         if _svc_missing:
             _miss_preview = ", ".join(sorted(set(_svc_missing))[:3])
             print(f"    ⚠ serviceClass {len(set(_svc_missing))}개는 파싱된 "
@@ -2704,16 +2706,34 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
             # prefix 를 세어 최다 후보를 patterns.yaml 스니펫으로 찍는다.
             # (url_prefix_strip 은 양쪽 URL 에 모두 적용되므로 JSP 쪽이든
             # 컨트롤러 쪽이든 남는 prefix 를 제거하면 매칭이 복구된다.)
-            sug = _suggest_prefix_strip(_jsp_urls, controller_urls)
-            if sug:
-                _pat, _n = sug
-                print(f"    → 자동 분석: '{_pat}' 제거 시 {_n}건 매칭 예상. "
-                      "같은 명령에 아래 옵션만 추가해 재실행:")
-                print(f'       --url-prefix-strip "^{_pat}"')
+            # 서비스 ID 호출(httpSend 등) 흔적 — 단일 세그먼트·확장자 없는
+            # pseudo-URL 이 있으면 URL 방식이 아니라 서비스ID 방식이다.
+            # 이 경우 prefix 제안 대신 service registry 상태로 분기.
+            _svc_shaped = [u for u in _jsp_urls
+                           if re.match(r"^/[A-Za-z_][\w$-]*$", u)
+                           and "." not in u]
+            if _svc_shaped and not svc_registry:
+                print(f"    → 자동 분석: 서비스 ID 호출 {len(_svc_shaped)}건 "
+                      f"(예: {_svc_shaped[:2]}) 이 있는데 <service id=.. "
+                      "serviceClass=..> 정의 XML 을 backend/frontend 에서 못 "
+                      "찾음 — service XML 폴더를 --service-xml-dir 로 지정해 "
+                      "재실행")
+            elif _svc_shaped and svc_registry and svc_attached == 0:
+                print(f"    → 자동 분석: service 정의 {len(svc_registry)}건은 "
+                      "찾았지만 serviceClass 소스가 --backend-dir 범위에 없어 "
+                      "엔드포인트 부착 0 — 위 ⚠ 의 클래스 소스 레포를 포함해 "
+                      "재실행")
             else:
-                print("    → 자동 분석: 공통 prefix 로 설명되지 않는 차이 — "
-                      "위 샘플 두 줄의 차이(확장자/경로 구조)를 알려주면 "
-                      "스캐너를 보강할 수 있음")
+                sug = _suggest_prefix_strip(_jsp_urls, controller_urls)
+                if sug:
+                    _pat, _n = sug
+                    print(f"    → 자동 분석: '{_pat}' 제거 시 {_n}건 매칭 예상. "
+                          "같은 명령에 아래 옵션만 추가해 재실행:")
+                    print(f'       --url-prefix-strip "^{_pat}"')
+                else:
+                    print("    → 자동 분석: 공통 prefix 로 설명되지 않는 차이 — "
+                          "위 샘플 두 줄의 차이(확장자/경로 구조)를 알려주면 "
+                          "스캐너를 보강할 수 있음")
         else:
             print(f"  ✓ JSP 진단: 프론트 URL {_hit}/{len(_jsp_urls)}건이 "
                   f"컨트롤러와 매칭 — 버튼→백엔드 체인 연결됨")
@@ -3025,6 +3045,7 @@ def analyze_legacy_batch(backends_root: str,
                         closure_popup_augment: bool = False,
                         llm_per_trigger: bool = False,
                         analyze_daemons: bool = False,
+                        service_xml_dirs: list[str] | None = None,
                         output_dir: str | None = None) -> dict:
     """Run :func:`analyze_legacy` against every backend project under
     ``backends_root`` and merge the resulting rows.
@@ -3166,6 +3187,7 @@ def analyze_legacy_batch(backends_root: str,
             closure_popup_augment=closure_popup_augment,
             llm_per_trigger=llm_per_trigger,
             analyze_daemons=analyze_daemons,
+            service_xml_dirs=service_xml_dirs,
             output_dir=output_dir,
         )
         # Make sure every row carries the project name even if downstream
