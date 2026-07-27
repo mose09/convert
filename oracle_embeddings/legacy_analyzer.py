@@ -2134,14 +2134,17 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                 _svc_missing.append(_info["class"])
                 continue
             _eps = _cls.setdefault("endpoints", [])
-            _u = "/" + _sid
-            if any(e.get("full_url") == _u for e in _eps):
+            # 서비스 ID 는 URL 이 아니므로 슬래시 없이 그대로 둔다 — 리포트의
+            # URL 컬럼에 "fabCBMDataList" 로 표시. 매칭 키는 어차피
+            # normalize_url 이 선행 "/" 를 붙여 계산하므로 JSP 스캐너의
+            # "/<id>" pseudo-URL 과 정규화 키가 동일하게 유지된다.
+            if any(e.get("full_url") == _sid for e in _eps):
                 continue
             _eps.append({
                 "annotation": "ServiceXML",
                 "http_method": "POST",
-                "path": _u,
-                "full_url": _u,
+                "path": _sid,
+                "full_url": _sid,
                 # method 속성이 있으면 그 메소드 body 기준 체인, 없으면
                 # id 를 넣어 class-scope fallback 으로 해석되게 한다.
                 "method_name": _info.get("method") or _sid,
@@ -2713,8 +2716,10 @@ def analyze_legacy(backend_dir: str, frontend_dir: str | None = None,
                            if re.match(r"^/[A-Za-z_][\w$-]*$", u)
                            and "." not in u]
             if _svc_shaped and not svc_registry:
+                # 서비스 ID 는 URL 이 아니므로 표시할 때 선행 "/" 제거
+                _svc_ids_disp = [u.lstrip("/") for u in _svc_shaped[:2]]
                 print(f"    → 자동 분석: 서비스 ID 호출 {len(_svc_shaped)}건 "
-                      f"(예: {_svc_shaped[:2]}) 이 있는데 <service id=.. "
+                      f"(예: {_svc_ids_disp}) 이 있는데 <service id=.. "
                       "serviceClass=..> 정의 XML 을 backend/frontend 에서 못 "
                       "찾음 — service XML 폴더를 --service-xml-dir 로 지정해 "
                       "재실행")
