@@ -166,6 +166,29 @@ def _service_method_res(patterns: dict | None):
     return out
 
 
+def _label_near_id(text: str, elem_id: str) -> str:
+    """id 요소 주변에서 사람이 읽는 라벨 추정.
+
+    사용자 실환경: ``<a href="javascript:void(0);" title="검색">
+    <span id="m60210_searchBtn">`` — id 는 안쪽 span 에, 라벨(title)은
+    감싼 앵커에 있다. id 위치 앞 300자에서 마지막 title 속성을, 없으면
+    id 요소 바로 뒤의 짧은 텍스트를 라벨로 쓴다."""
+    m = re.search(r"\bid\s*=\s*[\"']" + re.escape(elem_id) + r"[\"']", text)
+    if not m:
+        return ""
+    back = text[max(0, m.start() - 300):m.start()]
+    tms = list(_TITLE_ATTR_RE.finditer(back))
+    if tms:
+        lbl = _clean_label(tms[-1].group(1))
+        if lbl:
+            return lbl
+    fwd = text[m.end():m.end() + 200]
+    im = re.search(r">\s*([^<>]{1,40}?)\s*<", fwd)
+    if im:
+        return _clean_label(im.group(1))
+    return ""
+
+
 def _urls_in_text(text: str, custom_res, service_res=()) -> list[str]:
     """text 에서 URL 후보(정규화 전 원문) 리스트를 순서 보존/중복 제거로.
 
@@ -302,9 +325,17 @@ _TITLE_ATTR_RE = re.compile(r"\btitle\s*=\s*[\"']([^\"']*)[\"']", re.IGNORECASE)
 
 # jQuery 클릭 바인딩: $('#id').click(fn) / .on('click', fn) / .bind('click', fn)
 # / 익명 function(){...}. 익명이면 fn 그룹 None → 바인딩 지점 body slice.
+# 사용자 실환경 변형 지원:
+#  - 셀렉터 # 생략: $('m60210_searchBtn') (사내 $ 래퍼)
+#  - 탐색 체인: $('id').parent().bind(...)
+#  - 이벤트 문자열에 click 포함: bind('click touchstart', ...)
 _JQUERY_CLICK_RE = re.compile(
-    r"""\$\(\s*["']\#(?P<id>[\w.-]+)["']\s*\)\s*\.\s*
-        (?:click\s*\(\s*|(?:on|bind|live|delegate)\s*\(\s*["']click["']\s*,\s*)
+    r"""\$\(\s*["']\#?(?P<id>[\w.-]+)["']\s*\)
+        (?:\s*\.\s*(?:parent|parents|closest|find|children|first|last|eq|next|prev)
+           \s*\([^)]*\))*
+        \s*\.\s*
+        (?:click\s*\(\s*
+         |(?:on|bind|live|delegate)\s*\(\s*["'][^"']*click[^"']*["']\s*,\s*)
         (?:function\s*\(|(?P<fn>[A-Za-z_$][\w$.]*))""",
     re.VERBOSE)
 _ID_ATTR_RE = re.compile(r"\bid\s*=\s*[\"']([\w.-]+)[\"']", re.IGNORECASE)
@@ -530,7 +561,10 @@ def _extract_triggers_detailed(frontend_dir: str,
         labels_by_id = _element_labels_by_id(text)
         for jm in _JQUERY_CLICK_RE.finditer(text):
             elem_id = jm.group("id")
-            label = labels_by_id.get(elem_id) or elem_id
+            # 라벨: button/input/a 요소 → 주변 title/텍스트 → id 폴백
+            label = (labels_by_id.get(elem_id)
+                     or _label_near_id(text, elem_id)
+                     or elem_id)
             handler_name = jm.group("fn")
             if handler_name:
                 body = local_bodies.get(handler_name) or ""

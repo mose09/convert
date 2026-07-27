@@ -130,3 +130,23 @@ function fnSave(){ httpSend("svcSave", getParam(), ok, fail, opt); }
     api = build_api_url_index(str(d))
     det = extract_button_triggers_detailed(str(d), api)
     assert ("x.jsp", "저장") in (det.get("/svcsave") or [])
+
+
+def test_parent_bind_chain_with_cross_js_handler(tmp_path):
+    """# 없는 셀렉터 + .parent().bind + 별도 .js 핸들러 + title 라벨."""
+    d = tmp_path / "front"
+    d.mkdir()
+    (d / "m60210.jsp").write_text(
+        """<a href="javascript:void(0);" title="검색"><span id="m60210_searchBtn" class="icon"></span></a>
+<script>
+$('m60210_searchBtn').parent().bind('click touchstart', function(event){
+    m60210_fn_SearchList(tabid);
+});
+</script>""", encoding="utf-8")
+    (d / "m60210.js").write_text(
+        """function m60210_fn_SearchList(tabid){
+    if(p) httpSend("fabSvcSearch", p, ok, fail, opt);
+}""", encoding="utf-8")
+    api = build_api_url_index(str(d))
+    det = extract_button_triggers_detailed(str(d), api)
+    assert ("m60210.jsp", "검색") in (det.get("/fabsvcsearch") or [])
