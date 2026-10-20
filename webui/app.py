@@ -19,6 +19,7 @@ from __future__ import annotations
 import glob
 import io
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -81,6 +82,11 @@ def _run(cmd: list):
     한글(cp949) 콘솔/파이프 인코딩 에러(UnicodeEncodeError)를 방지하고,
     출력도 UTF-8 로 캡처한다."""
     env = {**os.environ, "PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8"}
+    # Embeddable Python's ._pth isolates it from PYTHON* environment vars.
+    # An explicit interpreter flag also covers stdout redirected to a pipe.
+    cmd = list(cmd)
+    if cmd and cmd[0] == sys.executable:
+        cmd[1:1] = ["-X", "utf8"]
     return subprocess.run(cmd, capture_output=True, text=True,
                           encoding="utf-8", errors="replace",
                           cwd=str(ROOT), env=env)
@@ -425,8 +431,42 @@ def _run_migrate(in_dir, map_path, out_dir, flags):
     return proc.returncode, log, (Path(dated[-1]) if dated else None), summary
 
 
+def _render_plsql_help() -> None:
+    st.info("SQL 파일은 일부만 변환될 수 있습니다. AUTO_WARN이 있으면 실행 로그와 Excel의 Conversions → Status / Notes를 확인하세요.")
+    with st.expander("동적 SQL·모호한 구문이란? (예시와 검토 방법)"):
+        st.markdown("**동적 SQL — 실행할 SQL을 문자열로 만드는 경우**")
+        st.code("V_SQL := 'SELECT OLD_COL FROM OLD_TABLE WHERE ID = :1';\nEXECUTE IMMEDIATE V_SQL INTO V_RESULT USING P_ID;\n\nV_SQL := 'SELECT OLD_COL FROM ' || V_TABLE_NAME;\nOPEN V_CURSOR FOR V_SQL;", language="sql")
+        st.write("위 문자열 내부는 변환하지 않습니다. SQL 전체가 고정 문자열이어도 현재는 원문을 유지하며 경고합니다. DBMS_SQL.PARSE 호출도 검토 대상입니다.")
+        st.markdown("**모호한 컬럼 — 어느 테이블의 컬럼인지 확정할 수 없는 경우**")
+        st.code("SELECT ID\n  FROM OLD_ORDER o JOIN OLD_CUSTOMER c ON o.CUSTOMER_ID = c.ID;\n\n-- 두 테이블 모두 ID가 매핑에 있으면 출처를 명시하세요.\nSELECT o.ID\n  FROM OLD_ORDER o JOIN OLD_CUSTOMER c ON o.CUSTOMER_ID = c.ID;", language="sql")
+        st.write("추측해서 치환하지 않고 경고합니다. 해석하지 못하는 Oracle 구문, 이름 변경 외의 분할·병합·타입·값 변환 매핑도 수동 검토가 필요합니다.")
+        st.markdown("**결과 확인 순서**\n\n1. 실행 후 표시되는 **수동 검토 항목**에서 파일명·원본 행 번호·사유를 확인합니다.\n2. Excel 리포트 **Conversions** 시트의 **Status / Notes**에서 `AUTO_WARN` 항목을 확인합니다.\n3. 원본과 결과를 비교하고 TO-BE Oracle 개발 환경에서 컴파일·동작을 검증합니다.")
+        st.caption("AUTO는 변환 처리 상태이며 Oracle 컴파일 성공을 의미하지 않습니다. 위 SQL은 설명용 예시입니다.")
+
+
+def _render_migration_feedback(summary: str, log: str) -> None:
+    """Keep actionable warnings visible even when the full log is truncated."""
+    warnings = [line.strip() for line in log.splitlines()
+                if re.search(r"\bwarning:", line, re.IGNORECASE)]
+    review_count = sum(int(n) for n in re.findall(
+        r"(?:AUTO_WARN|NEEDS_LLM|UNRESOLVED|PARSE_FAIL)=(\d+)", summary))
+    if warnings or review_count:
+        st.warning("변환 파일이 생성됐지만 수동 검토가 필요합니다. 일부 SQL·참조는 원문으로 남아 있을 수 있습니다.")
+        st.write(summary)
+        with st.expander("수동 검토 항목", expanded=True):
+            if warnings:
+                st.text("\n".join(warnings))
+            else:
+                st.write("상세 사유는 Excel 리포트 Conversions 시트의 Status / Notes를 확인하세요.")
+            st.caption("파일명·원본 행 번호를 기준으로 확인하세요. 전체 실행 로그와 Excel의 Conversions → Notes에도 기록됩니다.")
+    else:
+        st.success(summary)
+
+
 def render_migration() -> None:
     st.header("🛠️ SQL 마이그레이션")
+    st.caption(".sql은 정적 SQL·%TYPE/%ROWTYPE 이름을 변환합니다. 동적 SQL 등은 원문을 유지하고 경고합니다. XML 전용 검증·LLM·주석 옵션은 SQL 파일에 적용하지 않습니다.")
+    _render_plsql_help()
     mode = st.radio("실행 방식", ["파일 업로드 (결과 zip 다운로드)",
                                   "폴더 지정 (지정 폴더로 출력)"],
                     horizontal=True)
@@ -453,8 +493,8 @@ def _schema_options():
 
 
 def _render_migration_upload() -> None:
-    st.caption("mapper XML(여러 개) + 매핑 YAML 업로드 → 변환 → 결과 zip.")
-    mappers = st.file_uploader("① AS-IS mapper XML (여러 개)", type=["xml"],
+    st.caption("mapper XML / Oracle PL/SQL .sql + 기존 매핑 YAML → 변환 → 결과 zip.")
+    mappers = st.file_uploader("① AS-IS XML / SQL (여러 개)", type=["xml", "sql"],
                                accept_multiple_files=True)
     mapping = st.file_uploader("② 컬럼 매핑 YAML", type=["yaml", "yml"])
     from_mapping, emit, no_validate, llm = _schema_options()
@@ -496,7 +536,7 @@ def _render_migration_upload() -> None:
     res = st.session_state.get("mig_result")
     if res:
         if res["ok"]:
-            st.success(res["summary"])
+            _render_migration_feedback(res["summary"], res["log"])
             st.download_button("⬇ 변환 결과 zip", data=res["zip"],
                                file_name="migration_result.zip",
                                mime="application/zip")
@@ -506,15 +546,33 @@ def _render_migration_upload() -> None:
             st.code(_preview(res["log"], n=40, tail=True) or "(로그 없음)")
 
 
+def _copy_migration_results(dated: Path, output: Path, inputs: Path):
+    """Validate every destination before copying, including existing symlinks."""
+    converted = dated / "converted"
+    generated = sorted(p for p in converted.rglob("*") if p.is_file()) if converted.is_dir() else []
+    reports = sorted(p for p in dated.iterdir() if p.is_file())
+    plan = [(p, output / p.relative_to(converted)) for p in generated]
+    plan += [(p, output / p.name) for p in reports]
+    for _, destination in plan:
+        actual = destination.resolve()
+        if (output.resolve() not in actual.parents
+            or actual == inputs.resolve() or inputs.resolve() in actual.parents):
+            raise ValueError(f"출력 경로가 원본 또는 지정 출력 폴더 밖을 가리킵니다: {destination}")
+    for source, destination in plan:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    return [str(p.relative_to(converted)) for p in generated], [p.name for p in reports]
+
+
 def _render_migration_folder() -> None:
-    st.caption("로컬 폴더 경로를 지정합니다. 변환 XML 은 **입력 폴더 구조 그대로** "
+    st.caption("로컬 폴더 경로를 지정합니다. 변환 XML/SQL 은 **입력 폴더 구조 그대로** "
                "출력 폴더에 떨어집니다 (대량 변환에 적합).")
-    in_dir = st.text_input("① AS-IS mapper 폴더 경로 (하위 .xml 재귀)")
+    in_dir = st.text_input("① AS-IS 폴더 경로 (하위 .xml / .sql 재귀)")
     map_path = st.text_input("② 컬럼 매핑 YAML 경로")
     out_dir = st.text_input(
         "③ 출력 폴더 경로",
-        help="입력 폴더의 상대 경로를 그대로 유지해 변환 XML 을 씁니다. "
-             "리포트(xlsx)/파생스키마도 이 폴더에 함께 저장됩니다.")
+        help="입력 폴더의 상대 경로를 그대로 유지해 변환 XML/SQL 을 씁니다. "
+             "리포트(xlsx)/파생스키마도 이 폴더에 함께 저장됩니다. SQL의 동적 구문 등 경고는 로그/리포트에서 확인하세요.")
     from_mapping, emit, no_validate, llm = _schema_options()
     schema_path = None
     if not from_mapping:
@@ -528,6 +586,11 @@ def _render_migration_folder() -> None:
     if st.button("▶ 변환 실행", type="primary", disabled=not ready):
         with st.spinner("변환 중…"):
             out_root = Path(out_dir)
+            if (out_root.resolve() == Path(in_dir).resolve()
+                    or Path(in_dir).resolve() in out_root.resolve().parents
+                    or out_root.resolve() in Path(in_dir).resolve().parents):
+                st.error("원본 보존과 결과 재처리 방지를 위해 입력·출력 폴더는 서로 포함되지 않는 별도 폴더로 지정하세요.")
+                return
             out_root.mkdir(parents=True, exist_ok=True)
             # migrate-sql 은 임시 폴더로 격리 실행 후, converted/ 트리를
             # 입력 구조 그대로 출력 폴더로 복사한다.
@@ -536,26 +599,17 @@ def _render_migration_folder() -> None:
                                    no_validate, llm)
             rc, log, dated, summary = _run_migrate(in_dir, map_path, tmp, flags)
             xmls, reports = [], []
-            if dated is not None:
-                conv = dated / "converted"
-                if conv.is_dir():
-                    for p in conv.rglob("*"):
-                        if p.is_file():
-                            rel = p.relative_to(conv)
-                            dest = out_root / rel
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(p, dest)
-                            xmls.append(str(rel))
-                # 리포트(xlsx) / 파생스키마(md) 도 출력 폴더 루트에
-                for p in dated.iterdir():
-                    if p.is_file():
-                        shutil.copy2(p, out_root / p.name)
-                        reports.append(p.name)
+            if rc == 0 and dated is not None:
+                try:
+                    xmls, reports = _copy_migration_results(dated, out_root, Path(in_dir))
+                except (ValueError, OSError) as exc:
+                    st.error(str(exc))
+                    return
         if rc == 0 and xmls:
-            st.success(summary or "변환 완료")
+            _render_migration_feedback(summary or "변환 완료", log)
             st.info(f"출력 폴더(입력 구조 유지): {out_root}\n\n"
-                    f"변환 XML {len(xmls)}개 · 리포트 {len(reports)}개")
-            st.write("생성 XML (앞 200개):", xmls[:200])
+                    f"변환 XML/SQL {len(xmls)}개 · 리포트 {len(reports)}개")
+            st.write("생성 XML/SQL (앞 200개):", xmls[:200])
             if reports:
                 st.write("리포트/스키마:", reports)
         else:

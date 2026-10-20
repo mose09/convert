@@ -132,7 +132,8 @@ def _write_summary(
     unresolved = status_count.get("UNRESOLVED", 0)
     parse_fail = status_count.get("PARSE_FAIL", 0)
 
-    _safe_append(ws, ["Total statements", total])
+    has_plsql = any(r.sql_type == 'PLSQL' for r in results)
+    _safe_append(ws, ["Total entries (XML statements / SQL files)" if has_plsql else "Total statements", total])
     _safe_append(ws, ["  AUTO", auto])
     _safe_append(ws, ["  AUTO_WARN", auto_warn])
     _safe_append(ws, ["  NEEDS_LLM", needs_llm])
@@ -140,7 +141,11 @@ def _write_summary(
     _safe_append(ws, ["  PARSE_FAIL", parse_fail])
     _safe_append(ws, [])
 
-    if total:
+    if has_plsql:
+        rate = f"{auto / total * 100:.1f}% (AUTO only)" if total else "-"
+        _safe_append(ws, ["Warning-free entries rate", rate])
+        _safe_append(ws, ["PL/SQL validation", "AUTO is not Oracle compilation; review AUTO_WARN / Notes"])
+    elif total:
         automation_pct = (auto + auto_warn) / total * 100
         _safe_append(ws, ["Automation rate", f"{automation_pct:.1f}% (AUTO + AUTO_WARN)"])
     else:

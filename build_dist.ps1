@@ -19,7 +19,7 @@
    #                   --only-binary=:all:)
    #   2) powershell -ExecutionPolicy Bypass -File build_dist.ps1 -WheelsDir .\wheels
 
- ⚠ Windows 전용. 리눅스/맥에서는 win_amd64 파이썬을 만들 수 없습니다.
+ ⚠ Windows 전용. 이 스크립트는 Windows에서 실행합니다. Linux 교차 조립은 packaging/build_windows_portable.py 참조.
 ==========================================================================
 #>
 param(
@@ -69,6 +69,7 @@ Write-Host "==> pip 설치" -ForegroundColor Cyan
 $getpipArgs = @($getpip, "--no-warn-script-location")
 if ($WheelsDir -ne "") { $getpipArgs += @("--no-index", "--find-links", (Resolve-Path $WheelsDir)) }
 & $py @getpipArgs
+if ($LASTEXITCODE -ne 0) { throw "get-pip failed ($LASTEXITCODE)" }
 
 # 4) 의존성 설치 (streamlit + requirements) --------------------------------
 Write-Host "==> 의존성 설치 (streamlit + requirements.txt)" -ForegroundColor Cyan
@@ -76,6 +77,7 @@ $pipArgs = @("-m", "pip", "install", "--no-warn-script-location",
              "streamlit", "-r", (Join-Path $root "requirements.txt"))
 if ($WheelsDir -ne "") { $pipArgs += @("--no-index", "--find-links", (Resolve-Path $WheelsDir)) }
 & $py @pipArgs
+if ($LASTEXITCODE -ne 0) { throw "dependency installation failed ($LASTEXITCODE)" }
 
 # 5) 앱 파일 복사 ----------------------------------------------------------
 Write-Host "==> 앱 파일 복사" -ForegroundColor Cyan
@@ -99,6 +101,23 @@ Copy-Item (Join-Path $root "packaging\사용법.txt") $dist
 # 가이드 원본은 webui\assets\guide.html (앱의 '사용 가이드' 메뉴가 읽는 파일).
 # 배포판 루트에도 복사해 run.bat 없이 더블클릭으로도 열람 가능하게 한다.
 Copy-Item (Join-Path $root "webui\assets\guide.html") $dist
+
+Copy-Item (Join-Path $root "packaging\check.bat") $dist
+Copy-Item (Join-Path $root "packaging\selfcheck.py") $dist
+Copy-Item (Join-Path $root "user_manual.html") $dist
+Copy-Item (Join-Path $root "README.md") $appdir
+New-Item -ItemType Directory -Force -Path (Join-Path $appdir "docs\migration") | Out-Null
+Get-ChildItem (Join-Path $root "docs\migration\*.md") | Copy-Item -Destination (Join-Path $appdir "docs\migration")
+Copy-Item (Join-Path $appdir "docs") (Join-Path $dist "docs") -Recurse
+New-Item -ItemType Directory -Force -Path (Join-Path $appdir "input") | Out-Null
+Get-ChildItem (Join-Path $root "input\*_template.*") | Copy-Item -Destination (Join-Path $appdir "input")
+foreach ($launcher in @("run.bat", "check.bat")) {
+  $launcherPath = Join-Path $dist $launcher
+  $launcherText = [System.IO.File]::ReadAllText($launcherPath).Replace("`r`n", "`n").Replace("`n", "`r`n")
+  [System.IO.File]::WriteAllText($launcherPath, $launcherText, (New-Object System.Text.UTF8Encoding($false)))
+}
+& $py -X utf8 (Join-Path $dist "selfcheck.py")
+if ($LASTEXITCODE -ne 0) { throw "portable self-check failed ($LASTEXITCODE)" }
 
 # 7) 압축 -----------------------------------------------------------------
 $zip = Join-Path $root "dist\convert-tool.zip"

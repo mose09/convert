@@ -221,20 +221,20 @@
   <!-- 8 -->
   <h2 id="migrate"><span class="num">8</span>SQL 마이그레이션 <span class="tag off">오프라인</span></h2>
   <div class="card">
-    <p><b>무엇을</b> — MyBatis/iBatis <b>mapper XML</b> 을 매핑에 따라 TO-BE 로 변환하고, 변환 XML 과 리포트를 만듭니다.</p>
+    <p><b>무엇을</b> — MyBatis/iBatis <b>mapper XML</b> 및 Oracle 프로시저·함수·패키지 <b>.sql 생성문</b>을 기존 매핑으로 TO-BE 테이블·컬럼으로 변환하고, 결과 파일과 리포트를 만듭니다.</p>
     <table>
       <tr><th>모드</th><th>입력</th><th>출력</th></tr>
-      <tr><td><b>파일 업로드</b></td><td>XML 파일 몇 개 업로드</td><td>변환 결과를 <b>zip</b> 으로 다운로드</td></tr>
-      <tr><td><b>폴더 지정</b></td><td>프로젝트 폴더 경로</td><td>지정한 <b>출력 폴더에 입력 폴더 구조 그대로</b> XML 생성</td></tr>
+      <tr><td><b>파일 업로드</b></td><td>XML / SQL 파일 업로드</td><td>변환 결과를 <b>zip</b> 으로 다운로드</td></tr>
+      <tr><td><b>폴더 지정</b></td><td>프로젝트 폴더 경로</td><td>지정한 <b>출력 폴더에 입력 폴더 구조 그대로</b> XML / SQL 생성</td></tr>
     </table>
     <ol class="steps">
       <li>모드(파일/폴더)를 고르고 입력을 지정합니다.</li>
       <li>매핑(7번에서 만든 <code>.yaml</code>/<code>.md</code>)을 연결합니다.</li>
       <li>옵션(한글 주석 삽입, 검증 skip, LLM 사용, 스키마 지정/파생)을 선택하고 실행.</li>
     </ol>
-    <div class="ok">폴더 지정 모드는 <b>진짜 MyBatis/iBatis mapper XML 만</b> 골라 변환합니다
+    <div class="ok">폴더 지정 모드는 <b>MyBatis/iBatis mapper XML과 Oracle .sql 파일을</b> 골라 변환합니다
       (<code>pom.xml</code>·<code>web.xml</code>·빌드 산출물 등은 자동 제외).</div>
-    <div class="shot">［ 스크린샷 자리 — 마이그레이션 실행 결과(리포트) 캡처 ］</div>
+    <div class="card"><b>SQL 파일 검토 안내</b><p>정적 SQL과 TABLE.COLUMN%TYPE / TABLE%ROWTYPE을 변환하며 원래 파일명·하위 폴더 구조를 유지합니다. 동적 SQL 문자열은 변환하지 않습니다. 중첩 DECLARE / 중첩 함수는 파일 전체를 보존하고 경고합니다.</p><p><b>AUTO_WARN</b>이면 일부 변환 또는 원문 보존 상태일 수 있습니다. 화면의 <b>수동 검토 항목</b>과 Excel의 <b>Conversions → Status / Notes</b>를 확인하세요. AUTO는 Oracle 컴파일 성공을 의미하지 않습니다. 입력·출력은 서로 포함되지 않는 별도 폴더로 지정하세요.</p></div>
   </div>
 
   <!-- 9 -->
@@ -245,7 +245,7 @@
       <li><b>스키마 추출</b> → <b>코멘트 증강</b> — 스키마 문서 준비.</li>
       <li><b>표준사전 적재</b> — 단어/용어/도메인 Excel 적재 (한 번).</li>
       <li><b>매핑 만들기</b> — AS-IS→TO-BE 컬럼 매핑 작성.</li>
-      <li><b>SQL 마이그레이션</b> — mapper XML 변환.</li>
+      <li><b>SQL 마이그레이션</b> — mapper XML / Oracle .sql 변환.</li>
       <li>(선택) <b>ERD 추출/보기</b> · <b>용어 검색</b> 으로 검토.</li>
     </ol>
   </div>

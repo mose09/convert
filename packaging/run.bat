@@ -13,6 +13,7 @@ set "PYTHONPATH=%~dp0app"
 REM 파이썬 stdout/stderr 도 UTF-8 강제 → 65001 콘솔과 일치(한글 안 깨짐).
 set "PYTHONUTF8=1"
 set "PYTHONIOENCODING=utf-8"
+set "ANONYMIZED_TELEMETRY=False"
 
 echo ============================================================
 echo   SQL 마이그레이션 / 스키마 / ERD / 용어 도구
@@ -25,8 +26,8 @@ echo   상세 사용법: 같은 폴더의 guide.html 을 더블클릭
 echo ============================================================
 echo.
 
-"%~dp0python\python.exe" -m streamlit run "%~dp0app\webui\app.py" ^
-    --server.port 8501 --browser.gatherUsageStats false
+"%~dp0python\python.exe" -X utf8 -m streamlit run "%~dp0app\webui\app.py" ^
+    --server.port 8501 --server.address 127.0.0.1 --browser.serverAddress localhost --browser.gatherUsageStats false
 
 echo.
 echo (서버가 종료되었습니다. 창을 닫아도 됩니다.)

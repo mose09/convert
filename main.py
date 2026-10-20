@@ -1398,11 +1398,11 @@ def cmd_migrate_sql(args):
     terms_md = Path(args.terms_md) if args.terms_md else None
 
     # ``--mybatis-dir`` accepts either a directory (recursive scan) or a
-    # single ``.xml`` file. Single-file form is handy under ``--format-only``
+    # single ``.xml`` / ``.sql`` file. Single-file form is handy under ``--format-only``
     # for spot-checking one mapper at a time.
     if mybatis_dir.is_file():
-        if mybatis_dir.suffix.lower() != ".xml":
-            print(f"Error: --mybatis-dir 가 파일이지만 .xml 아님: {mybatis_dir}")
+        if mybatis_dir.suffix.lower() not in {".xml", ".sql"}:
+            print(f"Error: --mybatis-dir 는 .xml 또는 .sql 이어야 함: {mybatis_dir}")
             return
         single_file_mode = True
         xml_files_iter = [mybatis_dir]
@@ -1412,8 +1412,24 @@ def cmd_migrate_sql(args):
         xml_files_iter = None  # filled in below by rglob
         scan_root = mybatis_dir
     else:
-        print(f"Error: --mybatis-dir 없음 (디렉토리 또는 .xml 파일): {mybatis_dir}")
+        print(f"Error: --mybatis-dir 없음 (디렉토리 또는 .xml/.sql 파일): {mybatis_dir}")
         return
+
+    # SQL exports share the XML output layout; generated output is excluded
+    # from recursive input discovery to avoid converting it on the next run.
+    base_output = config.get("storage", {}).get("output_dir", "./output")
+    excluded = (Path(base_output) / "migration").resolve()
+    sql_files = ([mybatis_dir] if single_file_mode and mybatis_dir.suffix.lower() == ".sql"
+                 else [] if single_file_mode else sorted(
+                     p for p in scan_root.rglob("*")
+                     if p.is_file() and p.suffix.lower() == ".sql"
+                     and excluded not in p.resolve().parents
+                     and not {"converted", ".git", ".venv", "venv", "node_modules", "__pycache__", "build", "dist"}.intersection(p.relative_to(scan_root).parts)
+                 ))
+    if single_file_mode and mybatis_dir.suffix.lower() == ".sql":
+        xml_files_iter = []
+    if sql_files and args.format_only:
+        raise SystemExit("Error: .sql PL/SQL 변환에는 --mapping 이 필요합니다 (--format-only 미지원)")
 
     if args.format_only:
         # Format-only mode — no mapping / schema needed. Build an empty
@@ -1438,7 +1454,7 @@ def cmd_migrate_sql(args):
             print(f"  warning: --to-be-schema 무시됨 (파일 없음): {to_be_schema_path}")
         print("Mode: --format-only (매핑/스키마 없이 포매터만 적용, Stage A skip)")
     else:
-        derive_schema = getattr(args, "to_be_schema_from_mapping", False)
+        derive_schema = getattr(args, "to_be_schema_from_mapping", False) or bool(sql_files)
         if mapping_path is None:
             print("Error: --mapping 필수 (--format-only 로 매핑 없이 포매터만 돌릴 수 있음)")
             return
@@ -1524,13 +1540,15 @@ def cmd_migrate_sql(args):
 
     if single_file_mode:
         xml_files = xml_files_iter
-        print(f"Scanning 1 XML file (single-file mode): {mybatis_dir}")
+        print(f"Scanning single file: {mybatis_dir}")
     else:
         # 프로젝트 폴더에는 pom.xml / web.xml / spring config 등 mapper 가
         # 아닌 XML 이 섞여 있으므로, 실제 MyBatis/iBatis mapper 만 식별해
         # 변환한다 (scan_mybatis_dir = _is_sql_mapper + 빌드산출물 skip).
         from oracle_embeddings.mybatis_parser import scan_mybatis_dir
-        xml_files = [Path(p) for p in scan_mybatis_dir(str(scan_root))]
+        xml_files = [Path(p) for p in scan_mybatis_dir(str(scan_root))
+                     if excluded not in Path(p).resolve().parents
+                     and "converted" not in Path(p).relative_to(scan_root).parts]
         print(f"Scanning {len(xml_files)} mapper XML file(s) under {scan_root}...")
 
     all_results = []
@@ -1547,6 +1565,35 @@ def cmd_migrate_sql(args):
         derived_path = out_root / f"to_be_schema_derived_{derived_stamp}.md"
         derived_path.write_text(derived_md, encoding="utf-8")
         print(f"Derived TO-BE schema: {derived_path}")
+
+    if sql_files:
+        from oracle_embeddings.migration.plsql_rewriter import read_sql_file, rewrite_plsql
+        from oracle_embeddings.migration.mapping_model import RewriteResult
+        print(f"Scanning {len(sql_files)} PL/SQL file(s); Stage A/B and LLM are not run for PL/SQL")
+        for sql_path in sql_files:
+            try:
+                original, encoding = read_sql_file(sql_path)
+                result = rewrite_plsql(original, mapping)
+                rr = RewriteResult(
+                    xml_file=sql_path, namespace="", sql_id=sql_path.stem,
+                    sql_type="PLSQL", as_is_sql=original, to_be_sql=result.text,
+                    status="AUTO_WARN" if result.warnings else "AUTO",
+                    applied_transformers=["PLSQLIdentifierRename"] if result.changes else [],
+                    changed_items=result.changes, warnings=result.warnings,
+                    notes=[f"Static SQL regions: {result.statements}; PL/SQL Stage A/B not run"],
+                )
+                all_results.append(rr)
+                for warning in result.warnings:
+                    print(f"  warning: {sql_path}: {warning}")
+                if emit_xml and not args.dry_run:
+                    destination = converted_root / sql_path.relative_to(scan_root)
+                    if destination.resolve() == sql_path.resolve():
+                        raise ValueError("output must not overwrite the input SQL file")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    destination.write_bytes(result.text.encode(encoding))
+                print(f"  PL/SQL {sql_path.name}: {rr.status}, {len(result.changes)} identifier change(s)")
+            except (OSError, ValueError) as exc:
+                raise SystemExit(f"Error: PL/SQL file {sql_path}: {exc}") from exc
 
     for xml_path in xml_files:
         out = rewrite_xml(xml_path, mapping)
@@ -1652,7 +1699,8 @@ def cmd_migrate_sql(args):
     parse_fail = status_count.get("PARSE_FAIL", 0)
 
     print()
-    print(f"Converted {total} statement(s): "
+    entry_label = "entry/entries (XML statements / SQL files)" if sql_files else "statement(s)"
+    print(f"Converted {total} {entry_label}: "
           f"AUTO={auto} AUTO_WARN={auto_warn} NEEDS_LLM={needs_llm} "
           f"UNRESOLVED={unresolved} PARSE_FAIL={parse_fail}")
     stage_a_passed = sum(1 for r in all_results if r.stage_a_pass)
@@ -1671,9 +1719,9 @@ def cmd_migrate_sql(args):
         )
         print(f"Excel report: {report_path}")
     if emit_xml and not args.dry_run:
-        print(f"Converted XML: {converted_root}")
+        print(f"Converted XML/SQL: {converted_root}")
     elif args.dry_run:
-        print("(--dry-run: XML 파일은 작성되지 않음)")
+        print("(--dry-run: XML/SQL 파일은 작성되지 않음)")
 
 
 def _replace_bodies_with_formatted(tree, results) -> None:
@@ -3220,10 +3268,10 @@ def main():
     # migrate-sql command
     ms_parser = subparsers.add_parser(
         "migrate-sql",
-        help="column_mapping.yaml 기반 MyBatis XML → TO-BE 스키마용 변환 + Stage A 검증 + 산출물 생성",
+        help="기존 매핑 기반 MyBatis XML / Oracle PL/SQL SQL 파일 변환 및 산출물 생성",
     )
     ms_parser.add_argument("--mybatis-dir", required=True,
-                           help="AS-IS MyBatis mapper XML 디렉토리 또는 단일 .xml 파일 "
+                           help="AS-IS mapper XML / Oracle PL/SQL .sql 디렉토리 또는 단일 파일 "
                                 "(--format-only 으로 한 파일만 빠르게 검토할 때 유용)")
     ms_parser.add_argument("--mapping",
                            help="column_mapping.yaml 경로 (--format-only 면 생략 가능)")
@@ -3239,7 +3287,7 @@ def main():
     ms_parser.add_argument("--terms-md",
                            help="(선택) terms_dictionary.md — 한글 주석 삽입용")
     ms_parser.add_argument("--output-format", default="excel,xml",
-                           help="쉼표 구분 (기본: excel,xml)")
+                           help="쉼표 구분 (기본: excel,xml; xml 옵션은 .sql 출력도 포함)")
     ms_parser.add_argument("--emit-column-comments", action="store_true",
                            help="변환된 SELECT 컬럼에 /* 한글 */ 주석 삽입 (기본 off)")
     ms_parser.add_argument("--no-xml-preserve-as-is", action="store_true",
