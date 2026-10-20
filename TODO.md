@@ -23,6 +23,13 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: PL/SQL 기능 포함 Windows 포터블 배포판
+
+- [x] 기존 python/app/run.bat 구조로 Windows x64 ZIP 생성
+- [x] Windows 전용 의존성·런타임·앱/설정 파일 검토 및 체크섬 생성
+- [x] dist/convert-tool.zip 및 체크섬·검토 결과 생성 (실제 Windows 실행 미검증)
+- [ ] 사용자 다운로드 전달 확인 (클라우드 파일 오류, GitHub 쓰기 권한 부재로 미완료)
+
 ### 진행 중: 배포 패키지 (포터블 파이썬 + run.bat)
 
 비개발자 PC 에 파이썬 설치 없이 zip→압축풀기→run.bat 로 실행.
@@ -925,6 +932,19 @@ token 절감.
 ---
 
 ## 12. SQL Migration — `convert-mapping` / `migration-impact` / `migrate-sql` / `validate-migration`
+
+### 진행 중: PL/SQL 변환 안내 및 비판적 검토
+
+- [x] UI에 동적 SQL·모호한 컬럼 예시, 부분 변환 경고, 결과 검토 위치 표시
+- [x] 위험 입력으로 오변환·무경고 누락 재현 및 수정
+- [x] UI/회귀 테스트 103개 통과, docs/migration/plsql-review.md 및 사용자 매뉴얼 갱신
+
+### 진행 중: Oracle PL/SQL 생성문 파일 매핑 변환
+
+- [x] 기존 매핑으로 .sql 본문 DML 및 %TYPE/%ROWTYPE 참조 변환
+- [x] CLI/UI 확장자 분기, 기존 converted 출력 구조 유지
+- [x] 회귀 테스트, README 및 사용자 매뉴얼 갱신 (최종 UI/회귀 테스트 103개 통과)
+- [x] 기존 설계 문서의 PL/SQL 제외 설명 정정, 배포판 문서 동기화
 
 스펙: `docs/migration/spec.md`. DSL 우선 → LLM fallback → 수동 큐 3-tier
 + Stage A (sqlglot static) / Stage B (TO-BE DB parse) 2-stage 검증.

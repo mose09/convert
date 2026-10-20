@@ -8,7 +8,8 @@ chromadb>=0.5.0
 openai>=1.0.0
 
 # SQL Migration (migrate-sql / migration-impact / validate-migration)
-sqlglot>=23.0.0
+# PL/SQL identifier spans require parser position metadata (validated: 30.23.0).
+sqlglot>=30.23.0
 lxml>=5.0.0
 
 # React closure 분석 (analyze-legacy --closure-llm 옵트인 — Phase C LLM
@@ -58,3 +59,6 @@ playwright>=1.40
 #     python -m pip install --no-index --find-links=.\wheels streamlit
 # 미설치여도 CLI 커맨드(migrate-sql 등)는 영향 없음 (webui 만 미동작).
 streamlit>=1.30
+
+# Windows portable builds: app-local C++ runtime for Chroma / ONNX dependencies.
+msvc-runtime>=14.44.35112; sys_platform == "win32"

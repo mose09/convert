@@ -30,7 +30,7 @@ FK/description이 없는 레거시 DB 환경에서 **쿼리 JOIN 분석 + 로컬
 | `convert-menu` | 임의 양식의 메뉴 Excel → 표준 menu.md 변환 (LLM 이 헤더 매핑 학습) | X | O |
 | `convert-mapping` | AS-IS↔TO-BE 컬럼 매핑 .md → `column_mapping.yaml` (LLM + heuristic 이 kind/transform 추론; **사용자 표준 9-컬럼 flat 포맷 지원** — asis/tobe table/column/type/comment/remark) | 선택 | X |
 | `migration-impact` | SQL Migration 사전 영향분석 (매핑 YAML 검증 + AS-IS 쿼리 영향 리포트) | X | X |
-| `migrate-sql` | AS-IS MyBatis XML → TO-BE 스키마용 쿼리 일괄 변환 + Excel/XML 산출물 (`--format-only` 로 매핑 없이 포매터만 미리보기 가능) | X | 선택 |
+| `migrate-sql` | AS-IS MyBatis XML / Oracle PL/SQL .sql → TO-BE 테이블·컬럼 변환 + Excel/XML/SQL 산출물 (`--format-only` 로 매핑 없이 포매터만 미리보기 가능) | X | 선택 |
 | `validate-migration` | 변환된 XML 의 TO-BE SQL 을 TO-BE DB 에 parse-only 검증 (Stage B) | O | X |
 | `screen-converter` | AS-IS 화면 캡처 폴더 → TO-BE PPTX 도형 자동 생성 (Vision LLM 이 DRM 템플릿 캡처를 시각 참조로 layout JSON 추출 → python-pptx 렌더, PoC) | X | O |
 | `screen-spec` | React 화면 closure (entry + 자식 컴포넌트 BFS) → AST 패턴으로 검색·그리드·탭·이벤트+flow·검증 deterministic 추출 → 마스터 xlsx (시트=영역, 1열=화면명). 같은 소스 → 같은 산출물 보장 (LLM 0). PPTX 설계서에 시트 단위 복사·붙여넣기 워크플로우용 | X | X |
@@ -1271,6 +1271,69 @@ python main.py migration-impact `
 출력: `output/migration/<날짜>/impact_report_TIMESTAMP.xlsx` (5 시트 — Summary /
 Table Impact / Column Impact / Affected Statements / Validation).
 
+**Oracle 프로시저·함수·패키지 생성문 (.sql) 변환**
+
+기존 `column_mapping.yaml` 을 그대로 사용합니다. PL/SQL 변환에는 `sqlglot>=30.23.0` 이
+필요합니다 (`requirements.txt` 반영). 기존 폐쇄망 배포판을 갱신할 때는 해당
+wheel 도 함께 반입하세요. 구버전에서는 파일을 보존하고 업그레이드 경고를 남깁니다.
+입력 확장자가 `.sql` 이면
+PL/SQL 전용 변환으로 분기하며, 디렉토리 입력은 하위 `.xml` / `.sql` 을
+함께 처리합니다. 단일 파일도 지원하며 확장자 대소문자는 구분하지 않습니다.
+
+```powershell
+python main.py migrate-sql `
+  --mybatis-dir C:\work\oracle\package_body.sql `
+  --mapping input\column_mapping.yaml
+
+# 폴더 전체 (XML 이 섞여 있어도 처리, TO-BE 스키마는 매핑에서 파생)
+python main.py migrate-sql `
+  --mybatis-dir C:\work\oracle `
+  --mapping input\column_mapping.yaml `
+  --to-be-schema-from-mapping
+```
+
+출력은 XML 과 동일한 `output/migration/<날짜>/converted/<입력 상대경로>` 입니다.
+예: `oracle/pkg/order.sql` → `converted/pkg/order.sql`. `_new` 접미사를 붙이지
+않고 원본 파일을 보존합니다. `--dry-run` 은 변환 파일 없이 리포트만 만듭니다.
+기존 `--output-format excel,xml` 의 `xml` 옵션이 SQL 파일 출력도 제어합니다.
+UI 의 **SQL 마이그레이션**에서도 XML/SQL 업로드와 폴더 입력을 지원합니다.
+화면 상단 **동적 SQL·모호한 구문이란?** 안내를 펼치면 문자열 SQL과 동명 컬럼의
+예시, 출처를 명시하는 방법, 결과 검토 순서를 볼 수 있습니다. 경고가 있으면
+성공 메시지 대신 **수동 검토 필요** 경고와 기본 펼침 상태의 **수동 검토 항목**을
+표시합니다. 긴 로그의 미리보기에서 잘린 경고도 이 목록에서는 전체를 확인할 수
+있습니다. Excel **Conversions → Status / Notes**에도 파일별 사유가 기록됩니다.
+PL/SQL 리포트의 `AUTO` 는 Oracle 컴파일 성공을 뜻하지 않습니다. SQL 파일이 포함된
+리포트에서는 경고 항목을 자동화 성공률에 포함하지 않고 경고 없는 항목 비율을 표시합니다.
+폴더 모드의 입력·출력 경로는 서로 포함되지 않는 별도 폴더로 지정하세요.
+배치가 실패하면 임시 폴더의 부분 결과는 지정 출력 폴더로 복사하지 않습니다.
+
+
+- PROCEDURE / FUNCTION / PACKAGE / PACKAGE BODY 내부의 정적 SELECT,
+  INSERT, UPDATE, DELETE, MERGE, 커서 쿼리의 **1:1 테이블·컬럼 이름**을 변환합니다.
+- 선언부·파라미터·반환 타입의 `TABLE.COLUMN%TYPE`, `TABLE%ROWTYPE` 도 변환합니다.
+  직접 선언된 table%ROWTYPE 레코드의 필드 참조도 변환합니다.
+- SQL 식별자 위치만 수정하므로 객체명, 변수, 바인드, INTO 변수, 주석,
+  문자열, PL/SQL 제어문, SQL*Plus `/`, 원본 줄바꿈과 UTF-8(BOM 포함)/CP949 를 보존합니다.
+- 커서의 직접 컬럼 조회에는 필요 시 기존 이름을 별칭으로 남겨 `record.기존컬럼`
+  및 `cursor%ROWTYPE` 인터페이스를 보존합니다.
+- **수동 검토:** EXECUTE IMMEDIATE / 동적 OPEN FOR 문자열은 변환하지 않고 경고합니다.
+  컬럼이 모호하거나 파싱할 수 없는 SQL, split/merge/drop/타입·값 변환 매핑은
+  자동 변환 대상으로 확정하지 않고 로그·Excel 경고로 남깁니다. 일부 식별자만
+  변환된 파일일 수 있으므로 `AUTO_WARN` 을 반드시 검토하세요.
+  커서 SELECT * 의 레코드 필드 및 중첩·동명 레코드의 범위가 불명확한 참조도 검토가 필요합니다.
+  중첩 DECLARE / 중첩 서브프로그램은 변수 가림을 잘못 처리하지 않도록 **파일 전체를 보존하고 경고**합니다.
+  NATURAL JOIN, 양쪽 TO-BE 컬럼명이 달라지는 USING 조인, DB link, 대소문자를
+  구분하는 quoted SQL 식별자도 해당 SQL을 보존하고 검토 대상으로 남깁니다.
+  USING 조인은 공통 컬럼명이 동일하게 바뀌는 경우에만 자동 변환합니다.
+  DBMS_SQL.PARSE 역시 동적 SQL 경고 대상입니다.
+  구현 검토 기록과 잔여 한계는 [PL/SQL 비판적 검토](docs/migration/plsql-review.md)를 참고하세요.
+- PL/SQL 파일에는 Stage A/B, LLM fallback, 한글 주석 삽입, 재포매팅을 적용하지
+  않습니다. SQL 파싱은 전체 PL/SQL 컴파일 검증이 아닙니다. 배포 전 TO-BE Oracle
+  개발 환경에서 객체 컴파일 및 동작을 확인하세요. `.sql` 은 `--format-only` 미지원입니다.
+
+예: `V_VAL ORDERS.ID%TYPE;` → `V_VAL TB_ORDER.ORDER_ID%TYPE;`
+(매핑: ORDERS → TB_ORDER, ID → ORDER_ID).
+
 **3) 실제 변환 + Stage A 검증**:
 
 ```powershell
@@ -2068,6 +2131,25 @@ python -m pip install streamlit
 폐쇄망 wheel 폴더가 커진다. 미설치여도 CLI 커맨드는 영향 없음.
 
 ### 19. 배포 패키지 (비개발자 PC 용 — zip → 압축풀기 → run.bat)
+
+이번 PL/SQL 배포판도 `convert-tool/python`, `convert-tool/app`, `run.bat` 구조를 유지합니다.
+Windows 10/11 x64용 Python 3.11.9 및 Windows wheel을 포함하며 별도 pip 설치가
+필요 없습니다. `check.bat`은 DB/LLM 없이 의존성 import와 SQL/XML·%TYPE·Excel
+변환을 검사하고 `selfcheck-result.txt`에 결과를 기록합니다.
+
+클라우드의 Linux 환경에서는 Windows 실행 대신 교차 조립합니다. 공식 PSF
+NuGet Python 3.11.9(서명·카탈로그 해시 확인)와 `uv pip install --python-platform
+x86_64-pc-windows-msvc --python-version 3.11 --only-binary :all:`로 준비한
+Windows 의존성을 `packaging/build_windows_portable.py`로 묶습니다.
+`packaging/verify_windows_portable.py`로 의존성·플랫폼·PE 아키텍처를 검사합니다.
+이는 실제 Windows 실행 검증을 대체하지 않습니다. 세부 검토와 누락된 선택
+요건(Oracle Instant Client·모델·Playwright 브라우저)은 배포판의 `BUILD-REVIEW.txt`에
+명시합니다. 포함 파일 체크섬은 `SHA256SUMS.txt`, 정확한 의존성 버전은
+`requirements-windows.lock.txt`에서 확인할 수 있습니다.
+
+새 배포판은 기존 폴더에 덮어쓰지 말고 별도 폴더에 풀어 `check.bat`을 실행한 뒤
+기존 매핑 YAML과 필요한 설정만 옮기세요.
+
 
 파이썬 설치 없이 **압축 풀고 `run.bat` 더블클릭**으로 쓰게 만드는 배포판.
 Streamlit 은 PyInstaller 단일 exe 로 얼리면 불안정하므로, **포터블

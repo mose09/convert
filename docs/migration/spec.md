@@ -4,6 +4,10 @@
 > 기존 `CLAUDE.md` 의 코딩 스타일/파일 배치 규약을 따른다. 이 문서에 기재되지
 > 않은 사항은 기존 프로젝트 관행을 우선한다.
 
+> 2026-10-20 확장: `migrate-sql`은 Oracle 생성문 `.sql`도 지원한다.
+> 이번 확장의 실제 동작은 아래 1.4절 및 [비판적 검토](plsql-review.md)를 따른다.
+> 이후 절의 AST 변환·LLM·Stage A/B 설명은 기존 XML 경로에 관한 설계다.
+
 ## 0. 작업 착수 전 필수 확인
 
 1. `TODO.md` 를 생성하고 아래 "12. 구현 순서" 의 작업 항목들을 체크박스로
@@ -28,18 +32,19 @@ Oracle 11g 기반의 기존 MyBatis 쿼리를 Oracle 23ai 스키마로 자동 �
 | AS-IS DB | Oracle 11g |
 | TO-BE DB | Oracle 23ai |
 | SQL 유형 | SELECT / INSERT / UPDATE / DELETE / MERGE |
-| 제외 | PL/SQL 블록 (`<procedure>`, `BEGIN...END`), Oracle 힌트(`/*+ ... */`) 재작성 |
+| 별도 SQL 파일 | PROCEDURE / FUNCTION / PACKAGE / PACKAGE BODY 생성문 `.sql` (1.4절) |
+| 제외 | XML 내부 PL/SQL 블록의 이번 확장 적용, Oracle 힌트(`/*+ ... */`) 재작성 |
 | XML 프레임워크 | MyBatis 3.x (iBatis 2.x 는 추후 확장) |
 | 동적 SQL | `<if>`, `<choose>/<when>/<otherwise>`, `<where>`, `<set>`, `<trim>`, `<foreach>`, `<include>/<sql>`, `<bind>` |
 | OGNL 파라미터명 | **건드리지 않음** (Java DTO/Mapper 파라미터명은 그대로) |
 
-### 1.2 처리 방식 — 3-tier
+### 1.2 XML 처리 방식 — 3-tier
 
 1. **DSL 기반 변환** (`column_mapping.yaml` → sqlglot AST transform)
 2. **LLM fallback** (DSL 로 변환 불가 시)
 3. **Manual queue** (LLM confidence < 0.7 또는 UNRESOLVED)
 
-### 1.3 검증 방식 — 2-stage Parse-only
+### 1.3 XML 검증 방식 — 2-stage Parse-only
 
 | Stage | 도구 | 검사 항목 |
 |---|---|---|
@@ -48,6 +53,34 @@ Oracle 11g 기반의 기존 MyBatis 쿼리를 Oracle 23ai 스키마로 자동 �
 
 실제 실행은 하지 않는다. `WHERE 1=2` 방식은 사용하지 않는다
 (실행 자체가 수반되므로 ROW 만 0 일 뿐 lock/parse 비용 발생).
+
+### 1.4 Oracle PL/SQL 파일 확장 (2026-10-20)
+
+- 기존 `column_mapping.yaml`을 그대로 사용한다. `sqlglot>=30.23.0`이 필요하다.
+- `--mybatis-dir`은 XML/SQL 폴더 또는 단일 파일을 받는다. 확장자는 대소문자를
+  구분하지 않으며, 폴더 입력은 하위 XML/SQL을 함께 처리한다.
+- `.sql`은 `plsql_rewriter.py`로 분기하여 정적 SELECT / INSERT / UPDATE /
+  DELETE / MERGE 및 커서 SQL의 1:1 테이블·컬럼 이름을 치환한다.
+  `TABLE.COLUMN%TYPE`, `TABLE%ROWTYPE` 및 직접 선언된 ROWTYPE 레코드 필드도 처리한다.
+- 객체명·변수·바인드·INTO 변수·주석·문자열·제어문과 원본 줄바꿈을 보존한다.
+  UTF-8(BOM 포함)/CP949를 지원한다.
+- 출력은 `output/migration/<날짜>/converted/<입력 상대경로>`이다. 원래 이름을
+  유지하며 `_new`를 붙이지 않는다. 원본은 보존한다. `--output-format excel,xml`의
+  `xml`이 SQL 파일 출력도 제어한다. `--dry-run`은 리포트만 생성한다.
+- `.sql`에는 Stage A/B, LLM fallback, 주석 삽입, 재포매팅을 적용하지 않는다.
+  `--format-only`는 지원하지 않는다. `validate-migration`은 기존 XML 전용이다.
+- EXECUTE IMMEDIATE / 동적 OPEN FOR / DBMS_SQL.PARSE의 문자열은 보존 후 경고한다.
+  모호한 컬럼, 지원하지 않는 매핑·SQL은 경고하며 일부만 변환될 수 있다.
+  중첩 DECLARE / 중첩 서브프로그램은 파일 전체를 보존하고 경고한다.
+  세부 보류 조건과 잔여 한계는 [비판적 검토](plsql-review.md)를 참고한다.
+- UI는 XML/SQL 업로드·폴더 입력과 동적 SQL·모호성 예시를 제공한다. 경고 시
+  `수동 검토 항목`을 펼쳐 표시하고 Excel `Conversions → Status / Notes`에 기록한다.
+  `AUTO_WARN`은 수동 검토가 필요하며 `AUTO`도 Oracle 컴파일 성공을 뜻하지 않는다.
+  TO-BE 개발 DB에서 객체 컴파일·대표 실행 확인이 필요하다.
+
+```powershell
+python main.py migrate-sql --mybatis-dir C:\work\oracle\package_body.sql --mapping input\column_mapping.yaml
+```
 
 ## 2. 디렉토리 / 파일 구조
 
