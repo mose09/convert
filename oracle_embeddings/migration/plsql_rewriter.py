@@ -82,6 +82,64 @@ def _quoted(value, original):
     return value
 
 
+def _parse_static_sql(sql):
+    """Parse Oracle MERGE's DELETE WHERE without regenerating source SQL.
+
+    sqlglot accepts the UPDATE/INSERT filters but not the DELETE filter after
+    UPDATE. Parse that predicate separately using its original character positions,
+    then attach it to the update so normal source/scope resolution still works.
+    """
+    tokens = _tokens(sql)
+    if not tokens or tokens[0].upper != 'MERGE':
+        return sqlglot.parse_one(sql, read='oracle')
+    depth = 0
+    delete_at = None
+    matched_update = False
+    end = len(sql)
+    for i, token in enumerate(tokens):
+        if token.text == '(':
+            depth += 1
+        elif token.text == ')':
+            depth -= 1
+        elif depth == 0:
+            if token.upper == 'WHEN':
+                following = [t.upper for t in tokens[i + 1:i + 4]]
+                if following[:2] == ['MATCHED', 'THEN']:
+                    matched_update = following[2:] == ['UPDATE']
+                elif following == ['NOT', 'MATCHED', 'THEN']:
+                    matched_update = False
+            if token.upper == 'DELETE' and i + 1 < len(tokens) and tokens[i + 1].upper == 'WHERE':
+                if not matched_update:
+                    raise ValueError('MERGE DELETE filter must follow a matched UPDATE')
+                if delete_at is not None:
+                    raise ValueError('multiple MERGE DELETE filters require manual review')
+                delete_at = i
+            elif delete_at is not None and token.upper == 'WHEN':
+                following = [t.upper for t in tokens[i + 1:i + 4]]
+                if following[:2] == ['MATCHED', 'THEN'] or following == ['NOT', 'MATCHED', 'THEN']:
+                    end = token.start
+                    break
+    if delete_at is None:
+        return sqlglot.parse_one(sql, read='oracle')
+    start = tokens[delete_at].start
+    predicate = tokens[delete_at + 1].end
+    # Whitespace masking retains the metadata offsets of every remaining name.
+    masked = sql[:start] + ''.join('\n' if c == '\n' else ' ' for c in sql[start:end]) + sql[end:]
+    tree = sqlglot.parse_one(masked, read='oracle')
+    updates = [w.args.get('then') for w in tree.args['whens'].expressions
+               if w.args.get('matched') and isinstance(w.args.get('then'), exp.Update)]
+    if len(updates) != 1:
+        raise ValueError('MERGE DELETE filter requires exactly one matched UPDATE')
+    prefix = 'SELECT 1 WHERE'
+    condition = sqlglot.parse_one(prefix + ' ' * (predicate - len(prefix)) + sql[predicate:end], read='oracle')
+    if (not isinstance(condition, exp.Select) or condition.args.get('where') is None
+            or any(value for key, value in condition.args.items()
+                   if key not in {'expressions', 'where'})):
+        raise ValueError('unsupported MERGE DELETE filter')
+    updates[0].set('delete_where', condition.args['where'])
+    return tree
+
+
 def rewrite_plsql(text: str, mapping: Mapping) -> PlsqlOutcome:
     out = PlsqlOutcome(text)
     probe = sqlglot.parse_one('SELECT __PLSQL_POSITION__ FROM DUAL', read='oracle')
@@ -309,7 +367,7 @@ def rewrite_plsql(text: str, mapping: Mapping) -> PlsqlOutcome:
         change_start = len(out.changes)
         out.statements += 1
         try:
-            tree = sqlglot.parse_one(sql, read='oracle')
+            tree = _parse_static_sql(sql)
             if not isinstance(tree, (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Insert, exp.Update, exp.Delete, exp.Merge)):
                 raise ValueError('unsupported SQL structure')
             if any(ident.quoted and ident.name != ident.name.upper() for ident in tree.find_all(exp.Identifier)):
@@ -433,7 +491,10 @@ def rewrite_plsql(text: str, mapping: Mapping) -> PlsqlOutcome:
                     update = col.find_ancestor(exp.Update)
                     insert = col.find_ancestor(exp.Insert)
                     merge_target = (
-                        update is not None and isinstance(col.parent, exp.EQ) and col.arg_key == 'this'
+                        update is not None and isinstance(col.parent, exp.EQ)
+                        and col.parent in update.expressions and col.arg_key == 'this'
+                        or update is not None and update.args.get('delete_where') is not None
+                        and col.find_ancestor(exp.Where) is update.args['delete_where']
                         or insert is not None and col.parent is insert.this
                     )
                 table = table_key(tree.this) if merge_target else resolve_column(col, scope)

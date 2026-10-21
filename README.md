@@ -2120,6 +2120,10 @@ python -m streamlit run webui/app.py
   `migrate-sql` 호출 (한글 주석 / Stage A skip / LLM / 스키마 파생·지정).
 - **설정** — `.env` (LLM/DB 접속) 그룹별 편집 (로컬 저장, 비밀번호 마스킹).
 
+폴더 지정 모드는 Windows의 **경로로 복사**로 붙인 따옴표와 앞뒤 공백을
+제거합니다. 필수 경로를 입력하면 변환 버튼이 활성화되며, 없는 입력
+폴더·매핑·스키마 파일은 실행 시 해당 경로의 오류를 표시합니다.
+
 DB/LLM 이 필요한 화면(스키마 추출·코멘트 증강)은 **설정** 화면에서 접속
 정보를 먼저 지정해야 한다.
 
@@ -2146,6 +2150,17 @@ Windows 의존성을 `packaging/build_windows_portable.py`로 묶습니다.
 요건(Oracle Instant Client·모델·Playwright 브라우저)은 배포판의 `BUILD-REVIEW.txt`에
 명시합니다. 포함 파일 체크섬은 `SHA256SUMS.txt`, 정확한 의존성 버전은
 `requirements-windows.lock.txt`에서 확인할 수 있습니다.
+
+자식 동적 태그가 없는 XML statement의 `BEGIN … END` 블록과
+세미콜론으로 구분된 여러 UPDATE도 문장별로 컬럼 출처를 해석합니다.
+동명 컬럼이 서로 다른 이름으로 매핑된 MERGE의 대상·소스 컬럼도 구분합니다.
+기존 XML/Excel·AS-IS 주석 산출 형식은 유지하며, 이 정적 블록은 단일 SQL용
+Stage A·LLM·포매터를 건너뛰고 원래 형식을 보존합니다.
+
+Oracle PL/SQL의 정적 MERGE는 UPDATE/INSERT 조건절과 UPDATE 뒤의
+`DELETE WHERE`를 포함해 기존 매핑으로 테이블·컬럼 이름을 변환합니다.
+프로시저 구조·별칭·바인드·문자열·주석·공백은 유지합니다. `LOG ERRORS` 등
+미지원 구문은 원문을 보존하고 경고하므로 리포트의 수동 검토 항목을 확인하세요.
 
 새 배포판은 기존 폴더에 덮어쓰지 말고 별도 폴더에 풀어 `check.bat`을 실행한 뒤
 기존 매핑 YAML과 필요한 설정만 옮기세요.

@@ -132,6 +132,7 @@ def rewrite_xml(
     # consistent when different statements include the same <sql> body.
     results: List[RewriteResult] = []
     all_changes: List[ChangeItem] = []
+    positioned_statements = set()
 
     for stmt in statements:
         rr = _rewrite_statement(stmt, sql_includes, mapping, xml_path, namespace)
@@ -141,7 +142,12 @@ def rewrite_xml(
         if pre is not None:
             rr.as_is_raw = pre
         results.append(rr)
-        all_changes.extend(rr.changed_items)
+        if 'PLSQLIdentifierRename' in rr.applied_transformers:
+            # These bodies already contain edits resolved per SQL statement.
+            # Mapper-wide substitutions would confuse same-named columns again.
+            positioned_statements.add(stmt)
+        else:
+            all_changes.extend(rr.changed_items)
 
     for sql_elem in sql_includes.values():
         # Fragment rewrite purely for text-substitution consistency; not
@@ -154,7 +160,7 @@ def rewrite_xml(
 
     subs = _compile_substitutions(all_changes)
     if subs:
-        _apply_subs_to_tree(root, subs)
+        _apply_subs_to_tree(root, subs, protected=positioned_statements)
 
     return XmlRewriteOutcome(
         file_path=Path(xml_path),
@@ -450,6 +456,66 @@ def _tri(v) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _rewrite_static_procedural_statement(stmt, mapping, xml_path, namespace):
+    """Keep static MERGE and statement lists out of mapper-wide substitutions."""
+    # Dynamic tags still use the existing expansion/transformer pipeline.
+    # XML comments are static: use temporary SQL comments as node boundaries,
+    # then put each converted text/tail back without changing the XML comments.
+    if any(not isinstance(child, etree._Comment) for child in stmt):
+        return None
+    if not mapping.tables and not mapping.columns:
+        return None  # Preserve the existing --format-only path.
+    slots = [(stmt, 'text')] + [(child, 'tail') for child in stmt]
+    parts = [getattr(node, attr) or '' for node, attr in slots]
+    marker_prefix = '__CONVERT_XML_COMMENT_'
+    while marker_prefix in ''.join(parts):
+        marker_prefix = '_' + marker_prefix
+    markers = [f'/*{marker_prefix}{i}__*/' for i in range(len(parts) - 1)]
+    original = parts[0] + ''.join(marker + part for marker, part in zip(markers, parts[1:]))
+    from .plsql_rewriter import _tokens, rewrite_plsql
+    from .sql_rewriter import mask_mybatis_placeholders, unmask_mybatis_placeholders
+    safe, placeholders = mask_mybatis_placeholders(original)
+    try:
+        tokens = _tokens(safe)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    procedural = tokens[0].upper in {'BEGIN', 'DECLARE', 'MERGE'}
+    multiple = any(t.text == ';' and i + 1 < len(tokens) and tokens[i + 1].text != '/'
+                   for i, t in enumerate(tokens))
+    if not procedural and not multiple:
+        return None
+    result = rewrite_plsql(safe, mapping)
+    converted = unmask_mybatis_placeholders(result.text, placeholders)
+    raw = _capture_stmt_inner_raw(stmt)
+    converted_parts = []
+    remainder = converted
+    for marker in markers:
+        before, separator, remainder = remainder.partition(marker)
+        if not separator:
+            raise ValueError('XML comment boundary lost during static SQL rewrite')
+        converted_parts.append(before)
+    converted_parts.append(remainder)
+    for (node, attr), old, new in zip(slots, parts, converted_parts):
+        if old != new:
+            setattr(node, attr, new)
+    for marker in markers:
+        original = original.replace(marker, '')
+        converted = converted.replace(marker, '')
+    return RewriteResult(
+        xml_file=Path(xml_path), namespace=namespace,
+        sql_id=stmt.get('id', '') or '', sql_type=_local(stmt.tag).upper(),
+        as_is_sql=original, as_is_raw=raw,
+        to_be_sql=converted, status='AUTO_WARN' if result.warnings else 'AUTO',
+        applied_transformers=['PLSQLIdentifierRename'], conversion_method='DSL',
+        changed_items=result.changes, warnings=result.warnings,
+        notes=['Static Oracle block/MERGE: per-statement identifier edits; '
+               'Stage A, LLM and SQL formatting skipped. Validate in Oracle.'],
+        dynamic_paths_expanded=1, last_modified=datetime.now(),
+    )
+
+
 def _rewrite_statement(
     stmt: etree._Element,
     sql_includes: Dict[str, etree._Element],
@@ -457,6 +523,9 @@ def _rewrite_statement(
     xml_path: Path,
     namespace: str,
 ) -> RewriteResult:
+    positioned = _rewrite_static_procedural_statement(stmt, mapping, xml_path, namespace)
+    if positioned is not None:
+        return positioned
     sql_id = stmt.get("id", "") or ""
     sql_type: SqlType = _local(stmt.tag).upper()  # type: ignore[assignment]
 
@@ -817,6 +886,7 @@ def _emit_mixed(elem, common: int, get_leading, set_leading,
 def _apply_subs_to_tree(
     root: etree._Element,
     subs: List[Tuple[re.Pattern, str]],
+    *, protected=(),
 ) -> None:
     """Walk the tree and apply word-boundary substitutions to text/tail.
 
@@ -834,6 +904,8 @@ def _apply_subs_to_tree(
     ``_realign_trailing_comments`` 로 ``/*`` 시작을 다시 맞춘다.
     """
     for elem in root.iter():
+        if elem in protected or any(parent in protected for parent in elem.iterancestors()):
+            continue
         if elem.text:
             new_text = _apply_subs_outside_literals(elem.text, subs)
             if new_text != elem.text:

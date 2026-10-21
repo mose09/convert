@@ -578,12 +578,33 @@ def _render_migration_folder() -> None:
     if not from_mapping:
         schema_path = st.text_input("TO-BE 스키마 .md 경로")
 
-    def _bad(p, is_dir):
-        return not p or (not Path(p).is_dir() if is_dir else not Path(p).is_file())
+    # Windows "Copy as path" includes quotes; pasted whitespace is common.
+    def clean_path(value):
+        value = (value or "").strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1].strip()
+        return value
 
-    ready = not _bad(in_dir, True) and not _bad(map_path, False) and bool(out_dir) \
-        and (from_mapping or not _bad(schema_path, False))
+    in_dir, map_path, out_dir = map(clean_path, (in_dir, map_path, out_dir))
+    schema_path = clean_path(schema_path)
+    # Enable once required fields are filled. Explain invalid paths on click
+    # instead of leaving a disabled button with no reason visible to the user.
+    ready = bool(in_dir and map_path and out_dir and (from_mapping or schema_path))
     if st.button("▶ 변환 실행", type="primary", disabled=not ready):
+        required = [(in_dir, True, "AS-IS 폴더"), (map_path, False, "컬럼 매핑 YAML")]
+        if not from_mapping:
+            required.append((schema_path, False, "TO-BE 스키마"))
+        invalid = False
+        for value, directory, label in required:
+            try:
+                exists = Path(value).is_dir() if directory else Path(value).is_file()
+            except (OSError, ValueError):
+                exists = False
+            if not exists:
+                st.error(f"{label} 경로를 확인하세요: {value}")
+                invalid = True
+        if invalid:
+            return
         with st.spinner("변환 중…"):
             out_root = Path(out_dir)
             if (out_root.resolve() == Path(in_dir).resolve()

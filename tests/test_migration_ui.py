@@ -116,3 +116,50 @@ def test_existing_output_symlink_cannot_overwrite_original(tmp_path):
     assert '출력 경로' in app.error[0].value
     assert (inputs/'object.sql').read_text()==source
     assert not list(output.glob('*.xlsx'))
+
+
+@pytest.mark.parametrize('quoted', [False, True])
+def test_xml_only_folder_enables_and_converts_with_pasted_paths(tmp_path, quoted):
+    source = '<mapper namespace="test"><select id="get">SELECT ID FROM ORDERS</select></mapper>'
+    app, inputs, output = folder_app(tmp_path, 'BEGIN NULL; END; /')
+    (inputs / 'object.sql').unlink()
+    (inputs / 'nested').mkdir()
+    (inputs / 'nested' / 'mapper.xml').write_text(source)
+    if quoted:
+        for widget in app.text_input:
+            if widget.label.startswith(('①', '②', '③')):
+                widget.set_value('  "' + widget.value + '"  ')
+        app.run()
+    assert not next(b for b in app.button if b.label == '▶ 변환 실행').disabled
+    run_conversion(app)
+    assert not app.error
+    converted = (output / 'nested' / 'mapper.xml').read_text()
+    assert 'TB_ORDER' in converted and 'ORDER_ID' in converted
+    assert (inputs / 'nested' / 'mapper.xml').read_text() == source
+    assert list(output.glob('*.xlsx'))
+
+
+def test_invalid_folder_path_explains_failure_instead_of_silent_disabled_button(tmp_path):
+    app, inputs, output = folder_app(tmp_path, 'BEGIN NULL; END; /')
+    next(w for w in app.text_input if w.label.startswith('①')).set_value(str(tmp_path / 'missing'))
+    app.run()
+    assert not next(b for b in app.button if b.label == '▶ 변환 실행').disabled
+    run_conversion(app)
+    assert any('AS-IS 폴더 경로를 확인하세요' in e.value for e in app.error)
+    assert not output.exists()
+
+
+def test_folder_multiple_updates_are_all_written_and_reported(tmp_path):
+    source = ("CREATE OR REPLACE PROCEDURE P AS BEGIN "
+              "UPDATE ORDERS SET ID=:ID; UPDATE ORDERS SET ID=2; "
+              "UPDATE ORDERS SET ID=3 WHERE ID=2; END; /")
+    app, inputs, output = folder_app(tmp_path, source)
+    run_conversion(app)
+    assert not app.error and app.success
+    converted = (output / 'object.sql').read_text()
+    assert converted.count('UPDATE TB_ORDER SET ORDER_ID=') == 3
+    assert 'WHERE ORDER_ID=2' in converted
+    assert (inputs / 'object.sql').read_text() == source
+    workbook = load_workbook(next(output.glob('*.xlsx')), read_only=True)
+    rows = list(workbook['Conversions'].values)
+    assert rows[1][rows[0].index('Status')] == 'AUTO'

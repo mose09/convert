@@ -46,14 +46,25 @@ def main():
         inputs = work / 'input'; (inputs / 'nested').mkdir(parents=True)
         mapping = work / 'mapping.yaml'
         mapping.write_text(yaml.safe_dump({'version': '1.0', 'tables': [
-            {'type': 'rename', 'as_is': 'ORDERS', 'to_be': 'TB_ORDER'}], 'columns': [
+            {'type': 'rename', 'as_is': 'ORDERS', 'to_be': 'TB_ORDER'},
+            {'type': 'rename', 'as_is': 'CUSTOMERS', 'to_be': 'TB_CUSTOMER'}], 'columns': [
             {'as_is': {'table': 'ORDERS', 'column': 'ID'},
-             'to_be': {'table': 'TB_ORDER', 'column': 'ORDER_ID'}}]}), encoding='utf-8')
+             'to_be': {'table': 'TB_ORDER', 'column': 'ORDER_ID'}},
+            {'as_is': {'table': 'CUSTOMERS', 'column': 'ID'},
+             'to_be': {'table': 'TB_CUSTOMER', 'column': 'CUSTOMER_ID'}}]}), encoding='utf-8')
         source = ('CREATE OR REPLACE PROCEDURE P AS V ORDERS.ID%TYPE;\n'
-                  'BEGIN SELECT ID INTO V FROM ORDERS; END;\n/\n')
+                  'BEGIN SELECT ID INTO V FROM ORDERS;\n'
+                  'UPDATE ORDERS SET ID=V; UPDATE ORDERS SET ID=V+1;\n'
+                  'MERGE INTO ORDERS o USING CUSTOMERS c ON(o.ID=c.ID)\n'
+                  'WHEN MATCHED THEN UPDATE SET o.ID=c.ID DELETE WHERE o.ID<0;\n'
+                  'END;\n/\n')
         sql = inputs / 'nested' / 'object.sql'
         sql.write_text(source, encoding='utf-8')
         (inputs / 'mapper.xml').write_text('<mapper namespace="Check"><select id="find">SELECT ID FROM ORDERS</select></mapper>', encoding='utf-8')
+        (inputs / 'block.xml').write_text(
+            '<mapper namespace="Check"><update id="block"><![CDATA[BEGIN\n'
+            'UPDATE ORDERS SET ID=#{id}; UPDATE CUSTOMERS SET ID=#{id};\n'
+            'END;]]></update></mapper>', encoding='utf-8')
         config = work / 'config.yaml'
         output = work / 'output'
         config.write_text(yaml.safe_dump({'storage': {'output_dir': str(output)}}), encoding='utf-8')
@@ -68,11 +79,17 @@ def main():
         assert 'V TB_ORDER.ORDER_ID%TYPE' in result
         assert 'SELECT ORDER_ID INTO V FROM TB_ORDER' in result
         assert 'SELECT ORDER_ID FROM TB_ORDER' in (converted / 'mapper.xml').read_text(encoding='utf-8')
+        assert result.count('UPDATE TB_ORDER SET ORDER_ID=') == 2
+        assert 'DELETE WHERE o.ORDER_ID<0' in result
+        assert 'USING TB_CUSTOMER c' in result and 'o.ORDER_ID=c.CUSTOMER_ID' in result
+        block = (converted / 'block.xml').read_text(encoding='utf-8')
+        assert 'UPDATE TB_ORDER SET ORDER_ID=#{id};' in block
+        assert 'UPDATE TB_CUSTOMER SET CUSTOMER_ID=#{id};' in block
         assert sql.read_text(encoding='utf-8') == source
         assert list(output.glob('migration/*/*.xlsx'))
         warning = rewrite_plsql("BEGIN EXECUTE IMMEDIATE 'SELECT ID FROM ORDERS'; END;", load_mapping(mapping))
         assert warning.warnings and "'SELECT ID FROM ORDERS'" in warning.text
-    print('SQL / XML / %TYPE / Excel / original preservation / dynamic SQL warning: OK')
+    print('SQL / XML blocks / multiple UPDATE / MERGE DELETE / %TYPE / Excel / original preservation / dynamic SQL warning: OK')
     print('PASS (source only)' if source_only else 'PASS (Windows runtime and offline migration)')
     print('Oracle compilation, DB/LLM access and browser capture were not tested.')
 
