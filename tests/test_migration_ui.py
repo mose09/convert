@@ -1,5 +1,6 @@
 """User-visible PL/SQL guidance, warning visibility and safe folder publishing."""
 from pathlib import Path
+import time
 
 import pytest
 import yaml
@@ -36,6 +37,15 @@ def folder_app(tmp_path,source,output=None):
 
 def run_conversion(app):
     next(b for b in app.button if b.label=='▶ 변환 실행').click().run()
+    finish_conversion(app)
+
+
+def finish_conversion(app):
+    deadline = time.monotonic() + 30
+    while 'mig_job' in app.session_state and time.monotonic() < deadline:
+        time.sleep(0.02)
+        app.run()
+    assert 'mig_job' not in app.session_state, 'conversion did not finish'
     assert not app.exception, [e.message for e in app.exception]
 
 
@@ -163,3 +173,82 @@ def test_folder_multiple_updates_are_all_written_and_reported(tmp_path):
     workbook = load_workbook(next(output.glob('*.xlsx')), read_only=True)
     rows = list(workbook['Conversions'].values)
     assert rows[1][rows[0].index('Status')] == 'AUTO'
+
+
+def test_folder_result_survives_reruns_and_option_changes(tmp_path):
+    app, inputs, output = folder_app(tmp_path, 'BEGIN UPDATE ORDERS SET ID=1; END; /')
+    run_conversion(app)
+    assert app.success
+    app.run()
+    assert app.success
+    next(c for c in app.checkbox if c.label == '한글 주석 삽입').check().run()
+    assert app.success
+    assert 'UPDATE TB_ORDER SET ORDER_ID=1' in (output / 'object.sql').read_text()
+
+
+def test_running_job_survives_option_rerun_without_duplicate_process(tmp_path, monkeypatch):
+    import subprocess
+    import threading
+    app, inputs, output = folder_app(tmp_path, 'BEGIN UPDATE ORDERS SET ID=1; END; /')
+    original_run = subprocess.run
+    gate = threading.Event()
+    started = threading.Event()
+    commands = []
+
+    def paused_run(command, *args, **kwargs):
+        if isinstance(command, list) and any(str(arg).endswith('main.py') for arg in command):
+            commands.append(list(command))
+            started.set()
+            assert gate.wait(10), 'test did not release conversion'
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, 'run', paused_run)
+    try:
+        next(b for b in app.button if b.label == '▶ 변환 실행').click().run()
+        assert started.wait(2)
+        job = app.session_state['mig_job']
+        assert not job['future'].done()
+        assert next(b for b in app.button if b.label == '▶ 변환 실행').disabled
+        next(c for c in app.checkbox if c.label == 'Stage A 검증 건너뛰기').uncheck().run()
+        app.run()
+        assert not app.exception
+        assert app.session_state['mig_job']['future'] is job['future']
+        assert any('변환 중' in msg.value for msg in app.info)
+        assert len(commands) == 1 and '--no-validate' in commands[0]
+    finally:
+        gate.set()
+    finish_conversion(app)
+    assert app.success and (output / 'object.sql').is_file()
+    app.run()
+    assert app.success and len(commands) == 1
+
+
+def test_completed_background_failure_is_visible_after_reruns(tmp_path):
+    from concurrent.futures import Future
+    app, inputs, output = folder_app(tmp_path, 'BEGIN NULL; END; /')
+    future = Future()
+    future.set_exception(OSError('sample worker failure'))
+    app.session_state['mig_job'] = {'mode': 'folder', 'future': future}
+    app.run()
+    assert not app.exception
+    assert any('sample worker failure' in item.value for item in app.code)
+    app.run()
+    assert app.error and any('sample worker failure' in item.value for item in app.code)
+
+
+def test_upload_job_and_download_survive_option_reruns():
+    from concurrent.futures import Future
+    app = migration_app()
+    future = Future()
+    app.session_state['mig_job'] = {'mode': 'upload', 'future': future}
+    app.run()
+    next(c for c in app.checkbox if c.label == '한글 주석 삽입').check().run()
+    assert app.session_state['mig_job']['future'] is future
+    assert any('변환 중' in msg.value for msg in app.info)
+    future.set_result({'ok': True, 'summary': 'Converted 1 statement(s): AUTO=1 AUTO_WARN=0',
+                       'zip': b'zip-result', 'log': 'conversion complete'})
+    app.run()
+    assert app.success and app.get('download_button')
+    app.run()
+    assert app.success and app.get('download_button')
+    assert app.session_state['mig_result']['zip'] == b'zip-result'
