@@ -82,6 +82,30 @@ def _quoted(value, original):
     return value
 
 
+def _mask_systimestamp_precision(sql):
+    """Shield a legacy precision call from sqlglot's zero-argument builtin.
+
+    This is parser input only. Keep every source position and the original
+    expression intact; the caller reports that Oracle syntax needs review.
+    Quoted/package-qualified functions, literals and comments are untouched.
+    """
+    tokens = _tokens(sql)
+    masked = list(sql)
+    occurrences = []
+    for i, token in enumerate(tokens[:-3]):
+        if token.upper != 'SYSTIMESTAMP' or (i and tokens[i - 1].text in {'.', ':'}):
+            continue
+        opening, precision, closing = tokens[i + 1:i + 4]
+        if (opening.text != '(' or closing.text != ')'
+                or not re.fullmatch(r'[0-9]', precision.text)):
+            continue
+        # A same-length anonymous function bypasses the builtin parser without
+        # moving the identifier metadata used by the source-span rewriter.
+        masked[token.start] = 'X'
+        occurrences.append((token.start, precision.text))
+    return ''.join(masked), occurrences
+
+
 def _parse_static_sql(sql):
     """Parse Oracle MERGE's DELETE WHERE without regenerating source SQL.
 
@@ -367,7 +391,11 @@ def rewrite_plsql(text: str, mapping: Mapping) -> PlsqlOutcome:
         change_start = len(out.changes)
         out.statements += 1
         try:
-            tree = _parse_static_sql(sql)
+            parser_sql, timestamp_precisions = _mask_systimestamp_precision(sql)
+            tree = _parse_static_sql(parser_sql)
+            for position, precision in timestamp_precisions:
+                warn(f'SYSTIMESTAMP({precision}) preserved: Oracle SYSTIMESTAMP takes no precision argument; '
+                     'verify SQL syntax manually', start_pos + position)
             if not isinstance(tree, (exp.Select, exp.Union, exp.Intersect, exp.Except, exp.Insert, exp.Update, exp.Delete, exp.Merge)):
                 raise ValueError('unsupported SQL structure')
             if any(ident.quoted and ident.name != ident.name.upper() for ident in tree.find_all(exp.Identifier)):

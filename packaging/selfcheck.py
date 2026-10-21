@@ -89,6 +89,14 @@ def main():
         assert list(output.glob('migration/*/*.xlsx'))
         warning = rewrite_plsql("BEGIN EXECUTE IMMEDIATE 'SELECT ID FROM ORDERS'; END;", load_mapping(mapping))
         assert warning.warnings and "'SELECT ID FROM ORDERS'" in warning.text
+        precision = rewrite_plsql(
+            'BEGIN UPDATE ORDERS SET ID=EXTRACT(SECOND FROM SYSTIMESTAMP(0)); '
+            'UPDATE ORDERS SET ID=2; END;', load_mapping(mapping))
+        assert precision.text.count('UPDATE TB_ORDER SET ORDER_ID=') == 2
+        assert 'SYSTIMESTAMP(0)' in precision.text
+        assert len(precision.warnings) == 1 and 'precision argument' in precision.warnings[0]
+        assert not any('SQL preserved for manual review' in w for w in precision.warnings)
+
     print('SQL / XML blocks / multiple UPDATE / MERGE DELETE / %TYPE / Excel / original preservation / dynamic SQL warning: OK')
     print('PASS (source only)' if source_only else 'PASS (Windows runtime and offline migration)')
     print('Oracle compilation, DB/LLM access and browser capture were not tested.')
