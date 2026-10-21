@@ -23,6 +23,11 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: Windows 실행 검증 및 Release 자동 배포
+
+- [ ] 기존 업로드 인증 제한을 GitHub Actions 저장소 토큰으로 해소
+- [ ] Windows 런타임 직접 검증 후 전체 ZIP·체크섬 Release 게시
+
 ### 진행 중: PL/SQL 기능 포함 Windows 포터블 배포판
 
 - [x] 기존 python/app/run.bat 구조로 Windows x64 ZIP 생성

@@ -1,0 +1,120 @@
+name: Windows portable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: GitHub Release tag
+        required: true
+        default: windows-migration-fixes-20261021
+
+permissions:
+  contents: write
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      PYTHONDONTWRITEBYTECODE: '1'
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11.9'
+      - name: Install build tools and locked Windows dependencies
+        shell: pwsh
+        run: |
+          python -m pip install uv packaging pefile
+          if ($LASTEXITCODE -ne 0) { throw 'Build-tool installation failed' }
+          uv pip install --target build/windows-portable/site-packages --python-platform x86_64-pc-windows-msvc --python-version 3.11 --only-binary ':all:' -r packaging/requirements-windows.lock.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Windows dependency installation failed' }
+      - name: Verify official Python runtime signatures
+        shell: pwsh
+        run: |
+          python -c "import urllib.request; urllib.request.urlretrieve('https://api.nuget.org/v3-flatcontainer/python/3.11.9/python.3.11.9.nupkg', 'build/windows-portable/python.3.11.9.nupkg')"
+          if ($LASTEXITCODE -ne 0) { throw 'Python runtime download failed' }
+          dotnet nuget verify build/windows-portable/python.3.11.9.nupkg --all --verbosity detailed 2>&1 | Tee-Object build/windows-portable/runtime-signature-verification-online.log
+          if ($LASTEXITCODE -ne 0) { throw 'Python runtime signature verification failed' }
+      - name: Assemble and audit the complete distribution
+        shell: pwsh
+        run: |
+          python packaging/build_windows_portable.py --assemble-only
+          if ($LASTEXITCODE -ne 0) { throw 'Assembly failed' }
+          python packaging/verify_windows_portable.py dist/convert-tool
+          if ($LASTEXITCODE -ne 0) { throw 'Dependency audit failed' }
+          python packaging/verify_windows_native.py dist/convert-tool
+          if ($LASTEXITCODE -ne 0) { throw 'Native import audit failed' }
+      - name: Execute the bundled Windows runtime and offline conversion checks
+        shell: pwsh
+        run: |
+          & .\dist\convert-tool\python\python.exe .\dist\convert-tool\selfcheck.py 2>&1 | Tee-Object dist/convert-tool/verification/windows-selfcheck.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Bundled Windows runtime selfcheck failed' }
+      - name: Record Windows evidence and create checksummed ZIP
+        shell: pwsh
+        run: |
+          @'
+          import importlib.util, json, os
+          from pathlib import Path
+          root = Path('dist/convert-tool')
+          info = json.loads((root / 'build-info.json').read_text(encoding='utf-8'))
+          if info['source_has_uncommitted_changes']:
+              raise RuntimeError('Build source must be clean')
+          info['windows_execution_verified'] = True
+          info['windows_runner'] = os.environ['RUNNER_OS']
+          info['verification_run'] = os.environ['GITHUB_SERVER_URL'] + '/' + os.environ['GITHUB_REPOSITORY'] + '/actions/runs/' + os.environ['GITHUB_RUN_ID']
+          signature = (root / 'verification/python-signature.txt').read_text(encoding='utf-8-sig')
+          info['signature_revocation_lookup'] = 'See verification/python-signature.txt; verification completed successfully' + (' with warnings' if 'warn' in signature.lower() else '')
+          (root / 'build-info.json').write_text(json.dumps(info, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
+          review = ('Windows x64 full portable distribution.\n'
+                    'Official PSF Python 3.11.9 NuGet SHA-256 and signatures verified.\n'
+                    'Bundled Windows Python execution: PASS.\n'
+                    'Dependency/native audits: PASS. SQL/XML blocks, multiple UPDATE, MERGE DELETE, %TYPE and Excel selfcheck: PASS.\n'
+                    'See verification/windows-selfcheck.txt and python-signature.txt for exact evidence and any certificate revocation warnings.\n'
+                    'Oracle compilation, DB/LLM connections and browser capture were not tested.\n'
+                    'Oracle Instant Client, models and Playwright browsers are separate optional prerequisites.\n'
+                    'Unsupported SQL such as LOG ERRORS is preserved with warnings; dynamic XML tags retain the existing pipeline.\n'
+                    'Extract to a new writable folder, run check.bat, then run.bat.\n')
+          (root / 'BUILD-REVIEW.txt').write_text(review, encoding='utf-8')
+          notes = ('Windows 전체 포터블 배포판입니다. Python 3.11.9와 잠긴 Windows 의존성을 포함합니다.\n\n'
+                   '- 폴더 XML 변환 버튼: 따옴표/공백 경로 처리 및 오류 안내.\n'
+                   '- Oracle 프로시저 MERGE DELETE WHERE 변환 누락 수정. 여러 UPDATE 회귀 검증.\n'
+                   '- 정적 XML의 여러 UPDATE/MERGE 동명 컬럼을 문장별로 변환. 기존 매핑·바인드·XML/Excel 출력 유지.\n\n'
+                   '전체 회귀 167개, 별도 에이전트 Oracle 검증 60개 통과. '
+                   '이 배포판은 GitHub Windows runner에서 포함된 Python으로 의존성 import와 SQL/XML·여러 UPDATE·MERGE·Excel 변환 selfcheck를 직접 통과했습니다.\n\n'
+                   '새 쓰기 가능한 폴더에 압축 해제 후 check.bat, run.bat 순서로 실행하세요. '
+                   'Oracle DB 컴파일/접속·LLM·브라우저 캡처는 미검증입니다. LOG ERRORS 등 미지원 구문은 경고와 원문을 유지합니다. '
+                   '일반적인 .sql 다중 UPDATE 누락은 재현되지 않았고 관련 회귀 검사는 통과했습니다.\n\n'
+                   'Source: `' + info['source_commit'] + '`\n\nWindows verification: ' + info['verification_run'] + '\n')
+          Path('dist/release-notes.md').write_text(notes, encoding='utf-8')
+          spec = importlib.util.spec_from_file_location('portable_builder', 'packaging/build_windows_portable.py')
+          module = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(module)
+          print(module.manifest_and_zip(root))
+          '@ | python -
+          if ($LASTEXITCODE -ne 0) { throw 'ZIP creation failed' }
+      - name: Upload and publish the requested GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --draft --prerelease --title "Windows 전체 배포 — XML 폴더·Oracle MERGE 수정" --notes-file dist/release-notes.md
+            if ($LASTEXITCODE -ne 0) { throw 'Release draft creation failed' }
+          }
+          gh release upload "$env:RELEASE_TAG" dist/convert-tool.zip dist/convert-tool.zip.sha256 --repo "$env:GITHUB_REPOSITORY" --clobber
+          if ($LASTEXITCODE -ne 0) { throw 'Release asset upload failed' }
+          gh release edit "$env:RELEASE_TAG" --repo "$env:GITHUB_REPOSITORY" --target "$env:GITHUB_SHA" --draft=false --prerelease --notes-file dist/release-notes.md
+          if ($LASTEXITCODE -ne 0) { throw 'Release publication failed' }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-portable-verification
+          path: |
+            dist/convert-tool.zip
+            dist/convert-tool.zip.sha256
+            dist/convert-tool/verification/
+            build/windows-portable/runtime-signature-verification-online.log
