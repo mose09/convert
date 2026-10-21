@@ -2157,6 +2157,11 @@ Windows 의존성을 `packaging/build_windows_portable.py`로 묶습니다.
 기존 XML/Excel·AS-IS 주석 산출 형식은 유지하며, 이 정적 블록은 단일 SQL용
 Stage A·LLM·포매터를 건너뛰고 원래 형식을 보존합니다.
 
+`SYSTIMESTAMP(0)`처럼 정밀도 인자가 붙은 레거시 표현은 SQL 원문에
+유지하면서 해당 UPDATE의 테이블·컬럼 이름을 변환합니다. 문장 전체를
+건너뛰지 않으며 `AUTO_WARN`으로 문법 확인을 안내합니다. Oracle의
+`SYSTIMESTAMP`에는 정밀도 인자가 없으므로 실제 실행 전 해당 표현을 검토하세요.
+
 Oracle PL/SQL의 정적 MERGE는 UPDATE/INSERT 조건절과 UPDATE 뒤의
 `DELETE WHERE`를 포함해 기존 매핑으로 테이블·컬럼 이름을 변환합니다.
 프로시저 구조·별칭·바인드·문자열·주석·공백은 유지합니다. `LOG ERRORS` 등
