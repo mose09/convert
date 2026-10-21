@@ -23,6 +23,13 @@
 
 ## 0. 공통 / 인프라
 
+### 진행 중: 폴더 XML 실행 및 Oracle MERGE 변환 수정
+
+- [x] 폴더 XML 버튼 활성화와 입력 경로 검증 수정 및 회귀 검증
+- [x] 프로시저 MERGE 변환 수정, 별도 에이전트 Oracle 쿼리 회귀 검증
+- [x] Windows 전체 배포 조립·검증 (167개 회귀 통과, Windows 실행 미검증)
+- [ ] 커밋 및 GitHub Release ZIP 업로드
+
 ### 진행 중: PL/SQL 기능 포함 Windows 포터블 배포판
 
 - [x] 기존 python/app/run.bat 구조로 Windows x64 ZIP 생성

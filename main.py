@@ -1602,6 +1602,12 @@ def cmd_migrate_sql(args):
             continue
 
         for rr in out.results:
+            # A procedural body is not one SQL AST. Preserve the identifier-only
+            # result rather than passing BEGIN/multiple DML through one-statement tools.
+            if 'PLSQLIdentifierRename' in rr.applied_transformers:
+                for warning in rr.warnings:
+                    print(f"  warning: {xml_path}:{rr.sql_id}: {warning}")
+                continue
             # Stage A — skipped under --format-only (no schema to look
             # identifiers up against) or --no-validate (사용자가 명시적으로
             # 끔 — 파생 스키마 pass-through 오탐이 쌓이거나 statement 가
