@@ -27,7 +27,7 @@ jobs:
       - name: Install build tools and locked Windows dependencies
         shell: pwsh
         run: |
-          python -m pip install uv packaging pefile
+          python -m pip install uv packaging pefile pytest
           if ($LASTEXITCODE -ne 0) { throw 'Build-tool installation failed' }
           uv pip install --target build/windows-portable/site-packages --python-platform x86_64-pc-windows-msvc --python-version 3.11 --only-binary ':all:' -r packaging/requirements-windows.lock.txt
           if ($LASTEXITCODE -ne 0) { throw 'Windows dependency installation failed' }
@@ -52,6 +52,12 @@ jobs:
         run: |
           & .\dist\convert-tool\python\python.exe .\dist\convert-tool\selfcheck.py 2>&1 | Tee-Object dist/convert-tool/verification/windows-selfcheck.txt
           if ($LASTEXITCODE -ne 0) { throw 'Bundled Windows runtime selfcheck failed' }
+      - name: Verify migration UI rerun state on Windows
+        shell: pwsh
+        run: |
+          $hostSite = python -c "import sysconfig; print(sysconfig.get_path('purelib'))"
+          & .\dist\convert-tool\python\python.exe -c "import sys,runpy; sys.path.append(sys.argv.pop(1)); sys.argv=['pytest','tests/test_migration_ui.py','-q','-k','rerun or background']; runpy.run_module('pytest',run_name='__main__')" "$hostSite" 2>&1 | Tee-Object dist/convert-tool/verification/windows-ui-rerun.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Windows migration UI state checks failed' }
       - name: Record Windows evidence and create checksummed ZIP
         shell: pwsh
         run: |
@@ -70,7 +76,7 @@ jobs:
           (root / 'build-info.json').write_text(json.dumps(info, indent=2, ensure_ascii=False) + '\n', encoding='utf-8')
           review = ('Windows x64 full portable distribution.\n'
                     'Official PSF Python 3.11.9 NuGet SHA-256 and signatures verified.\n'
-                    'Bundled Windows Python execution: PASS.\n'
+                    'Bundled Windows Python execution: PASS. Windows migration UI rerun checks: PASS.\n'
                     'Dependency/native audits: PASS. SQL/XML blocks, multiple UPDATE, MERGE DELETE, %TYPE and Excel selfcheck: PASS.\n'
                     'See verification/windows-selfcheck.txt and python-signature.txt for exact evidence and any certificate revocation warnings.\n'
                     'Oracle compilation, DB/LLM connections and browser capture were not tested.\n'
@@ -80,6 +86,7 @@ jobs:
           (root / 'BUILD-REVIEW.txt').write_text(review, encoding='utf-8')
           notes = ('Windows 전체 포터블 배포판입니다. Python 3.11.9와 잠긴 Windows 의존성을 포함합니다.\n\n'
                    '- 폴더 XML 변환 버튼: 따옴표/공백 경로 처리 및 오류 안내.\n'
+                   '- 화면 재실행 중 변환 작업·결과 유지 및 중복 실행 방지. Windows UI 회귀 검사 통과.\n'
                    '- Oracle 프로시저 MERGE DELETE WHERE 변환 누락 수정. 여러 UPDATE 회귀 검증.\n'
                    '- SYSTIMESTAMP(0)으로 UPDATE 전체가 누락되던 문제 수정: 표현 원문은 유지하고 AUTO_WARN 안내.\n'
                    '- 정적 XML의 여러 UPDATE/MERGE 동명 컬럼을 문장별로 변환. 기존 매핑·바인드·XML/Excel 출력 유지.\n\n'

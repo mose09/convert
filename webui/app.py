@@ -26,6 +26,7 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 import streamlit as st
@@ -475,6 +476,7 @@ def render_migration() -> None:
         _render_migration_upload()
     else:
         _render_migration_folder()
+    _render_migration_job()
 
 
 def _schema_options():
@@ -492,6 +494,66 @@ def _schema_options():
     return schema_mode.startswith("매핑 YAML"), emit, no_validate, llm
 
 
+def _migration_busy():
+    return st.session_state.get('mig_job') is not None
+
+
+def _start_migration_job(mode, worker, *args):
+    # Keep the Future in the session, not in a button's one-run branch.
+    # Workers never access Streamlit; reruns cannot cancel/duplicate their work.
+    if _migration_busy():
+        return
+    # Register before starting a process: session-state writes can yield to a
+    # rerun. Once registered, plain dict updates below cannot orphan the job.
+    job = {'mode': mode, 'future': None}
+    st.session_state['mig_job'] = job
+    executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix='convert-migration')
+    try:
+        job['future'] = executor.submit(worker, *args)
+    except Exception as exc:
+        job['future'] = Future()
+        job['future'].set_exception(exc)
+    finally:
+        executor.shutdown(wait=False)
+    st.session_state.pop('mig_result' if mode == 'upload' else 'mig_folder_result', None)
+    st.rerun()
+
+
+@getattr(st, 'fragment', lambda **kwargs: lambda fn: fn)(
+    run_every='1s' if _migration_busy() else None)
+def _render_migration_job():
+    job = st.session_state.get('mig_job')
+    if job is None:
+        return
+    future = job['future']
+    if future is None or not future.done():
+        st.info('⏳ 변환 중… 화면 옵션을 바꿔도 시작한 작업은 계속 실행됩니다.')
+        if not hasattr(st, 'fragment'):
+            st.button('변환 상태 새로고침', key='mig_refresh')
+        return
+    try:
+        result = future.result()
+    except Exception as exc:
+        result = {'ok': False, 'log': f'{type(exc).__name__}: {exc}'}
+    key = 'mig_result' if job['mode'] == 'upload' else 'mig_folder_result'
+    st.session_state[key] = result
+    del st.session_state['mig_job']
+    st.rerun()
+
+
+def _convert_upload(in_dir, map_path, out_dir, flags):
+    rc, log, dated, summary = _run_migrate(in_dir, map_path, out_dir, flags)
+    zbuf = io.BytesIO()
+    if rc == 0 and dated:
+        with zipfile.ZipFile(zbuf, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for path in dated.rglob('*'):
+                if path.is_file():
+                    zf.write(path, path.relative_to(dated))
+    return {'ok': rc == 0 and dated is not None,
+            'summary': summary or '변환 완료 (요약 없음 — 로그 확인)',
+            'zip': zbuf.getvalue(), 'log': log}
+
+
 def _render_migration_upload() -> None:
     st.caption("mapper XML / Oracle PL/SQL .sql + 기존 매핑 YAML → 변환 → 결과 zip.")
     mappers = st.file_uploader("① AS-IS XML / SQL (여러 개)", type=["xml", "sql"],
@@ -503,38 +565,25 @@ def _render_migration_upload() -> None:
         schema_md = st.file_uploader("TO-BE 스키마 .md", type=["md"])
 
     ready = bool(mappers) and mapping is not None and (from_mapping or schema_md)
-    if st.button("▶ 변환 실행", type="primary", disabled=not ready):
-        with st.spinner("변환 중…"):
-            work = Path(tempfile.mkdtemp(prefix="webui_mig_"))
-            in_dir = work / "mapper"
-            in_dir.mkdir()
-            for f in mappers:
-                (in_dir / f.name).write_bytes(f.getbuffer())
-            map_path = work / "mapping.yaml"
-            map_path.write_bytes(mapping.getbuffer())
-            out_dir = work / "out"
-            out_dir.mkdir()
-            schema_path = None
-            if schema_md is not None:
-                schema_path = work / "to_be_schema.md"
-                schema_path.write_bytes(schema_md.getbuffer())
-            flags = _migrate_flags(from_mapping, schema_path, emit,
-                                   no_validate, llm)
-            rc, log, dated, summary = _run_migrate(in_dir, map_path, out_dir, flags)
-            zbuf = io.BytesIO()
-            if dated:
-                with zipfile.ZipFile(zbuf, "w", zipfile.ZIP_DEFLATED) as zf:
-                    for p in dated.rglob("*"):
-                        if p.is_file():
-                            zf.write(p, p.relative_to(dated))
-        st.session_state["mig_result"] = {
-            "ok": rc == 0 and dated is not None,
-            "summary": summary or "변환 완료 (요약 없음 — 로그 확인)",
-            "zip": zbuf.getvalue(), "log": log}
-        st.rerun()
+    if st.button("▶ 변환 실행", type="primary", disabled=not ready or _migration_busy()):
+        work = Path(tempfile.mkdtemp(prefix="webui_mig_"))
+        in_dir = work / "mapper"
+        in_dir.mkdir()
+        for file in mappers:
+            (in_dir / file.name).write_bytes(file.getbuffer())
+        map_path = work / "mapping.yaml"
+        map_path.write_bytes(mapping.getbuffer())
+        out_dir = work / "out"
+        out_dir.mkdir()
+        schema_path = None
+        if schema_md is not None:
+            schema_path = work / "to_be_schema.md"
+            schema_path.write_bytes(schema_md.getbuffer())
+        flags = _migrate_flags(from_mapping, schema_path, emit, no_validate, llm)
+        _start_migration_job('upload', _convert_upload, in_dir, map_path, out_dir, flags)
 
     res = st.session_state.get("mig_result")
-    if res:
+    if res and not _migration_busy():
         if res["ok"]:
             _render_migration_feedback(res["summary"], res["log"])
             st.download_button("⬇ 변환 결과 zip", data=res["zip"],
@@ -564,6 +613,19 @@ def _copy_migration_results(dated: Path, output: Path, inputs: Path):
     return [str(p.relative_to(converted)) for p in generated], [p.name for p in reports]
 
 
+def _convert_folder(in_dir, map_path, out_root, flags):
+    tmp = Path(tempfile.mkdtemp(prefix='webui_migf_'))
+    rc, log, dated, summary = _run_migrate(in_dir, map_path, tmp, flags)
+    xmls, reports = [], []
+    if rc == 0 and dated is not None:
+        try:
+            xmls, reports = _copy_migration_results(dated, out_root, Path(in_dir))
+        except (ValueError, OSError) as exc:
+            return {'ok': False, 'log': log + '\n' + str(exc), 'error': str(exc)}
+    return {'ok': rc == 0 and bool(xmls), 'log': log, 'summary': summary or '변환 완료',
+            'output': str(out_root), 'xmls': xmls, 'reports': reports}
+
+
 def _render_migration_folder() -> None:
     st.caption("로컬 폴더 경로를 지정합니다. 변환 XML/SQL 은 **입력 폴더 구조 그대로** "
                "출력 폴더에 떨어집니다 (대량 변환에 적합).")
@@ -590,7 +652,7 @@ def _render_migration_folder() -> None:
     # Enable once required fields are filled. Explain invalid paths on click
     # instead of leaving a disabled button with no reason visible to the user.
     ready = bool(in_dir and map_path and out_dir and (from_mapping or schema_path))
-    if st.button("▶ 변환 실행", type="primary", disabled=not ready):
+    if st.button("▶ 변환 실행", type="primary", disabled=not ready or _migration_busy()):
         required = [(in_dir, True, "AS-IS 폴더"), (map_path, False, "컬럼 매핑 YAML")]
         if not from_mapping:
             required.append((schema_path, False, "TO-BE 스키마"))
@@ -605,38 +667,29 @@ def _render_migration_folder() -> None:
                 invalid = True
         if invalid:
             return
-        with st.spinner("변환 중…"):
-            out_root = Path(out_dir)
-            if (out_root.resolve() == Path(in_dir).resolve()
-                    or Path(in_dir).resolve() in out_root.resolve().parents
-                    or out_root.resolve() in Path(in_dir).resolve().parents):
-                st.error("원본 보존과 결과 재처리 방지를 위해 입력·출력 폴더는 서로 포함되지 않는 별도 폴더로 지정하세요.")
-                return
-            out_root.mkdir(parents=True, exist_ok=True)
-            # migrate-sql 은 임시 폴더로 격리 실행 후, converted/ 트리를
-            # 입력 구조 그대로 출력 폴더로 복사한다.
-            tmp = Path(tempfile.mkdtemp(prefix="webui_migf_"))
-            flags = _migrate_flags(from_mapping, schema_path, emit,
-                                   no_validate, llm)
-            rc, log, dated, summary = _run_migrate(in_dir, map_path, tmp, flags)
-            xmls, reports = [], []
-            if rc == 0 and dated is not None:
-                try:
-                    xmls, reports = _copy_migration_results(dated, out_root, Path(in_dir))
-                except (ValueError, OSError) as exc:
-                    st.error(str(exc))
-                    return
-        if rc == 0 and xmls:
-            _render_migration_feedback(summary or "변환 완료", log)
-            st.info(f"출력 폴더(입력 구조 유지): {out_root}\n\n"
-                    f"변환 XML/SQL {len(xmls)}개 · 리포트 {len(reports)}개")
-            st.write("생성 XML/SQL (앞 200개):", xmls[:200])
-            if reports:
-                st.write("리포트/스키마:", reports)
+        out_root = Path(out_dir)
+        if (out_root.resolve() == Path(in_dir).resolve()
+                or Path(in_dir).resolve() in out_root.resolve().parents
+                or out_root.resolve() in Path(in_dir).resolve().parents):
+            st.error("원본 보존과 결과 재처리 방지를 위해 입력·출력 폴더는 서로 포함되지 않는 별도 폴더로 지정하세요.")
+            return
+        out_root.mkdir(parents=True, exist_ok=True)
+        flags = _migrate_flags(from_mapping, schema_path, emit, no_validate, llm)
+        _start_migration_job('folder', _convert_folder, in_dir, map_path, out_root, flags)
+
+    res = st.session_state.get('mig_folder_result')
+    if res and not _migration_busy():
+        if res['ok']:
+            _render_migration_feedback(res['summary'], res['log'])
+            st.info(f"출력 폴더(입력 구조 유지): {res['output']}\n\n"
+                    f"변환 XML/SQL {len(res['xmls'])}개 · 리포트 {len(res['reports'])}개")
+            st.write("생성 XML/SQL (앞 200개):", res['xmls'][:200])
+            if res['reports']:
+                st.write("리포트/스키마:", res['reports'])
         else:
-            st.error("변환 실패 — 로그를 확인하세요.")
+            st.error(res.get('error', "변환 실패 — 로그를 확인하세요."))
         with st.expander("실행 로그"):
-            st.code(_preview(log, n=40, tail=True) or "(로그 없음)")
+            st.code(_preview(res['log'], n=40, tail=True) or "(로그 없음)")
 
 
 # ---------------------------------------------------------------------------
