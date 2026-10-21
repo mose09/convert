@@ -23,12 +23,6 @@
 
 ## 0. 공통 / 인프라
 
-### 진행 중: SYSTIMESTAMP 정밀도 구문으로 인한 UPDATE 변환 누락
-
-- [x] 원문 보존 및 문법 경고를 유지하며 UPDATE 테이블·컬럼 변환
-- [x] 사용자 프로시저 SQL 11개·독립 회귀 80개 검증
-- [ ] Windows 전체 배포 실행 검증 및 Release 갱신
-
 ### 진행 중: PL/SQL 기능 포함 Windows 포터블 배포판
 
 - [x] 기존 python/app/run.bat 구조로 Windows x64 ZIP 생성
